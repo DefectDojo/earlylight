@@ -188,7 +188,11 @@ func TestRegistry(t *testing.T) {
 }
 
 func TestGaps(t *testing.T) {
-	tg := &Target{Skipped: nil}
+	img := &Target{Type: Image, Skipped: []source.Skip{skip("/src/testdata/bad.pem", "unparseable", false)}}
+	if g := img.Gaps(); g != 1 {
+		t.Errorf("image gaps %d, want 1: image paths never earn the fixture exemption", g)
+	}
+	tg := &Target{Type: Filesystem}
 	tg.Skipped = append(tg.Skipped,
 		skip("/proc", "excluded: pseudo-filesystem", true),
 		skip("/x/testdata/bad.pem", "unparseable", false),
@@ -201,14 +205,14 @@ func TestGaps(t *testing.T) {
 
 // A detector that panics on one file loses that file, not the scan.
 func TestDetectorPanicIsContained(t *testing.T) {
-	root := tree(t, map[string][]byte{"bad": []byte("x"), "good": []byte("y")})
+	root := tree(t, map[string][]byte{"testdata/bad": []byte("x"), "good": []byte("y")})
 	seen := &[]string{}
 	p := &panicky{fake: fake{id: "t-panic", seen: seen}}
 	tg := ScanFS([]Detector{p}, root, Options{AsRoot: true})
 	if tg.Error != "" || len(*seen) != 1 || (*seen)[0] != "/good" {
 		t.Fatalf("error %q seen %v", tg.Error, *seen)
 	}
-	if len(tg.Skipped) != 1 || tg.Skipped[0].Path != "/bad" || tg.Gaps() != 1 {
+	if len(tg.Skipped) != 1 || tg.Skipped[0].Path != "/testdata/bad" || tg.Gaps() != 1 {
 		t.Fatalf("the panicking file must be a coverage gap: %+v", tg.Skipped)
 	}
 }
@@ -217,7 +221,7 @@ type panicky struct{ fake }
 
 func (p *panicky) NewScan(TargetKind) Scan { return p }
 func (p *panicky) Visit(f File) []Skip {
-	if f.Path == "/bad" {
+	if f.Path == "/testdata/bad" {
 		panic("hostile input")
 	}
 	return p.fake.Visit(f)

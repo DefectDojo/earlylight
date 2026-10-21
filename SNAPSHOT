@@ -3,4 +3,4 @@ php2shell-scan: no commits yet; source/ and image/ copied 2026-10-21
 Engine-only changes since the copy (port these back to emudhra-scan and php2shell-scan):
 - internal/archive: PyInstaller zlib entries cap the untrusted ulen hint at clen*1032+1024, and read() copies a short single chunk so a lying hint cannot keep a large allocation alive
 - internal/source: readOne opens with O_NOFOLLOW|O_NONBLOCK and checks the opened file is the same regular file the walk saw
-- internal/engine: a detector panic on one file is contained and reported as not scanned; archive members named testdata/ no longer escape the coverage gap count (emudhra-scan's report.Gaps has the same exemption)
+- internal/engine: a detector panic on one file is contained and reported as not scanned; the testdata/ exemption from the coverage-gap count applies only to real files on a filesystem scan, never image paths, archive members or detector crashes (emudhra-scan exempts testdata/ everywhere)

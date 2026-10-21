@@ -47,9 +47,11 @@ func (t *Target) Count(v Verdict) int {
 func (t *Target) Gaps() int {
 	n := 0
 	for _, s := range t.Skipped {
-		// The test-fixture exemption applies to real paths only: names inside an
-		// archive are chosen by whoever built it, so they never earn it.
-		fixture := strings.Contains(s.Path, "/testdata/") && !strings.Contains(s.Path, "!/")
+		// The test-fixture exemption applies only to paths the operator controls:
+		// real files on a scanned filesystem. Image paths and archive member names
+		// are chosen by whoever built them, and a detector failure is never exempt.
+		fixture := t.Type == Filesystem && strings.Contains(s.Path, "/testdata/") &&
+			!strings.Contains(s.Path, "!/") && !s.DetectorFailed
 		if s.Excluded || strings.HasPrefix(s.Reason, "excluded:") || fixture {
 			continue
 		}
@@ -198,7 +200,7 @@ func (w *walker) send(f File, skip func(int) bool) {
 			continue
 		}
 		for _, sk := range w.visitSafely(i, s, f) {
-			w.t.Skipped = append(w.t.Skipped, source.Skip{Path: sk.Path, Reason: sk.Reason})
+			w.t.Skipped = append(w.t.Skipped, source.Skip{Path: sk.Path, Reason: sk.Reason, DetectorFailed: sk.failed})
 		}
 	}
 }
@@ -208,7 +210,7 @@ func (w *walker) send(f File, skip func(int) bool) {
 func (w *walker) visitSafely(i int, s Scan, f File) (skips []Skip) {
 	defer func() {
 		if r := recover(); r != nil {
-			skips = []Skip{{Path: f.Path, Reason: fmt.Sprintf("detector %s failed on this file (%v); not checked", w.dets[i].Manifest().ID, r)}}
+			skips = []Skip{{Path: f.Path, Reason: fmt.Sprintf("detector %s failed on this file (%v); not checked", w.dets[i].Manifest().ID, r), failed: true}}
 		}
 	}()
 	return s.Visit(f)

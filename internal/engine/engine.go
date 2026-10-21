@@ -119,6 +119,7 @@ type File struct {
 type Skip struct {
 	Path   string
 	Reason string
+	failed bool // set by the engine when the detector panicked
 }
 
 // TargetContext is what a detector can ask about the rest of the target when

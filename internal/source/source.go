@@ -34,6 +34,9 @@ type Skip struct {
 	// Excluded is true for deliberate exclusions (pseudo-filesystems, container
 	// storage), which do not make a scan incomplete.
 	Excluded bool `json:"excluded,omitempty"`
+	// DetectorFailed is true when a detector crashed on the file. It is
+	// always a coverage gap.
+	DetectorFailed bool `json:"detector_failed,omitempty"`
 }
 
 // Options control what is read.
