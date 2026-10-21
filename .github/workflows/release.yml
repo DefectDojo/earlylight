@@ -26,6 +26,10 @@ jobs:
                 -o "dist/${cmd}_${GITHUB_REF_NAME}_${os}_${arch}${ext}" ./cmd/$cmd
             done
           done
+          # The license texts ship beside the binaries and are covered by the signed checksums.
+          scripts/third-party-notices.sh "$RUNNER_TEMP/notices.txt"
+          diff -u THIRD_PARTY_NOTICES.txt "$RUNNER_TEMP/notices.txt"
+          cp LICENSE THIRD_PARTY_NOTICES.txt dist/
           (cd dist && sha256sum -- * > checksums.txt)
       - uses: sigstore/cosign-installer@v3
       - name: Sign checksums

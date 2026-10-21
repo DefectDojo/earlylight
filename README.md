@@ -132,6 +132,8 @@ python3 parity/php.py path/to/php2shell-scan ./php2shell-scan ./earlylight path/
 
 ## License
 
-BSD 3-Clause. Report security issues as described in [SECURITY.md](SECURITY.md).
+BSD 3-Clause. The licenses of the Go standard library and the modules compiled into the binaries are in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), which ships with every release and in the container image at `/licenses/`. After changing `go.mod`, run `scripts/third-party-notices.sh` and commit the result. CI fails when it is out of date.
+
+Report security issues as described in [SECURITY.md](SECURITY.md).
 
 Free and open source, from [DefectDojo](https://defectdojo.com).

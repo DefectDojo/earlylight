@@ -11,4 +11,5 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 # static-debian13 ships a CA bundle without the distrusted roots, needed to pull images.
 FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /out/earlylight /out/emudhra-scan /out/php2shell-scan /
+COPY LICENSE THIRD_PARTY_NOTICES.txt /licenses/
 ENTRYPOINT ["/earlylight"]

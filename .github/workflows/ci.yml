@@ -16,6 +16,10 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
+      - name: third-party notices are current
+        run: |
+          scripts/third-party-notices.sh "$RUNNER_TEMP/notices.txt"
+          diff -u THIRD_PARTY_NOTICES.txt "$RUNNER_TEMP/notices.txt" || { echo "run scripts/third-party-notices.sh and commit THIRD_PARTY_NOTICES.txt"; exit 1; }
       - run: go test -race ./...
       - name: fuzz (short)
         run: |
