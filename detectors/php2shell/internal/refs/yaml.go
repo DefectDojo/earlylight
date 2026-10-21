@@ -429,6 +429,9 @@ func (y *yamlCtx) interpolate(in ptext, depth int) (ptext, []VarUse, error) {
 				use.File, use.Line = "", 0
 			}
 			vars = append(vars, use)
+			if len(out)+len(val) > maxExpansion {
+				return nil, nil, errTooLong
+			}
 			out = append(out, val...)
 			i = j + 1
 		case isNameByte(nc, true):
@@ -445,6 +448,9 @@ func (y *yamlCtx) interpolate(in ptext, depth int) (ptext, []VarUse, error) {
 				return nil, nil, fmt.Errorf("variable %s is not set in .env and has no default", name)
 			}
 			vars = append(vars, use)
+			if len(out)+len(v) > maxExpansion {
+				return nil, nil, errTooLong
+			}
 			out = append(out, v...)
 			i = j
 		default:
