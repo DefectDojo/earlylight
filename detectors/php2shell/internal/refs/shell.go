@@ -36,6 +36,13 @@ type shellLexer struct {
 
 const maxSubstDepth = 64
 
+// maxExpansion caps a word's expanded length. Image references are at most a
+// few hundred bytes, and without a cap a chain of ARGs that each double the
+// last (ARG B=$A$A, ARG C=$B$B, ...) grows exponentially and exhausts memory.
+const maxExpansion = 8 << 10
+
+var errTooLong = errors.New("variable expansion longer than 8 KiB; not an image reference")
+
 var errMissingBrace = errors.New("syntax error: missing '}'")
 
 func (l *shellLexer) processWord() (ptext, error) {
@@ -113,6 +120,9 @@ func (l *shellLexer) processStopOn(stop byte, hasStop bool) (ptext, []ptext, boo
 			v, err := l.dollar()
 			if err != nil {
 				return nil, nil, false, err
+			}
+			if len(res)+len(v) > maxExpansion {
+				return nil, nil, false, errTooLong
 			}
 			res = append(res, v...)
 			w.addString(v)
@@ -199,6 +209,9 @@ func (l *shellLexer) doubleQuote() (ptext, error) {
 			if err != nil {
 				return nil, err
 			}
+			if len(res)+len(v) > maxExpansion {
+				return nil, errTooLong
+			}
 			res = append(res, v...)
 		default:
 			bs, r := l.next()
@@ -280,6 +293,9 @@ func (l *shellLexer) lookupPlain(name string) (ptext, error) {
 			return nil, v.plainErr
 		}
 		return nil, nil
+	}
+	if len(v.val) > maxExpansion {
+		return nil, errTooLong
 	}
 	return v.val, nil
 }

@@ -27,7 +27,7 @@
 | corretto-patched | PASS | 6019 | 11 | 9 | 1 |
 | ruby-3.3-slim | PASS | 5395 | 0 | 0 | 0 |
 | php-8.3-cli | PASS | 9113 | 0 | 0 | 0 |
-| composer-2 | PASS | 3433 | 4 | 4 | 1 |
+| composer-2 | PASS | 3430 | 2 | 2 | 1 |
 | jar-truststore | PASS | 7946 | 5 | 5 | 1 |
 | pyinstaller-app | PASS | 2678 | 2 | 2 | 1 |
 | distroless-debian12 | PASS | 964 | 2 | 2 | 1 |
