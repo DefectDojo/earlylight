@@ -24,10 +24,18 @@ type Target struct {
 	Digest   string        `json:"digest,omitempty"`
 	Platform string        `json:"platform,omitempty"`
 	Root     string        `json:"root,omitempty"` // filesystem scans: SARIF paths are relative to it
-	Files    int           `json:"files_scanned"`
+	Files    int           `json:"files_scanned"`  // regular files examined
+	Read     int           `json:"files_read"`     // of those, read in full and checked
 	Findings []Finding     `json:"findings"`
 	Skipped  []source.Skip `json:"skipped"`
-	Error    string        `json:"error,omitempty"`
+	// Problems are things a detector could not read fully (a damaged package
+	// database), which weaken its verdicts without stopping the scan.
+	Problems []string `json:"problems,omitempty"`
+	// Annotations are facts about the whole target (its OS release).
+	Annotations map[string]any `json:"annotations,omitempty"`
+	// Incomplete says why the scan could not finish (a registry failed).
+	Incomplete string `json:"incomplete,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // Count returns how many findings have verdict v.
@@ -63,22 +71,45 @@ func (t *Target) Gaps() int {
 // Options control a run.
 type Options struct {
 	MaxFileSize int64
-	Platform    string        // image platform, e.g. linux/amd64
-	AsRoot      bool          // fs: treat the directory as a system root
-	Timeout     time.Duration // host: connect timeout
+	Platform    string // image platform, e.g. linux/amd64
+	AsRoot      bool   // fs: treat the directory itself as a system root
+	// SystemRoot (fs) is the directory holding the system the scanned path
+	// belongs to, "/" by default. Paths are reported inside it, and detectors
+	// can read its package databases even when only a subdirectory is walked.
+	SystemRoot string
+	Timeout    time.Duration // host: connect timeout; repo: registry timeout per request
+	// Repository scans and fixes.
+	Offline    bool     // no registry lookups
+	PublicOnly bool     // contact only public registry addresses
+	Platforms  []string // the platforms that are built; empty means every platform
+	DryRun     bool     // fix: print changes without writing them
 }
 
 // targetCtx is the TargetContext the engine builds while it walks a target.
 type targetCtx struct {
 	kind      TargetKind
+	t         *Target
+	sysRoot   string // fs scans below the system root: its OS path
 	seen      map[string]bool
 	env       []string
 	symlinks  map[string]string // absolute path -> target as written
 	hardlinks map[string]string // absolute path -> absolute path it names
 }
 
-func newTargetCtx(kind TargetKind) *targetCtx {
-	return &targetCtx{kind: kind, seen: map[string]bool{}, symlinks: map[string]string{}, hardlinks: map[string]string{}}
+func newTargetCtx(kind TargetKind, t *Target) *targetCtx {
+	return &targetCtx{kind: kind, t: t, seen: map[string]bool{}, symlinks: map[string]string{}, hardlinks: map[string]string{}}
+}
+
+func (c *targetCtx) SystemRoot() string { return c.sysRoot }
+func (c *targetCtx) Links() (map[string]string, map[string]string) {
+	return c.symlinks, c.hardlinks
+}
+func (c *targetCtx) Problem(msg string) { c.t.Problems = append(c.t.Problems, msg) }
+func (c *targetCtx) Annotate(key string, v any) {
+	if c.t.Annotations == nil {
+		c.t.Annotations = map[string]any{}
+	}
+	c.t.Annotations[key] = v
 }
 
 func (c *targetCtx) Kind() TargetKind     { return c.kind }
@@ -126,10 +157,26 @@ type walker struct {
 	lim     archive.Limits
 	members bool // some detector wants archive members
 	t       *Target
+	// prefix is prepended to walked paths: the scanned directory's path inside
+	// the system root ("/" when the walk starts at the root). single is set
+	// when the target is one file, whose path is the prefix itself.
+	prefix string
+	single bool
+}
+
+// abs turns a walked path into its path inside the system root.
+func (w *walker) abs(p string) string {
+	switch {
+	case w.prefix == "" || w.prefix == "/":
+		return p
+	case w.single:
+		return w.prefix
+	}
+	return path.Clean(w.prefix + "/" + p)
 }
 
 func newWalker(dets []Detector, kind TargetKind, t *Target, opts Options) *walker {
-	w := &walker{ctx: newTargetCtx(kind), lim: archive.DefaultLimits, t: t}
+	w := &walker{ctx: newTargetCtx(kind, t), lim: archive.DefaultLimits, t: t}
 	if opts.MaxFileSize > 0 {
 		w.lim.MaxMemberSize = opts.MaxFileSize
 	}
@@ -152,8 +199,8 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 	so := source.Options{
 		MaxFileSize:  opts.MaxFileSize,
 		IsExecutable: archive.IsExecutable,
-		Symlink:      func(p, t string) { w.ctx.symlinks[p] = t },
-		Hardlink:     func(p, t string) { w.ctx.hardlinks[p] = t },
+		Symlink:      func(p, t string) { w.ctx.symlinks[w.abs(p)] = t },
+		Hardlink:     func(p, t string) { w.ctx.hardlinks[w.abs(p)] = w.abs(t) },
 	}
 	var readers []Reader
 	for _, d := range w.dets {
@@ -165,7 +212,7 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 	}
 	so.Read = func(p string, head []byte, exe bool) bool {
 		for _, r := range readers {
-			if r.Wants(p, head, exe) {
+			if r.Wants(w.abs(p), head, exe) {
 				return true
 			}
 		}
@@ -175,8 +222,9 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 }
 
 func (w *walker) visit(f source.File) error {
-	w.t.Files++
+	f.Path = w.abs(f.Path)
 	w.ctx.seen[f.Path] = true
+	w.t.Read++
 	if !w.members {
 		w.send(File{Path: f.Path, Data: f.Data, Executable: f.Executable}, nil)
 		return nil
@@ -236,39 +284,52 @@ func finishSafely(s Scan, ctx TargetContext) (fs []Finding, err error) {
 	return s.Finish(ctx), nil
 }
 
-// ScanFS scans a directory or file. With AsRoot (always for "/"), the directory
-// is treated as a system root, for example a host mounted at /host or an
-// extracted image, and paths are reported inside it. Otherwise paths are the
-// real absolute paths, so location rules see /etc/ssl/... even when scanning
-// /etc/ssl.
+// ScanFS scans a directory or file. Paths are reported inside a system root:
+// "/" by default, so location rules see /etc/ssl/... even when scanning
+// /etc/ssl; the directory itself with AsRoot (a host mounted at /host, an
+// extracted image); or SystemRoot when the scanned path lies below it. A walk
+// that starts at its system root skips pseudo-filesystems and container storage.
 func ScanFS(dets []Detector, root string, opts Options) *Target {
 	t := &Target{Name: root, Type: Filesystem}
-	real, err := filepath.EvalSymlinks(root)
+	real, err := realPath(root)
 	if err != nil {
 		t.Error = err.Error()
 		return t
 	}
-	real, _ = filepath.Abs(real)
-	asRoot := opts.AsRoot || real == "/"
 	t.Name = real
+	sysRoot := "/"
+	switch {
+	case opts.SystemRoot != "":
+		if sysRoot, err = realPath(opts.SystemRoot); err != nil {
+			t.Error = err.Error()
+			return t
+		}
+		if fi, err := os.Stat(sysRoot); err != nil || !fi.IsDir() {
+			t.Error = opts.SystemRoot + " is not a directory"
+			return t
+		}
+	case opts.AsRoot:
+		sysRoot = real
+	}
+	rel, err := filepath.Rel(sysRoot, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Error = fmt.Sprintf("%s is outside the system root %s", root, sysRoot)
+		return t
+	}
 	w := newWalker(dets, Filesystem, t, opts)
+	w.prefix = path.Clean("/" + filepath.ToSlash(rel))
+	if info, err := os.Stat(real); err == nil && !info.IsDir() {
+		w.single = true
+	}
 	so := w.sourceOptions(opts)
-	if asRoot {
+	if w.prefix == "/" {
 		so.Exclude = append(append([]string{}, source.DefaultExcludes...), source.ContainerStorage...)
 	} else {
-		t.Root = real
+		t.Root = w.prefix // SARIF paths are relative to the scanned directory
+		w.ctx.sysRoot = sysRoot
 	}
-	isDir := false
-	if info, err := os.Stat(real); err == nil && info.IsDir() {
-		isDir = true
-	}
-	skips, _, err := source.Dir(real, so, func(f source.File) error {
-		if !asRoot && isDir {
-			f.Path = path.Join(filepath.ToSlash(real), f.Path)
-		}
-		return w.visit(f)
-	})
-	t.Skipped = append(t.Skipped, skips...)
+	skips, n, err := source.Dir(real, so, w.visit)
+	t.Skipped, t.Files = append(t.Skipped, skips...), n
 	if err != nil {
 		t.Error = err.Error()
 		return t
@@ -279,6 +340,14 @@ func ScanFS(dets []Detector, root string, opts Options) *Target {
 	}
 	w.finish()
 	return t
+}
+
+func realPath(p string) (string, error) {
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(r)
 }
 
 // ScanImage scans a container image: a registry reference, docker-archive:FILE
@@ -308,8 +377,10 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 		rc, t.Digest, t.Platform, w.ctx.env = o.FS, o.Digest, o.Platform, o.Env
 	}
 	defer rc.Close()
-	skips, _, err := source.Tar(rc, w.sourceOptions(opts), w.visit)
-	t.Skipped = append(t.Skipped, skips...)
+	so := w.sourceOptions(opts)
+	so.Uncounted = source.DefaultExcludes
+	skips, n, err := source.Tar(rc, so, w.visit)
+	t.Skipped, t.Files = append(t.Skipped, skips...), n
 	if err != nil {
 		t.Error = err.Error()
 		return t
@@ -350,6 +421,7 @@ func ScanHost(dets []Detector, addr string, opts Options) *Target {
 			return t
 		}
 		t.Files += checked
+		t.Read += checked
 		t.Findings = append(t.Findings, check(d.Manifest().ID, fs)...)
 	}
 	if !ran {

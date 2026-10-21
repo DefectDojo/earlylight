@@ -23,34 +23,36 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STATUS = {"active": "vulnerable", "inactive": "inactive", "platform": "managed"}
 
 # The validation matrix from emudhra-scan's validation/run.py: name, kind, ref.
+# Docker Hub images are pulled through Google's mirror (mirror.gcr.io), as
+# php2shell-scan's validation does, to stay clear of Hub's anonymous rate limit.
 # "local" images were built by that harness and are scanned from `docker save`.
 IMAGES = [
-    ("python-3.13-slim", "registry", "python@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f"),
-    ("python-3.13-slim-latest", "registry", "python:3.13-slim"),
-    ("node-22-slim", "registry", "node:22-slim"),
+    ("python-3.13-slim", "registry", "mirror.gcr.io/library/python@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f"),
+    ("python-3.13-slim-latest", "registry", "mirror.gcr.io/library/python:3.13-slim"),
+    ("node-22-slim", "registry", "mirror.gcr.io/library/node:22-slim"),
     ("node-openssl-ca", "local", "emudhra-validate/node-openssl-ca"),
-    ("temurin-21-jdk", "registry", "eclipse-temurin:21-jdk"),
+    ("temurin-21-jdk", "registry", "mirror.gcr.io/library/eclipse-temurin:21-jdk"),
     ("temurin-patched", "local", "emudhra-validate/temurin-patched"),
-    ("golang-1.27.2", "registry", "golang:1.27.2"),
-    ("golang-1.27.3", "registry", "golang:1.27.3"),
+    ("golang-1.27.2", "registry", "mirror.gcr.io/library/golang:1.27.2"),
+    ("golang-1.27.3", "registry", "mirror.gcr.io/library/golang:1.27.3"),
     ("alpine-3.23-curl", "local", "emudhra-validate/alpine-old-curl"),
     ("alpine-patched", "local", "emudhra-validate/alpine-patched"),
     ("wolfi-r2", "registry", "cgr.dev/chainguard/wolfi-base@sha256:d68b2b10db0ddb2c6d9cb3a7720ecab5ca19b4b430fd592cd07c23d7da971b56"),
     ("wolfi-latest", "registry", "cgr.dev/chainguard/wolfi-base:latest"),
-    ("ubuntu-24.04", "registry", "ubuntu:24.04"),
+    ("ubuntu-24.04", "registry", "mirror.gcr.io/library/ubuntu:24.04"),
     ("ubuntu-patched", "local", "emudhra-validate/ubuntu-patched"),
     ("ubuntu-patched-requests", "local", "emudhra-validate/ubuntu-patched-requests"),
     ("debian12-requests", "local", "emudhra-validate/debian12-requests"),
     ("ubi9-minimal", "registry", "registry.access.redhat.com/ubi9/ubi-minimal:latest"),
     ("ubi9-blocklisted", "local", "emudhra-validate/ubi9-blocklisted"),
-    ("opensuse-leap-15.6", "registry", "opensuse/leap:15.6"),
+    ("opensuse-leap-15.6", "registry", "mirror.gcr.io/opensuse/leap:15.6"),
     ("opensuse-workaround", "local", "emudhra-validate/opensuse-workaround"),
     ("opensuse-advisory-literal", "local", "emudhra-validate/opensuse-advisory-literal"),
-    ("corretto-21", "registry", "amazoncorretto:21"),
+    ("corretto-21", "registry", "mirror.gcr.io/library/amazoncorretto:21"),
     ("corretto-patched", "local", "emudhra-validate/corretto-patched"),
-    ("ruby-3.3-slim", "registry", "ruby:3.3-slim"),
-    ("php-8.3-cli", "registry", "php:8.3-cli"),
-    ("composer-2", "registry", "composer:2"),
+    ("ruby-3.3-slim", "registry", "mirror.gcr.io/library/ruby:3.3-slim"),
+    ("php-8.3-cli", "registry", "mirror.gcr.io/library/php:8.3-cli"),
+    ("composer-2", "registry", "mirror.gcr.io/library/composer:2"),
     ("jar-truststore", "local", "emudhra-validate/jar-truststore"),
     ("pyinstaller-app", "local", "emudhra-validate/pyinstaller-app"),
     ("distroless-debian12", "registry", "gcr.io/distroless/static-debian12:nonroot"),
@@ -96,8 +98,8 @@ def norm_new(doc):
             (f["path"], f["kind"], f.get("facts", {}).get("spki_sha256", ""), f.get("facts", {}).get("cert_sha256", ""), f["verdict"], f.get("reason", ""), f["message"])
             for f in t["findings"]
         )
-        out.append({"name": t["target"], "digest": t.get("digest", ""), "files": t["files_scanned"], "error": t.get("error", ""),
-                    "skipped": sorted((s["path"], s["reason"]) for s in t["skipped"]), "findings": fs})
+        out.append({"name": t["target"], "digest": t.get("digest", ""), "files": t["files_scanned"], "read": t.get("files_read", t["files_scanned"]),
+                    "error": t.get("error", ""), "skipped": sorted((s["path"], s["reason"]) for s in t["skipped"]), "findings": fs})
     return out
 
 
@@ -106,9 +108,12 @@ def compare(old, new):
     if len(old) != len(new):
         return [f"target count {len(old)} vs {len(new)}"]
     for a, b in zip(old, new):
-        for k in ("files", "error"):
-            if a[k] != b[k]:
-                diffs.append(f"{k}: {a[k]!r} vs {b[k]!r}")
+        # emudhra-scan counted files it read; the engine reports files examined
+        # (files_scanned, as php2shell-scan does) and files read (files_read).
+        if a["files"] != b["read"]:
+            diffs.append(f"files read: {a['files']!r} vs {b['read']!r}")
+        if a["error"] != b["error"]:
+            diffs.append(f"error: {a['error']!r} vs {b['error']!r}")
         # Exclusion wording names each tool, so compare skipped paths, and reasons
         # only for skips that are not deliberate exclusions.
         sa = {(p, r if not r.startswith("excluded:") else "excluded") for p, r in a["skipped"]}
@@ -149,6 +154,9 @@ def case(old_bin, new_bin, tmp, name, mode, ref, extra):
         diffs = compare(o, n)
         if oc != nc:
             diffs.insert(0, f"exit status {oc} vs {nc}")
+        if o[0]["error"]:
+            # Both failing the same way proves nothing about detection.
+            return name, "ERROR", [f"scan failed: {o[0]['error'][:200]}"] + diffs, {}
         stats = {"files": o[0]["files"], "findings": len(o[0]["findings"]),
                  "vulnerable": sum(1 for f in o[0]["findings"] if f[4] == "vulnerable"), "exit": oc}
         return name, "PASS" if not diffs else "FAIL", diffs, stats

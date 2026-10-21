@@ -1,0 +1,1249 @@
+{
+  "snapshot": "2026-10-21T16:25:30Z",
+  "entries": [
+    {
+      "distro": "debian",
+      "os_ids": [
+        "debian"
+      ],
+      "release": "12",
+      "format": "dpkg",
+      "source_package": "php8.2",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-[0-9]+(~deb12u[0-9]+)?(\\+b[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "8.2.35-1~deb12u1",
+          "vulnerable_through": "8.2.34-1~deb12u1"
+        },
+        "CVE-2026-109619": {
+          "fixed": "8.2.35-1~deb12u1",
+          "vulnerable_through": "8.2.34-1~deb12u1"
+        }
+      },
+      "evidence": [
+        "https://security-tracker.debian.org/tracker/CVE-2026-109618",
+        "https://security-tracker.debian.org/tracker/CVE-2026-109619",
+        "https://security-tracker.debian.org/tracker/DLA-4848-1",
+        "Debian security tracker 2026-10-21T16:08Z: both CVEs, php8.2 bookworm-security fixed 8.2.35-1~deb12u1 (DLA-4848-1); bookworm 8.2.32-1~deb12u1 listed vulnerable",
+        "http://deb.debian.org/debian-security/pool/updates/main/p/php8.2/ (2026-10-21T16:15Z) holds 8.2.34-1~deb12u1 and 8.2.35-1~deb12u1; snapshot.debian.org/mr/package/php8.2/ lists 8.2.34-1~deb12u1 as the upload before 8.2.35-1~deb12u1",
+        "php8.2_8.2.35-1~deb12u1.debian.tar.xz debian/changelog: 8.2.35-1~deb12u1 'Fix CVE-2026-109618 and CVE-2026-109619'; the 8.2.34-1~deb12u1 entry (2026-10-04) does not mention either CVE",
+        "docker run debian:12 (VERSION_ID=12, 12.15): apt-cache policy php8.2-cli candidate 8.2.35-1~deb12u1 from bookworm-security, 8.2.32-1~deb12u1 from bookworm, Source: php8.2, 2026-10-21T16:13Z",
+        "an install in debian:12 about an hour earlier (before mirrors had 8.2.35) got 8.2.34-1~deb12u1 from bookworm-security"
+      ]
+    },
+    {
+      "distro": "debian",
+      "os_ids": [
+        "debian"
+      ],
+      "release": "13",
+      "format": "dpkg",
+      "source_package": "php8.4",
+      "branch": "8.4",
+      "version_pattern": "^8\\.4\\.[0-9]+-[0-9]+(~deb13u[0-9]+)?(\\+b[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "8.4.27-1~deb13u1",
+          "vulnerable_through": "8.4.26-1~deb13u1"
+        },
+        "CVE-2026-109619": {
+          "fixed": "8.4.27-1~deb13u1",
+          "vulnerable_through": "8.4.26-1~deb13u1"
+        }
+      },
+      "evidence": [
+        "https://security-tracker.debian.org/tracker/CVE-2026-109618",
+        "https://security-tracker.debian.org/tracker/CVE-2026-109619",
+        "https://security-tracker.debian.org/tracker/DSA-6574-1",
+        "Debian security tracker 2026-10-21T16:08Z: both CVEs, php8.4 trixie-security fixed 8.4.27-1~deb13u1 (DSA-6574-1); trixie 8.4.24-1~deb13u1 listed vulnerable",
+        "http://deb.debian.org/debian-security/pool/updates/main/p/php8.4/ (2026-10-21T16:15Z) holds 8.4.26-1~deb13u1 and 8.4.27-1~deb13u1",
+        "php8.4_8.4.27-1~deb13u1.debian.tar.xz debian/changelog: 8.4.27-1~deb13u1 '(CVE-2026-109618, CVE-2026-109619): Avoid state corruption via bailout'; the 8.4.26-1~deb13u1 entry (2026-09-24) mentions neither",
+        "docker run debian:trixie-slim (VERSION_ID=13, 13.7): apt-cache policy php8.4-cli candidate 8.4.27-1~deb13u1 from trixie-security, 8.4.24-1~deb13u1 from trixie, Source: php8.4, 2026-10-21T16:13Z"
+      ]
+    },
+    {
+      "distro": "debian",
+      "os_ids": [
+        "debian"
+      ],
+      "release": "forky",
+      "codename": "forky",
+      "format": "dpkg",
+      "source_package": "php8.4",
+      "branch": "8.4",
+      "version_pattern": "^8\\.4\\.[0-9]+-[0-9]+(\\+b[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.4.26-1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.4.26-1"
+        }
+      },
+      "evidence": [
+        "https://security-tracker.debian.org/tracker/CVE-2026-109618",
+        "https://security-tracker.debian.org/tracker/CVE-2026-109619",
+        "Debian security tracker 2026-10-21T16:08Z: php8.4 'forky, sid 8.4.26-1 vulnerable', (unstable) (unfixed) for both CVEs",
+        "docker run debian:testing and debian:sid: os-release has no VERSION_ID, VERSION_CODENAME=forky (both); apt-cache policy php8.4-cli candidate 8.4.26-1 (testing/main and sid/main), Source: php8.4, 2026-10-21T16:13Z; no php8.2/8.3/8.5 in sid"
+      ]
+    },
+    {
+      "distro": "ubuntu",
+      "os_ids": [
+        "ubuntu"
+      ],
+      "release": "22.04",
+      "format": "dpkg",
+      "source_package": "php8.1",
+      "branch": "8.1",
+      "version_pattern": "^8\\.1\\.2-1ubuntu2(\\.[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "8.1.2-1ubuntu2.28",
+          "vulnerable_through": "8.1.2-1ubuntu2.27"
+        },
+        "CVE-2026-109619": {
+          "fixed": "8.1.2-1ubuntu2.28",
+          "vulnerable_through": "8.1.2-1ubuntu2.27"
+        }
+      },
+      "evidence": [
+        "https://ubuntu.com/security/CVE-2026-109618",
+        "https://ubuntu.com/security/CVE-2026-109619",
+        "https://ubuntu.com/security/cves/CVE-2026-109618.json and CVE-2026-109619.json (updated_at 2026-10-21T15:50Z), fetched 2026-10-21T16:08Z: identical per-release states for both CVEs",
+        "https://ubuntu.com/security/notices/USN-8948-1 (2026-10-21, both CVEs)",
+        "https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name=php8.1&exact_match=true&distro_series=https://api.launchpad.net/1.0/ubuntu/jammy",
+        "Ubuntu CVE JSON: php8.1 jammy released 8.1.2-1ubuntu2.28 (both CVEs)",
+        "Launchpad publishing history: 8.1.2-1ubuntu2.28 jammy-security published 2026-10-21T13:41Z; previous upload 8.1.2-1ubuntu2.27 (superseded) (jammy-security 2026-10-19)",
+        "https://launchpad.net/ubuntu/+archive/primary/+files/php8.1_8.1.2-1ubuntu2.28_source.changes lists CVE-2026-109618 and CVE-2026-109619; https://launchpad.net/ubuntu/+archive/primary/+files/php8.1_8.1.2-1ubuntu2.27_source.changes mentions neither",
+        "docker run ubuntu:22.04 (VERSION_ID=22.04): apt-cache policy php8.1-cli candidate 8.1.2-1ubuntu2.28 (jammy-security), 8.1.2-1ubuntu2.27 (jammy-updates), 8.1.2-1ubuntu2 (jammy), Source: php8.1, 2026-10-21T16:12Z"
+      ]
+    },
+    {
+      "distro": "ubuntu",
+      "os_ids": [
+        "ubuntu"
+      ],
+      "release": "24.04",
+      "format": "dpkg",
+      "source_package": "php8.3",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.6-0(maysync1|ubuntu0\\.24\\.04\\.[0-9]+)$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "8.3.6-0ubuntu0.24.04.13",
+          "vulnerable_through": "8.3.6-0ubuntu0.24.04.12"
+        },
+        "CVE-2026-109619": {
+          "fixed": "8.3.6-0ubuntu0.24.04.13",
+          "vulnerable_through": "8.3.6-0ubuntu0.24.04.12"
+        }
+      },
+      "evidence": [
+        "https://ubuntu.com/security/CVE-2026-109618",
+        "https://ubuntu.com/security/CVE-2026-109619",
+        "https://ubuntu.com/security/cves/CVE-2026-109618.json and CVE-2026-109619.json (updated_at 2026-10-21T15:50Z), fetched 2026-10-21T16:08Z: identical per-release states for both CVEs",
+        "https://ubuntu.com/security/notices/USN-8948-1 (2026-10-21, both CVEs)",
+        "https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name=php8.3&exact_match=true&distro_series=https://api.launchpad.net/1.0/ubuntu/noble",
+        "Ubuntu CVE JSON: php8.3 noble released 8.3.6-0ubuntu0.24.04.13 (both CVEs)",
+        "Launchpad publishing history: 8.3.6-0ubuntu0.24.04.13 noble-security published 2026-10-21T13:41Z; previous upload 8.3.6-0ubuntu0.24.04.12 (superseded) (noble-security 2026-10-19)",
+        "https://launchpad.net/ubuntu/+archive/primary/+files/php8.3_8.3.6-0ubuntu0.24.04.13_source.changes lists CVE-2026-109618 and CVE-2026-109619; https://launchpad.net/ubuntu/+archive/primary/+files/php8.3_8.3.6-0ubuntu0.24.04.12_source.changes mentions neither",
+        "docker run ubuntu:24.04 (VERSION_ID=24.04): apt-cache policy php8.3-cli candidate 8.3.6-0ubuntu0.24.04.13 (noble-security), 8.3.6-0ubuntu0.24.04.12 (noble-updates), 8.3.6-0maysync1 (noble), Source: php8.3, 2026-10-21T16:12Z"
+      ]
+    },
+    {
+      "distro": "ubuntu",
+      "os_ids": [
+        "ubuntu"
+      ],
+      "release": "26.04",
+      "format": "dpkg",
+      "source_package": "php8.5",
+      "branch": "8.5",
+      "version_pattern": "^8\\.5\\.4-0ubuntu1(\\.[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "8.5.4-0ubuntu1.5",
+          "vulnerable_through": "8.5.4-0ubuntu1.4"
+        },
+        "CVE-2026-109619": {
+          "fixed": "8.5.4-0ubuntu1.5",
+          "vulnerable_through": "8.5.4-0ubuntu1.4"
+        }
+      },
+      "evidence": [
+        "https://ubuntu.com/security/CVE-2026-109618",
+        "https://ubuntu.com/security/CVE-2026-109619",
+        "https://ubuntu.com/security/cves/CVE-2026-109618.json and CVE-2026-109619.json (updated_at 2026-10-21T15:50Z), fetched 2026-10-21T16:08Z: identical per-release states for both CVEs",
+        "https://ubuntu.com/security/notices/USN-8948-1 (2026-10-21, both CVEs)",
+        "https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name=php8.5&exact_match=true&distro_series=https://api.launchpad.net/1.0/ubuntu/resolute",
+        "Ubuntu CVE JSON: php8.5 resolute released 8.5.4-0ubuntu1.5 (both CVEs)",
+        "Launchpad publishing history: 8.5.4-0ubuntu1.5 resolute-security published 2026-10-21T13:41Z; previous upload 8.5.4-0ubuntu1.4 (superseded) (resolute-security 2026-10-19)",
+        "https://launchpad.net/ubuntu/+archive/primary/+files/php8.5_8.5.4-0ubuntu1.5_source.changes lists CVE-2026-109618 and CVE-2026-109619; https://launchpad.net/ubuntu/+archive/primary/+files/php8.5_8.5.4-0ubuntu1.4_source.changes mentions neither",
+        "docker run ubuntu:26.04 (VERSION_ID=26.04, resolute): apt-cache policy php8.5-cli candidate 8.5.4-0ubuntu1.5 (resolute-security), 8.5.4-0ubuntu1.4 (resolute-updates), 8.5.4-0ubuntu1 (resolute), Source: php8.5, 2026-10-21T16:12Z"
+      ]
+    },
+    {
+      "distro": "ubuntu",
+      "os_ids": [
+        "ubuntu"
+      ],
+      "release": "26.10",
+      "format": "dpkg",
+      "source_package": "php8.5",
+      "branch": "8.5",
+      "version_pattern": "^8\\.5\\.9-0ubuntu[0-9]+(\\.[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "8.5.9-0ubuntu2.1",
+          "vulnerable_through": "8.5.9-0ubuntu2"
+        },
+        "CVE-2026-109619": {
+          "fixed": "8.5.9-0ubuntu2.1",
+          "vulnerable_through": "8.5.9-0ubuntu2"
+        }
+      },
+      "evidence": [
+        "https://ubuntu.com/security/CVE-2026-109618",
+        "https://ubuntu.com/security/CVE-2026-109619",
+        "https://ubuntu.com/security/cves/CVE-2026-109618.json and CVE-2026-109619.json (updated_at 2026-10-21T15:50Z), fetched 2026-10-21T16:08Z: identical per-release states for both CVEs",
+        "https://ubuntu.com/security/notices/USN-8948-1 (2026-10-21, both CVEs)",
+        "https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name=php8.5&exact_match=true&distro_series=https://api.launchpad.net/1.0/ubuntu/stonking",
+        "Ubuntu CVE JSON: php8.5 stonking released 8.5.9-0ubuntu2.1 (both CVEs)",
+        "Launchpad publishing history: 8.5.9-0ubuntu2.1 stonking-security published 2026-10-21T13:41Z; previous upload 8.5.9-0ubuntu2 (superseded) (stonking-security 2026-10-19)",
+        "https://launchpad.net/ubuntu/+archive/primary/+files/php8.5_8.5.9-0ubuntu2.1_source.changes lists CVE-2026-109618 and CVE-2026-109619; https://launchpad.net/ubuntu/+archive/primary/+files/php8.5_8.5.9-0ubuntu2_source.changes mentions neither",
+        "docker run ubuntu:26.10 (VERSION_ID=26.10, stonking): apt-cache policy php8.5-cli candidate 8.5.9-0ubuntu2.1 (stonking-security), 8.5.9-0ubuntu2 (stonking-updates), 8.5.9-0ubuntu1 (stonking), Source: php8.5, 2026-10-21T16:12Z"
+      ]
+    },
+    {
+      "distro": "ubuntu",
+      "os_ids": [
+        "ubuntu"
+      ],
+      "release": "20.04",
+      "format": "dpkg",
+      "source_package": "php7.4",
+      "branch": "7.4",
+      "version_pattern": "^7\\.4\\.3-4ubuntu(1(\\.1)?|2(\\.[0-9]+)?(\\+esm[0-9]+)?)$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "7.4.3-4ubuntu2.29+esm5"
+        },
+        "CVE-2026-109619": {
+          "fixed": "7.4.3-4ubuntu2.29+esm5"
+        }
+      },
+      "evidence": [
+        "https://ubuntu.com/security/CVE-2026-109618",
+        "https://ubuntu.com/security/CVE-2026-109619",
+        "https://ubuntu.com/security/cves/CVE-2026-109618.json and CVE-2026-109619.json (updated_at 2026-10-21T15:50Z), fetched 2026-10-21T16:08Z: identical per-release states for both CVEs",
+        "https://ubuntu.com/security/notices/USN-8948-2 (2026-10-21, both CVEs, ESM releases)",
+        "Ubuntu CVE JSON: php7.4 focal released 7.4.3-4ubuntu2.29+esm5 (both CVEs)",
+        "https://esm.ubuntu.com/infra/ubuntu/dists/focal-infra-security/main/binary-amd64/Packages.gz (2026-10-21T16:11Z): php7.4-cli 7.4.3-4ubuntu2.29+esm5, Source php7.4",
+        "docker run ubuntu:20.04 (VERSION_ID=20.04): apt-cache policy php7.4-cli candidate 7.4.3-4ubuntu2.29 (focal-security/updates), 7.4.3-4ubuntu1 (focal), Source: php7.4, 2026-10-21T16:12Z"
+      ]
+    },
+    {
+      "distro": "ubuntu",
+      "os_ids": [
+        "ubuntu"
+      ],
+      "release": "18.04",
+      "format": "dpkg",
+      "source_package": "php7.2",
+      "branch": "7.2",
+      "version_pattern": "^7\\.2\\.24-0ubuntu0\\.18\\.04\\.[0-9]+(\\+esm[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "7.2.24-0ubuntu0.18.04.17+esm14"
+        },
+        "CVE-2026-109619": {
+          "fixed": "7.2.24-0ubuntu0.18.04.17+esm14"
+        }
+      },
+      "evidence": [
+        "https://ubuntu.com/security/CVE-2026-109618",
+        "https://ubuntu.com/security/CVE-2026-109619",
+        "https://ubuntu.com/security/cves/CVE-2026-109618.json and CVE-2026-109619.json (updated_at 2026-10-21T15:50Z), fetched 2026-10-21T16:08Z: identical per-release states for both CVEs",
+        "https://ubuntu.com/security/notices/USN-8948-2 (2026-10-21, both CVEs, ESM releases)",
+        "Ubuntu CVE JSON: php7.2 bionic released 7.2.24-0ubuntu0.18.04.17+esm14 (both CVEs)",
+        "https://esm.ubuntu.com/infra/ubuntu/dists/bionic-infra-security/main/binary-amd64/Packages.gz (2026-10-21T16:11Z): php7.2-cli 7.2.24-0ubuntu0.18.04.17+esm14, Source php7.2",
+        "https://api.launchpad.net/1.0/ubuntu/+archive/primary?ws.op=getPublishedSources&source_name=php7.2&exact_match=true&distro_series=https://api.launchpad.net/1.0/ubuntu/bionic: newest non-ESM upload 7.2.24-0ubuntu0.18.04.17"
+      ]
+    },
+    {
+      "distro": "ubuntu",
+      "os_ids": [
+        "ubuntu"
+      ],
+      "release": "16.04",
+      "format": "dpkg",
+      "source_package": "php7.0",
+      "branch": "7.0",
+      "version_pattern": "^7\\.0\\.33-0ubuntu0\\.16\\.04\\.[0-9]+(\\+esm[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "7.0.33-0ubuntu0.16.04.16+esm22"
+        },
+        "CVE-2026-109619": {
+          "fixed": "7.0.33-0ubuntu0.16.04.16+esm22"
+        }
+      },
+      "evidence": [
+        "https://ubuntu.com/security/CVE-2026-109618",
+        "https://ubuntu.com/security/CVE-2026-109619",
+        "https://ubuntu.com/security/cves/CVE-2026-109618.json and CVE-2026-109619.json (updated_at 2026-10-21T15:50Z), fetched 2026-10-21T16:08Z: identical per-release states for both CVEs",
+        "https://ubuntu.com/security/notices/USN-8948-2 (2026-10-21, both CVEs, ESM releases)",
+        "Ubuntu CVE JSON: php7.0 xenial released 7.0.33-0ubuntu0.16.04.16+esm22 (both CVEs)",
+        "https://esm.ubuntu.com/infra-legacy/ubuntu/dists/xenial-infra-legacy-security/main/binary-amd64/Packages.gz (2026-10-21T16:12Z): php7.0-cli 7.0.33-0ubuntu0.16.04.16+esm22, Source php7.0 (esm-infra still serves +esm18)"
+      ]
+    },
+    {
+      "distro": "ubuntu",
+      "os_ids": [
+        "ubuntu"
+      ],
+      "release": "14.04",
+      "format": "dpkg",
+      "source_package": "php5",
+      "branch": "5.5",
+      "version_pattern": "^5\\.5\\.9\\+dfsg-1ubuntu4(\\.[0-9]+)?(\\+esm[0-9]+)?$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "5.5.9+dfsg-1ubuntu4.29+esm18"
+        },
+        "CVE-2026-109619": {
+          "fixed": "5.5.9+dfsg-1ubuntu4.29+esm18"
+        }
+      },
+      "evidence": [
+        "https://ubuntu.com/security/CVE-2026-109618",
+        "https://ubuntu.com/security/CVE-2026-109619",
+        "https://ubuntu.com/security/cves/CVE-2026-109618.json and CVE-2026-109619.json (updated_at 2026-10-21T15:50Z), fetched 2026-10-21T16:08Z: identical per-release states for both CVEs",
+        "https://ubuntu.com/security/notices/USN-8948-2 (2026-10-21, both CVEs, ESM releases)",
+        "Ubuntu CVE JSON: php5 trusty released 5.5.9+dfsg-1ubuntu4.29+esm18 (both CVEs)",
+        "https://esm.ubuntu.com/infra-legacy/ubuntu/dists/trusty-infra-legacy-security/main/binary-amd64/Packages.gz (2026-10-21T16:12Z): php5-cli 5.5.9+dfsg-1ubuntu4.29+esm18, Source php5 (esm-infra still serves +esm15)"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.19",
+      "format": "apk",
+      "source_package": "php81",
+      "branch": "8.1",
+      "version_pattern": "^8\\.1\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.1.34-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.1.34-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.19/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.19-stable/community/php81/APKBUILD",
+        "secdb v3.19 community.json (2026-10-21T16:14Z): php81 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.19-stable community/php81/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.1.34-r0, no secfixes line for either CVE",
+        "docker run alpine:3.19 (VERSION_ID=3.19.9): apk policy php81 = 8.1.34-r0 (only version) from dl-cdn v3.19/community, origin php81, 2026-10-21T16:14Z",
+        "https://alpinelinux.org/releases.json: v3.19 is past end of life, so no fix is expected"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.19",
+      "format": "apk",
+      "source_package": "php82",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.26-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.26-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.19/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.19-stable/community/php82/APKBUILD",
+        "secdb v3.19 community.json (2026-10-21T16:14Z): php82 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.19-stable community/php82/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.2.26-r0, no secfixes line for either CVE",
+        "docker run alpine:3.19 (VERSION_ID=3.19.9): apk policy php82 = 8.2.26-r0 (only version) from dl-cdn v3.19/community, origin php82, 2026-10-21T16:14Z",
+        "https://alpinelinux.org/releases.json: v3.19 is past end of life, so no fix is expected"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.19",
+      "format": "apk",
+      "source_package": "php83",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.14-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.14-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.19/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.19-stable/community/php83/APKBUILD",
+        "secdb v3.19 community.json (2026-10-21T16:14Z): php83 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.19-stable community/php83/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.3.14-r0, no secfixes line for either CVE",
+        "docker run alpine:3.19 (VERSION_ID=3.19.9): apk policy php83 = 8.3.14-r0 (only version) from dl-cdn v3.19/community, origin php83, 2026-10-21T16:14Z",
+        "https://alpinelinux.org/releases.json: v3.19 is past end of life, so no fix is expected"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.20",
+      "format": "apk",
+      "source_package": "php82",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.28-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.28-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.20/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.20-stable/community/php82/APKBUILD",
+        "secdb v3.20 community.json (2026-10-21T16:14Z): php82 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.20-stable community/php82/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.2.28-r0, no secfixes line for either CVE",
+        "docker run alpine:3.20 (VERSION_ID=3.20.10): apk policy php82 = 8.2.28-r0 (only version) from dl-cdn v3.20/community, origin php82, 2026-10-21T16:14Z",
+        "https://alpinelinux.org/releases.json: v3.20 is past end of life, so no fix is expected"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.20",
+      "format": "apk",
+      "source_package": "php83",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.15-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.15-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.20/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.20-stable/community/php83/APKBUILD",
+        "secdb v3.20 community.json (2026-10-21T16:14Z): php83 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.20-stable community/php83/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.3.15-r0, no secfixes line for either CVE",
+        "docker run alpine:3.20 (VERSION_ID=3.20.10): apk policy php83 = 8.3.15-r0 (only version) from dl-cdn v3.20/community, origin php83, 2026-10-21T16:14Z",
+        "https://alpinelinux.org/releases.json: v3.20 is past end of life, so no fix is expected"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.21",
+      "format": "apk",
+      "source_package": "php82",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.28-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.28-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.21/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.21-stable/community/php82/APKBUILD",
+        "secdb v3.21 community.json (2026-10-21T16:14Z): php82 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.21-stable community/php82/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.2.28-r0, no secfixes line for either CVE",
+        "docker run alpine:3.21 (VERSION_ID=3.21.8): apk policy php82 = 8.2.28-r0 (only version) from dl-cdn v3.21/community, origin php82, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.21",
+      "format": "apk",
+      "source_package": "php83",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.19-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.19-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.21/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.21-stable/community/php83/APKBUILD",
+        "secdb v3.21 community.json (2026-10-21T16:14Z): php83 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.21-stable community/php83/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.3.19-r0, no secfixes line for either CVE",
+        "docker run alpine:3.21 (VERSION_ID=3.21.8): apk policy php83 = 8.3.19-r0 (only version) from dl-cdn v3.21/community, origin php83, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.21",
+      "format": "apk",
+      "source_package": "php84",
+      "branch": "8.4",
+      "version_pattern": "^8\\.4\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.4.14-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.4.14-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.21/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.21-stable/community/php84/APKBUILD",
+        "secdb v3.21 community.json (2026-10-21T16:14Z): php84 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.21-stable community/php84/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.4.14-r0, no secfixes line for either CVE",
+        "docker run alpine:3.21 (VERSION_ID=3.21.8): apk policy php84 = 8.4.14-r0 (only version) from dl-cdn v3.21/community, origin php84, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.22",
+      "format": "apk",
+      "source_package": "php82",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.33-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.33-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.22/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.22-stable/community/php82/APKBUILD",
+        "secdb v3.22 community.json (2026-10-21T16:14Z): php82 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.22-stable community/php82/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.2.33-r0, no secfixes line for either CVE",
+        "docker run alpine:3.22 (VERSION_ID=3.22.6): apk policy php82 = 8.2.33-r0 (only version) from dl-cdn v3.22/community, origin php82, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.22",
+      "format": "apk",
+      "source_package": "php83",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.29-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.29-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.22/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.22-stable/community/php83/APKBUILD",
+        "secdb v3.22 community.json (2026-10-21T16:14Z): php83 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.22-stable community/php83/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.3.29-r0, no secfixes line for either CVE",
+        "docker run alpine:3.22 (VERSION_ID=3.22.6): apk policy php83 = 8.3.29-r0 (only version) from dl-cdn v3.22/community, origin php83, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.22",
+      "format": "apk",
+      "source_package": "php84",
+      "branch": "8.4",
+      "version_pattern": "^8\\.4\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.4.16-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.4.16-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.22/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.22-stable/community/php84/APKBUILD",
+        "secdb v3.22 community.json (2026-10-21T16:14Z): php84 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.22-stable community/php84/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.4.16-r0, no secfixes line for either CVE",
+        "docker run alpine:3.22 (VERSION_ID=3.22.6): apk policy php84 = 8.4.16-r0 (only version) from dl-cdn v3.22/community, origin php84, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.23",
+      "format": "apk",
+      "source_package": "php83",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.31-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.31-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.23/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.23-stable/community/php83/APKBUILD",
+        "secdb v3.23 community.json (2026-10-21T16:14Z): php83 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.23-stable community/php83/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.3.31-r0, no secfixes line for either CVE",
+        "docker run alpine:3.23 (VERSION_ID=3.23.6): apk policy php83 = 8.3.31-r0 (only version) from dl-cdn v3.23/community, origin php83, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.23",
+      "format": "apk",
+      "source_package": "php84",
+      "branch": "8.4",
+      "version_pattern": "^8\\.4\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.4.21-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.4.21-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.23/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.23-stable/community/php84/APKBUILD",
+        "secdb v3.23 community.json (2026-10-21T16:14Z): php84 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.23-stable community/php84/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.4.21-r0, no secfixes line for either CVE",
+        "docker run alpine:3.23 (VERSION_ID=3.23.6): apk policy php84 = 8.4.21-r0 (only version) from dl-cdn v3.23/community, origin php84, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.23",
+      "format": "apk",
+      "source_package": "php85",
+      "branch": "8.5",
+      "version_pattern": "^8\\.5\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.5.6-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.5.6-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.23/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.23-stable/community/php85/APKBUILD",
+        "secdb v3.23 community.json (2026-10-21T16:14Z): php85 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.23-stable community/php85/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.5.6-r0, no secfixes line for either CVE",
+        "docker run alpine:3.23 (VERSION_ID=3.23.6): apk policy php85 = 8.5.6-r0 (only version) from dl-cdn v3.23/community, origin php85, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.24",
+      "format": "apk",
+      "source_package": "php83",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.35-r0"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.35-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.24/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/community/php83/APKBUILD",
+        "secdb v3.24 community.json (2026-10-21T16:14Z): php83 has no secfixes entry for CVE-2026-109618 or CVE-2026-109619",
+        "aports 3.24-stable community/php83/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.3.35-r0, no secfixes line for either CVE",
+        "docker run alpine:3.24 (VERSION_ID=3.24.2): apk policy php83 = 8.3.35-r0 (only version) from dl-cdn v3.24/community, origin php83, 2026-10-21T16:14Z"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.24",
+      "format": "apk",
+      "source_package": "php84",
+      "branch": "8.4",
+      "version_pattern": "^8\\.4\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "8.4.27-r0",
+          "vulnerable_through": "8.4.26-r0"
+        },
+        "CVE-2026-109619": {
+          "fixed": "8.4.27-r0",
+          "vulnerable_through": "8.4.26-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.24/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/community/php84/APKBUILD",
+        "secdb v3.24 community.json (2026-10-21T16:14Z): php84 secfixes 8.4.27-r0: CVE-2026-109618 and CVE-2026-109619 (Alpine pairs 109619 with GHSA-7875-c8px-7q5f, not the upstream GHSA-6wmf-4rv5-p3rp)",
+        "aports 3.24-stable community/php84/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.4.27-r0, secfixes lists both CVEs",
+        "docker run alpine:3.24 (VERSION_ID=3.24.2): apk policy php84 = 8.4.26-r0 from dl-cdn v3.24/community at 2026-10-21T16:15Z (fixed build not yet on the CDN); 8.4.26-r0 is upstream 8.4.26, below the fix"
+      ]
+    },
+    {
+      "distro": "alpine",
+      "os_ids": [
+        "alpine"
+      ],
+      "release": "3.24",
+      "format": "apk",
+      "source_package": "php85",
+      "branch": "8.5",
+      "version_pattern": "^8\\.5\\.[0-9]+-r[0-9]+$",
+      "cves": {
+        "CVE-2026-109618": {
+          "fixed": "8.5.12-r0",
+          "vulnerable_through": "8.5.11-r0"
+        },
+        "CVE-2026-109619": {
+          "fixed": "8.5.12-r0",
+          "vulnerable_through": "8.5.11-r0"
+        }
+      },
+      "evidence": [
+        "https://secdb.alpinelinux.org/v3.24/community.json",
+        "https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/community/php85/APKBUILD",
+        "secdb v3.24 community.json (2026-10-21T16:14Z): php85 secfixes 8.5.12-r0: CVE-2026-109618 and CVE-2026-109619 (Alpine pairs 109619 with GHSA-7875-c8px-7q5f, not the upstream GHSA-6wmf-4rv5-p3rp)",
+        "aports 3.24-stable community/php85/APKBUILD (GitHub mirror, 2026-10-21T16:17Z): pkgver/pkgrel = 8.5.12-r0, secfixes lists both CVEs",
+        "docker run alpine:3.24 (VERSION_ID=3.24.2): apk policy php85 = 8.5.11-r0 from dl-cdn v3.24/community at 2026-10-21T16:15Z (fixed build not yet on the CDN); 8.5.11-r0 is upstream 8.5.11, below the fix"
+      ]
+    },
+    {
+      "distro": "rhel",
+      "os_ids": [
+        "rhel"
+      ],
+      "release": "8",
+      "format": "rpm",
+      "source_package": "php",
+      "branch": "7.4",
+      "version_pattern": "^7\\.4\\.[0-9]+-[0-9]+\\.module\\+el8\\.[0-9]+\\.[0-9]+(\\.z)?\\+[0-9]+\\+[0-9a-f]+$",
+      "vendor": "Red Hat",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "7.4.33-6.module+el8.10.0+24605+5caacdec"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "7.4.33-6.module+el8.10.0+24605+5caacdec"
+        }
+      },
+      "evidence": [
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109618.json",
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109619.json",
+        "Red Hat CSAF VEX (current_release_date 2026-10-21T15:24Z), both CVEs: red_hat_enterprise_linux_8:php.src::php:7.4 known_affected, remediation none_available 'Affected', no RHSA",
+        "docker run registry.access.redhat.com/ubi8/ubi (ID=rhel, VERSION_ID=8.10): dnf module info php stream 7.4 artifact php-cli-0:7.4.33-6.module+el8.10.0+24605+5caacdec, repoquery sourcerpm php-7.4.33-6.module+el8.10.0+24605+5caacdec.src.rpm, vendor 'Red Hat, Inc.', ubi-8-appstream-rpms, 2026-10-21T16:19Z"
+      ]
+    },
+    {
+      "distro": "rhel",
+      "os_ids": [
+        "rhel"
+      ],
+      "release": "8",
+      "format": "rpm",
+      "source_package": "php",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-[0-9]+\\.module\\+el8\\.[0-9]+\\.[0-9]+(\\.z)?\\+[0-9]+\\+[0-9a-f]+$",
+      "vendor": "Red Hat",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.33-1.module+el8.10.0+24627+75f19366"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.33-1.module+el8.10.0+24627+75f19366"
+        }
+      },
+      "evidence": [
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109618.json",
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109619.json",
+        "Red Hat CSAF VEX (current_release_date 2026-10-21T15:24Z), both CVEs: red_hat_enterprise_linux_8:php.src::php:8.2 known_affected, remediation none_available 'Affected', no RHSA",
+        "docker run registry.access.redhat.com/ubi8/ubi (VERSION_ID=8.10): dnf module info php stream 8.2 artifact php-cli-0:8.2.33-1.module+el8.10.0+24627+75f19366, sourcerpm php-8.2.33-1.module+el8.10.0+24627+75f19366.src.rpm, vendor 'Red Hat, Inc.', 2026-10-21T16:19Z"
+      ]
+    },
+    {
+      "distro": "rhel",
+      "os_ids": [
+        "rhel"
+      ],
+      "release": "9",
+      "format": "rpm",
+      "source_package": "php",
+      "branch": "8.0",
+      "version_pattern": "^8\\.0\\.[0-9]+-[0-9]+\\.el9(_[0-9]+)?$",
+      "vendor": "Red Hat",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.0.30-8.el9_8"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.0.30-8.el9_8"
+        }
+      },
+      "evidence": [
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109618.json",
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109619.json",
+        "Red Hat CSAF VEX (current_release_date 2026-10-21T15:24Z), both CVEs: red_hat_enterprise_linux_9:php.src (non-modular php) known_affected, remediation none_available 'Affected', no RHSA",
+        "docker run registry.access.redhat.com/ubi9/ubi (VERSION_ID=9.8): repoquery php-cli-8.0.30-8.el9_8, sourcerpm php-8.0.30-8.el9_8.src.rpm, vendor 'Red Hat, Inc.', ubi-9-appstream-rpms, 2026-10-21T16:19Z"
+      ]
+    },
+    {
+      "distro": "rhel",
+      "os_ids": [
+        "rhel"
+      ],
+      "release": "9",
+      "format": "rpm",
+      "source_package": "php",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-[0-9]+\\.module\\+el9\\.[0-9]+\\.[0-9]+(\\.z)?\\+[0-9]+\\+[0-9a-f]+$",
+      "vendor": "Red Hat",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.33-1.module+el9.8.0+24630+45254c6a"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.33-1.module+el9.8.0+24630+45254c6a"
+        }
+      },
+      "evidence": [
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109618.json",
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109619.json",
+        "Red Hat CSAF VEX (current_release_date 2026-10-21T15:24Z), both CVEs: red_hat_enterprise_linux_9:php.src::php:8.2 known_affected, remediation none_available 'Affected', no RHSA",
+        "docker run registry.access.redhat.com/ubi9/ubi (VERSION_ID=9.8): dnf module info php stream 8.2 artifact php-cli-0:8.2.33-1.module+el9.8.0+24630+45254c6a, sourcerpm php-8.2.33-1.module+el9.8.0+24630+45254c6a.src.rpm, vendor 'Red Hat, Inc.', 2026-10-21T16:19Z"
+      ]
+    },
+    {
+      "distro": "rhel",
+      "os_ids": [
+        "rhel"
+      ],
+      "release": "9",
+      "format": "rpm",
+      "source_package": "php",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-[0-9]+\\.module\\+el9\\.[0-9]+\\.[0-9]+(\\.z)?\\+[0-9]+\\+[0-9a-f]+$",
+      "vendor": "Red Hat",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.33-1.module+el9.8.0+24633+17f8e765"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.33-1.module+el9.8.0+24633+17f8e765"
+        }
+      },
+      "evidence": [
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109618.json",
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109619.json",
+        "Red Hat CSAF VEX (current_release_date 2026-10-21T15:24Z), both CVEs: red_hat_enterprise_linux_9:php.src::php:8.3 known_affected, remediation none_available 'Affected', no RHSA",
+        "docker run registry.access.redhat.com/ubi9/ubi (VERSION_ID=9.8): dnf module info php stream 8.3 artifact php-cli-0:8.3.33-1.module+el9.8.0+24633+17f8e765, sourcerpm php-8.3.33-1.module+el9.8.0+24633+17f8e765.src.rpm, vendor 'Red Hat, Inc.', 2026-10-21T16:19Z"
+      ]
+    },
+    {
+      "distro": "rhel",
+      "os_ids": [
+        "rhel"
+      ],
+      "release": "10",
+      "format": "rpm",
+      "source_package": "php",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-[0-9]+\\.el10(_[0-9]+)?$",
+      "vendor": "Red Hat",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.33-1.el10_2"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.33-1.el10_2"
+        }
+      },
+      "evidence": [
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109618.json",
+        "https://security.access.redhat.com/data/csaf/v2/vex/2026/cve-2026-109619.json",
+        "Red Hat CSAF VEX (current_release_date 2026-10-21T15:24Z), both CVEs: red_hat_enterprise_linux_10:php.src known_affected, remediation none_available 'Affected', no RHSA",
+        "docker run registry.access.redhat.com/ubi10/ubi (VERSION_ID=10.2): repoquery php-cli-8.3.33-1.el10_2, sourcerpm php-8.3.33-1.el10_2.src.rpm, vendor 'Red Hat, Inc.', ubi-10 appstream, 2026-10-21T16:19Z"
+      ]
+    },
+    {
+      "distro": "amzn",
+      "os_ids": [
+        "amzn"
+      ],
+      "release": "2023",
+      "format": "rpm",
+      "source_package": "php8.1",
+      "branch": "8.1",
+      "version_pattern": "^8\\.1\\.[0-9]+-[0-9]+\\.amzn2023(\\.[0-9]+)*$",
+      "vendor": "Amazon",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.1.34-1.amzn2023.0.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.1.34-1.amzn2023.0.1"
+        }
+      },
+      "evidence": [
+        "https://explore.alas.aws.amazon.com/CVE-2026-109618.html",
+        "https://explore.alas.aws.amazon.com/CVE-2026-109619.html",
+        "ALAS CVE pages fetched 2026-10-21T16:10Z, both CVEs: Amazon Linux 2023 php8.1 'No Fix Planned'",
+        "docker run amazonlinux:2023 (VERSION_ID=2023): dnf --releasever=latest (system-release 2023.12.20261016) repoquery --latest-limit 1: php8.1-cli-8.1.34-1.amzn2023.0.1, sourcerpm php8.1-8.1.34-1.amzn2023.0.1.src.rpm, vendor 'Amazon Linux', 2026-10-21T16:20Z"
+      ]
+    },
+    {
+      "distro": "amzn",
+      "os_ids": [
+        "amzn"
+      ],
+      "release": "2023",
+      "format": "rpm",
+      "source_package": "php8.2",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-[0-9]+\\.amzn2023(\\.[0-9]+)*$",
+      "vendor": "Amazon",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.34-1.amzn2023.0.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.34-1.amzn2023.0.1"
+        }
+      },
+      "evidence": [
+        "https://explore.alas.aws.amazon.com/CVE-2026-109618.html",
+        "https://explore.alas.aws.amazon.com/CVE-2026-109619.html",
+        "ALAS CVE pages fetched 2026-10-21T16:10Z, both CVEs: Amazon Linux 2023 php8.2 'Pending Fix'",
+        "docker run amazonlinux:2023 (VERSION_ID=2023): dnf --releasever=latest (system-release 2023.12.20261016) repoquery --latest-limit 1: php8.2-cli-8.2.34-1.amzn2023.0.1, sourcerpm php8.2-8.2.34-1.amzn2023.0.1.src.rpm, vendor 'Amazon Linux', 2026-10-21T16:20Z"
+      ]
+    },
+    {
+      "distro": "amzn",
+      "os_ids": [
+        "amzn"
+      ],
+      "release": "2023",
+      "format": "rpm",
+      "source_package": "php8.3",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-[0-9]+\\.amzn2023(\\.[0-9]+)*$",
+      "vendor": "Amazon",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.35-1.amzn2023.0.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.35-1.amzn2023.0.1"
+        }
+      },
+      "evidence": [
+        "https://explore.alas.aws.amazon.com/CVE-2026-109618.html",
+        "https://explore.alas.aws.amazon.com/CVE-2026-109619.html",
+        "ALAS CVE pages fetched 2026-10-21T16:10Z, both CVEs: Amazon Linux 2023 php8.3 'Pending Fix'",
+        "docker run amazonlinux:2023 (VERSION_ID=2023): dnf --releasever=latest (system-release 2023.12.20261016) repoquery --latest-limit 1: php8.3-cli-8.3.35-1.amzn2023.0.1, sourcerpm php8.3-8.3.35-1.amzn2023.0.1.src.rpm, vendor 'Amazon Linux', 2026-10-21T16:20Z"
+      ]
+    },
+    {
+      "distro": "amzn",
+      "os_ids": [
+        "amzn"
+      ],
+      "release": "2023",
+      "format": "rpm",
+      "source_package": "php8.4",
+      "branch": "8.4",
+      "version_pattern": "^8\\.4\\.[0-9]+-[0-9]+\\.amzn2023(\\.[0-9]+)*$",
+      "vendor": "Amazon",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.4.26-1.amzn2023.0.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.4.26-1.amzn2023.0.1"
+        }
+      },
+      "evidence": [
+        "https://explore.alas.aws.amazon.com/CVE-2026-109618.html",
+        "https://explore.alas.aws.amazon.com/CVE-2026-109619.html",
+        "ALAS CVE pages fetched 2026-10-21T16:10Z, both CVEs: Amazon Linux 2023 php8.4 'Pending Fix'",
+        "docker run amazonlinux:2023 (VERSION_ID=2023): dnf --releasever=latest (system-release 2023.12.20261016) repoquery --latest-limit 1: php8.4-cli-8.4.26-1.amzn2023.0.1, sourcerpm php8.4-8.4.26-1.amzn2023.0.1.src.rpm, vendor 'Amazon Linux', 2026-10-21T16:20Z"
+      ]
+    },
+    {
+      "distro": "amzn",
+      "os_ids": [
+        "amzn"
+      ],
+      "release": "2023",
+      "format": "rpm",
+      "source_package": "php8.5",
+      "branch": "8.5",
+      "version_pattern": "^8\\.5\\.[0-9]+-[0-9]+\\.amzn2023(\\.[0-9]+)*$",
+      "vendor": "Amazon",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.5.11-1.amzn2023.0.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.5.11-1.amzn2023.0.1"
+        }
+      },
+      "evidence": [
+        "https://explore.alas.aws.amazon.com/CVE-2026-109618.html",
+        "https://explore.alas.aws.amazon.com/CVE-2026-109619.html",
+        "ALAS CVE pages fetched 2026-10-21T16:10Z, both CVEs: Amazon Linux 2023 php8.5 'Pending Fix'",
+        "docker run amazonlinux:2023 (VERSION_ID=2023): dnf --releasever=latest (system-release 2023.12.20261016) repoquery --latest-limit 1: php8.5-cli-8.5.11-1.amzn2023.0.1, sourcerpm php8.5-8.5.11-1.amzn2023.0.1.src.rpm, vendor 'Amazon Linux', 2026-10-21T16:20Z"
+      ]
+    },
+    {
+      "distro": "amzn",
+      "os_ids": [
+        "amzn"
+      ],
+      "release": "2",
+      "format": "rpm",
+      "source_package": "php",
+      "branch": "5.4",
+      "version_pattern": "^5\\.4\\.16-[0-9]+\\.amzn2(\\.[0-9]+)*$",
+      "vendor": "Amazon",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "5.4.16-46.amzn2.0.7"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "5.4.16-46.amzn2.0.7"
+        }
+      },
+      "evidence": [
+        "https://explore.alas.aws.amazon.com/CVE-2026-109618.html",
+        "https://explore.alas.aws.amazon.com/CVE-2026-109619.html",
+        "ALAS CVE pages fetched 2026-10-21T16:10Z, both CVEs: 'Amazon Linux 2 - Core' php 'Pending Fix'",
+        "docker run amazonlinux:2 (VERSION_ID=2): yum list --showduplicates php-cli newest 5.4.16-46.amzn2.0.7 (amzn2-core); installed: sourcerpm php-5.4.16-46.amzn2.0.7.src.rpm, vendor 'Amazon Linux', 2026-10-21T16:21Z"
+      ]
+    },
+    {
+      "distro": "amzn",
+      "os_ids": [
+        "amzn"
+      ],
+      "release": "2",
+      "format": "rpm",
+      "source_package": "php",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-[0-9]+\\.amzn2(\\.[0-9]+)*$",
+      "vendor": "Amazon",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.34-1.amzn2.0.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.34-1.amzn2.0.1"
+        }
+      },
+      "evidence": [
+        "https://explore.alas.aws.amazon.com/CVE-2026-109618.html",
+        "https://explore.alas.aws.amazon.com/CVE-2026-109619.html",
+        "ALAS CVE pages fetched 2026-10-21T16:10Z, both CVEs: 'Amazon Linux 2 - Php8.2 Extra' php 'Pending Fix'",
+        "docker run amazonlinux:2 with amazon-linux-extras enable php8.2: yum list --showduplicates php-cli newest 8.2.34-1.amzn2.0.1 (amzn2extra-php8.2); installed: sourcerpm php-8.2.34-1.amzn2.0.1.src.rpm, vendor 'Amazon Linux', 2026-10-21T16:21Z"
+      ]
+    },
+    {
+      "distro": "sles",
+      "os_ids": [
+        "sles"
+      ],
+      "release": "15.6",
+      "format": "rpm",
+      "source_package": "php8",
+      "branch": "8.2",
+      "version_pattern": "^8\\.2\\.[0-9]+-150600\\.[0-9]+(\\.[0-9]+)*$",
+      "vendor": "SUSE",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.2.30-150600.3.25.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.2.30-150600.3.25.1"
+        }
+      },
+      "evidence": [
+        "https://www.suse.com/security/cve/CVE-2026-109618.html",
+        "https://www.suse.com/security/cve/CVE-2026-109619.html",
+        "SUSE CVE pages fetched 2026-10-21T16:10Z, both CVEs: overall state Pending; SUSE Linux Enterprise Server 15 SP6-LTSS php8 'In progress', QA package php8 >= 8.2.35-150600.3.39.1 (the same page also lists plain SLES 15 SP6 php8 as 'Not affected'; the LTSS row and the QA build for this same 150600 php8 stream are taken as authoritative); no released update (fixed packages only 'in QA')",
+        "docker run registry.suse.com/bci/bci-base:15.6 (ID=sles, VERSION_ID=15.6): SLE_BCI php8-cli 8.2.29-150600.3.19.1 (vendor 'SUSE LLC'); docker run opensuse/leap:15.6 'Update repository with updates from SUSE Linux Enterprise 15' newest php8-cli 8.2.30-150600.3.25.1, sourcerpm php8-8.2.30-150600.3.25.1.src.rpm, vendor 'SUSE LLC <https://www.suse.com/>', distribution 'SUSE Linux Enterprise 15', 2026-10-21T16:22Z-16:24Z"
+      ]
+    },
+    {
+      "distro": "sles",
+      "os_ids": [
+        "sles"
+      ],
+      "release": "15.7",
+      "format": "rpm",
+      "source_package": "php8",
+      "branch": "8.3",
+      "version_pattern": "^8\\.3\\.[0-9]+-150700\\.[0-9]+(\\.[0-9]+)*$",
+      "vendor": "SUSE",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.3.35-150700.3.21.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.3.35-150700.3.21.1"
+        }
+      },
+      "evidence": [
+        "https://www.suse.com/security/cve/CVE-2026-109618.html",
+        "https://www.suse.com/security/cve/CVE-2026-109619.html",
+        "SUSE CVE pages fetched 2026-10-21T16:10Z, both CVEs: overall state Pending; SUSE Linux Enterprise Server 15 SP7 php8 'In progress', QA package php8 >= 8.3.36-150700.3.24.1; no released update (fixed packages only 'in QA')",
+        "docker run registry.suse.com/bci/bci-base:15.7 (ID=sles, VERSION_ID=15.7): SLE_BCI php8-cli 8.3.35-150700.3.21.1, sourcerpm php8-8.3.35-150700.3.21.1.src.rpm, vendor 'SUSE LLC <https://www.suse.com/>', 2026-10-21T16:24Z"
+      ]
+    },
+    {
+      "distro": "sles",
+      "os_ids": [
+        "sles"
+      ],
+      "release": "16.0",
+      "format": "rpm",
+      "source_package": "php8",
+      "branch": "8.4",
+      "version_pattern": "^8\\.4\\.[0-9]+-160000\\.[0-9]+(\\.[0-9]+)*$",
+      "vendor": "SUSE",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.4.26-160000.1.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.4.26-160000.1.1"
+        }
+      },
+      "evidence": [
+        "https://www.suse.com/security/cve/CVE-2026-109618.html",
+        "https://www.suse.com/security/cve/CVE-2026-109619.html",
+        "SUSE CVE pages fetched 2026-10-21T16:10Z, both CVEs: overall state Pending; SUSE Linux Enterprise Server 16.0 php8 'In progress'; no released update (fixed packages only 'in QA')",
+        "docker run registry.suse.com/bci/bci-base:16.0 (ID=sles, VERSION_ID=16.0): SLE_BCI php8-cli 8.4.26-160000.1.1, sourcerpm php8-8.4.26-160000.1.1.src.rpm, vendor 'SUSE LLC <https://www.suse.com/>', 2026-10-21T16:24Z"
+      ]
+    },
+    {
+      "distro": "sles",
+      "os_ids": [
+        "sles"
+      ],
+      "release": "16.1",
+      "format": "rpm",
+      "source_package": "php8",
+      "branch": "8.5",
+      "version_pattern": "^8\\.5\\.[0-9]+-160100\\.[0-9]+(\\.[0-9]+)*$",
+      "vendor": "SUSE",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "8.5.8-160100.2.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "8.5.8-160100.2.1"
+        }
+      },
+      "evidence": [
+        "https://www.suse.com/security/cve/CVE-2026-109618.html",
+        "https://www.suse.com/security/cve/CVE-2026-109619.html",
+        "SUSE CVE pages fetched 2026-10-21T16:10Z, both CVEs: overall state Pending; SUSE Linux Enterprise Server 16.1 php8 'In progress'; no released update (fixed packages only 'in QA')",
+        "docker run registry.suse.com/bci/bci-base:16.1 (ID=sles, VERSION_ID=16.1): SLE_BCI php8 / php8-cli 8.5.8-160100.2.1 (only version), 2026-10-21T16:25Z"
+      ]
+    },
+    {
+      "distro": "opensuse-leap",
+      "os_ids": [
+        "opensuse-leap"
+      ],
+      "release": "15.6",
+      "format": "rpm",
+      "source_package": "php7",
+      "branch": "7.4",
+      "version_pattern": "^7\\.4\\.33-150400\\.[0-9]+(\\.[0-9]+)*$",
+      "vendor": "SUSE",
+      "cves": {
+        "CVE-2026-109618": {
+          "vulnerable_through": "7.4.33-150400.4.55.1"
+        },
+        "CVE-2026-109619": {
+          "vulnerable_through": "7.4.33-150400.4.55.1"
+        }
+      },
+      "evidence": [
+        "https://www.suse.com/security/cve/CVE-2026-109618.html",
+        "https://www.suse.com/security/cve/CVE-2026-109619.html",
+        "SUSE CVE pages fetched 2026-10-21T16:10Z, both CVEs: openSUSE Leap 15.6 php7 'Affected', no released update",
+        "docker run opensuse/leap:15.6 (ID=opensuse-leap, VERSION_ID=15.6): zypper se php7-cli newest 7.4.33-150400.4.55.1 ('Update repository with updates from SUSE Linux Enterprise 15'); installed: sourcerpm php7-7.4.33-150400.4.55.1.src.rpm, vendor 'SUSE LLC <https://www.suse.com/>', 2026-10-21T16:22Z"
+      ]
+    }
+  ]
+}

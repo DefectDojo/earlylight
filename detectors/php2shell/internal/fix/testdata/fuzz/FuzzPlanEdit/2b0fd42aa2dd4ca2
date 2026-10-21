@@ -1,0 +1,4 @@
+go test fuzz v1
+byte('\x01')
+[]byte("# sYntAX=000")
+[]byte("FROM php:8.3.0\r")

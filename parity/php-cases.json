@@ -1,0 +1,275 @@
+[
+ [
+  "php-8.3.35-fpm",
+  "registry",
+  "mirror.gcr.io/library/php:8.3.35-fpm",
+  "linux/arm64",
+  "official, vulnerable 8.3.35"
+ ],
+ [
+  "php-8.3.35-fpm-amd64",
+  "registry",
+  "mirror.gcr.io/library/php:8.3.35-fpm",
+  "linux/amd64",
+  "official, vulnerable 8.3.35, amd64"
+ ],
+ [
+  "php-8.3.35-apache",
+  "registry",
+  "mirror.gcr.io/library/php:8.3.35-apache",
+  "linux/arm64",
+  "official, Apache module libphp.so"
+ ],
+ [
+  "php-8.1-fpm",
+  "registry",
+  "mirror.gcr.io/library/php:8.1-fpm",
+  "linux/arm64",
+  "official, EOL branch (no upstream fix)"
+ ],
+ [
+  "php-7.4-fpm",
+  "registry",
+  "mirror.gcr.io/library/php:7.4-fpm",
+  "linux/arm64",
+  "official, EOL branch"
+ ],
+ [
+  "php-8.4-cli-alpine",
+  "registry",
+  "mirror.gcr.io/library/php:8.4-cli-alpine",
+  "linux/arm64",
+  "official Alpine variant, tag moves"
+ ],
+ [
+  "php-8.3.36-cli",
+  "registry",
+  "mirror.gcr.io/library/php:8.3.36-cli",
+  "linux/arm64",
+  "official, fixed 8.3.36"
+ ],
+ [
+  "php-8.5-zts",
+  "registry",
+  "mirror.gcr.io/library/php:8.5-zts",
+  "linux/arm64",
+  "official ZTS, tag moves"
+ ],
+ [
+  "wordpress-latest",
+  "registry",
+  "mirror.gcr.io/library/wordpress:latest",
+  "linux/arm64",
+  "PHP from the official base + many extensions"
+ ],
+ [
+  "drupal-latest",
+  "registry",
+  "mirror.gcr.io/library/drupal:latest",
+  "linux/arm64",
+  "PHP from the official base"
+ ],
+ [
+  "frankenphp-latest",
+  "registry",
+  "mirror.gcr.io/dunglas/frankenphp:latest",
+  "linux/arm64",
+  "FrankenPHP: Go binary + libphp.so"
+ ],
+ [
+  "bitnami-php-fpm-latest",
+  "registry",
+  "mirror.gcr.io/bitnami/php-fpm:latest",
+  "linux/arm64",
+  "source-built in /opt/bitnami"
+ ],
+ [
+  "bitnamilegacy-php-fpm-8.4.11",
+  "registry",
+  "mirror.gcr.io/bitnamilegacy/php-fpm:8.4.11-debian-12-r5",
+  "linux/arm64",
+  "source-built in /opt/bitnami, 8.4.11"
+ ],
+ [
+  "debian12-php82",
+  "build",
+  "debian12-php82",
+  "linux/arm64",
+  "bookworm-security as served today"
+ ],
+ [
+  "debian12-php82-amd64",
+  "build",
+  "debian12-php82",
+  "linux/amd64",
+  "bookworm-security as served today, amd64"
+ ],
+ [
+  "debian12-php82-vuln",
+  "build",
+  "debian12-php82-vuln",
+  "linux/arm64",
+  "8.2.34-1~deb12u1 from snapshot.debian.org"
+ ],
+ [
+  "debian13-php84",
+  "build",
+  "debian13-php84",
+  "linux/arm64",
+  "trixie-security as served today"
+ ],
+ [
+  "debian-sid-php84",
+  "build",
+  "debian-sid-php84",
+  "linux/arm64",
+  "sid as served today"
+ ],
+ [
+  "ubuntu2404-php83",
+  "build",
+  "ubuntu2404-php83",
+  "linux/arm64",
+  "noble as served today"
+ ],
+ [
+  "ubuntu2404-php83-vuln",
+  "build",
+  "ubuntu2404-php83-vuln",
+  "linux/amd64",
+  "noble pinned to snapshot 2026-10-20 (.12), amd64"
+ ],
+ [
+  "ubuntu2204-php81",
+  "build",
+  "ubuntu2204-php81",
+  "linux/arm64",
+  "jammy as served today"
+ ],
+ [
+  "ubuntu2004-php74",
+  "build",
+  "ubuntu2004-php74",
+  "linux/arm64",
+  "focal without ESM"
+ ],
+ [
+  "ubuntu2404-sury",
+  "build",
+  "ubuntu2404-sury",
+  "linux/arm64",
+  "ppa:ondrej/php php8.3 + php8.4"
+ ],
+ [
+  "alpine322-php",
+  "build",
+  "alpine322-php",
+  "linux/arm64",
+  "Alpine 3.22 php83 + php84"
+ ],
+ [
+  "alpine322-php-amd64",
+  "build",
+  "alpine322-php",
+  "linux/amd64",
+  "Alpine 3.22 php83 + php84, amd64"
+ ],
+ [
+  "alpine324-php",
+  "build",
+  "alpine324-php",
+  "linux/arm64",
+  "Alpine 3.24 php83 + php84 + php85"
+ ],
+ [
+  "alpine-edge-php",
+  "build",
+  "alpine-edge-php",
+  "linux/arm64",
+  "Alpine edge php84 + php85"
+ ],
+ [
+  "ubi9-php",
+  "build",
+  "ubi9-php",
+  "linux/arm64",
+  "UBI 9 AppStream php 8.0"
+ ],
+ [
+  "ubi9-php83",
+  "build",
+  "ubi9-php83",
+  "linux/arm64",
+  "UBI 9 AppStream module php:8.3"
+ ],
+ [
+  "al2023-php83",
+  "build",
+  "al2023-php83",
+  "linux/arm64",
+  "Amazon Linux 2023 php8.3"
+ ],
+ [
+  "leap156-php",
+  "build",
+  "leap156-php",
+  "linux/arm64",
+  "openSUSE Leap 15.6 php8"
+ ],
+ [
+  "leap156-php7",
+  "build",
+  "leap156-php7",
+  "linux/arm64",
+  "openSUSE Leap 15.6 php7"
+ ],
+ [
+  "fedora-php",
+  "build",
+  "fedora-php",
+  "linux/arm64",
+  "Fedora latest php"
+ ],
+ [
+  "rocky9-remi",
+  "build",
+  "rocky9-remi",
+  "linux/arm64",
+  "Rocky 9 + Remi php:remi-8.3"
+ ],
+ [
+  "hostile-strings",
+  "build",
+  "hostile-strings",
+  "linux/arm64",
+  "non-PHP binaries/files quoting PHP banners, .debs on disk"
+ ],
+ [
+  "hostile-forgery",
+  "build",
+  "hostile-forgery",
+  "linux/arm64",
+  "adversarial: non-PHP ELF with both banners NUL-terminated"
+ ],
+ [
+  "ubuntu-replaced",
+  "build",
+  "ubuntu-replaced",
+  "linux/arm64",
+  "packaged /usr/bin/php8.3 overwritten by the official binary"
+ ],
+ [
+  "upx-php",
+  "build",
+  "upx-php",
+  "linux/arm64",
+  "official Alpine CLI, php UPX-packed"
+ ],
+ [
+  "ubuntu-source-build",
+  "build",
+  "ubuntu-source-build",
+  "linux/arm64",
+  "PHP 8.3.35 built from source into /usr/local"
+ ]
+]

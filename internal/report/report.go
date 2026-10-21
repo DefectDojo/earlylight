@@ -2,6 +2,8 @@
 package report
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -64,11 +66,13 @@ var tags = map[engine.Verdict]string{
 // Text writes a human-readable report.
 func Text(w io.Writer, r *Report, o Options) {
 	fmt.Fprintf(w, "%s %s\n", r.Tool, r.Version)
-	ids := make([]string, 0, len(r.Detectors))
 	for _, d := range r.Detectors {
-		ids = append(ids, d.ID)
+		fmt.Fprintf(w, "detector %s: %s", d.ID, d.Title)
+		if d.Data != "" {
+			fmt.Fprintf(w, " (%s)", d.Data)
+		}
+		fmt.Fprintln(w)
 	}
-	fmt.Fprintf(w, "detectors: %s\n", strings.Join(ids, ", "))
 	for _, t := range r.Targets {
 		fmt.Fprintf(w, "\n== %s (%s)", safe(t.Name), t.Type)
 		if t.Digest != "" {
@@ -82,9 +86,15 @@ func Text(w io.Writer, r *Report, o Options) {
 			fmt.Fprintf(w, "   ERROR: %s\n", safe(t.Error))
 			continue
 		}
+		if t.Incomplete != "" {
+			fmt.Fprintf(w, "   INCOMPLETE: %s\n", safe(t.Incomplete))
+		}
 		unit := "files"
-		if t.Type == engine.Host {
+		switch t.Type {
+		case engine.Host:
 			unit = "items checked"
+		case engine.Repository:
+			unit = "image references"
 		}
 		vuln, unk := t.Count(engine.Vulnerable), t.Count(engine.Unknown)
 		switch {
@@ -108,7 +118,11 @@ func Text(w io.Writer, r *Report, o Options) {
 				hidden++
 				continue
 			}
-			fmt.Fprintf(w, "   [%s] %s\n               %s/%s: %s\n", tags[f.Verdict], safe(f.Path), f.Detector, f.Kind, safe(f.Message))
+			where := safe(f.Path)
+			if f.Line > 0 {
+				where += fmt.Sprintf(":%d", f.Line)
+			}
+			fmt.Fprintf(w, "   [%s] %s\n               %s/%s: %s\n", tags[f.Verdict], where, f.Detector, f.Kind, safe(f.Message))
 			if f.Reason != "" {
 				fmt.Fprintf(w, "               (%s)\n", safe(f.Reason))
 			}
@@ -125,6 +139,9 @@ func Text(w io.Writer, r *Report, o Options) {
 		}
 		if m := t.Count(engine.Managed); m > 0 {
 			fmt.Fprintf(w, "   %d managed finding(s) listed but not counted: the OS or browser decides that trust with its own blocklist\n", m)
+		}
+		for _, p := range t.Problems {
+			fmt.Fprintf(w, "   PROBLEM: %s\n", safe(p))
 		}
 		if hidden > 0 {
 			fmt.Fprintf(w, "   %d cleared finding(s) hidden: proven fixed, or copies provably not used (use --show-cleared)\n", hidden)
@@ -176,35 +193,44 @@ func JSON(w io.Writer, r *Report) error {
 }
 
 // SARIF writes vulnerable and unknown findings as SARIF 2.1.0, which DefectDojo
-// and most code scanning tools import. Rule IDs are "<detector>/<kind>".
+// and most code scanning tools import. Rule IDs are "<detector>/<kind>". Every
+// result has a fingerprint that stays the same across runs (DefectDojo
+// deduplicates on it) and does not depend on line numbers or wording.
 func SARIF(w io.Writer, r *Report) error {
 	type msg struct {
 		Text string `json:"text"`
 	}
 	type rule struct {
-		ID               string `json:"id"`
-		Name             string `json:"name"`
-		ShortDescription msg    `json:"shortDescription"`
-		HelpURI          string `json:"helpUri,omitempty"`
-		Properties       struct {
-			Tags []string `json:"tags,omitempty"`
-			CVEs []string `json:"cves,omitempty"`
-		} `json:"properties"`
+		ID               string         `json:"id"`
+		Name             string         `json:"name"`
+		ShortDescription msg            `json:"shortDescription"`
+		FullDescription  *msg           `json:"fullDescription,omitempty"`
+		HelpURI          string         `json:"helpUri,omitempty"`
+		Properties       map[string]any `json:"properties"`
 	}
-	type artifactLocation struct {
-		URI string `json:"uri"`
+	type region struct {
+		StartLine int `json:"startLine,omitempty"`
+	}
+	type physical struct {
+		ArtifactLocation struct {
+			URI string `json:"uri"`
+		} `json:"artifactLocation"`
+		Region *region `json:"region,omitempty"`
 	}
 	type location struct {
-		PhysicalLocation struct {
-			ArtifactLocation artifactLocation `json:"artifactLocation"`
-		} `json:"physicalLocation"`
+		PhysicalLocation physical `json:"physicalLocation"`
+	}
+	type fix struct {
+		Description msg `json:"description"`
 	}
 	type result struct {
-		RuleID     string            `json:"ruleId"`
-		Level      string            `json:"level"`
-		Message    msg               `json:"message"`
-		Locations  []location        `json:"locations"`
-		Properties map[string]string `json:"properties,omitempty"`
+		RuleID       string            `json:"ruleId"`
+		Level        string            `json:"level"`
+		Message      msg               `json:"message"`
+		Locations    []location        `json:"locations"`
+		Fingerprints map[string]string `json:"fingerprints"`
+		Fixes        []fix             `json:"fixes,omitempty"`
+		Properties   map[string]any    `json:"properties,omitempty"`
 	}
 	rules := []rule{}
 	levels := map[string]string{}
@@ -215,12 +241,30 @@ func SARIF(w io.Writer, r *Report) error {
 		}
 		for _, k := range m.Kinds {
 			id := m.ID + "/" + k.ID
-			ru := rule{ID: id, Name: k.Title, ShortDescription: msg{k.Title}, HelpURI: help}
-			ru.Properties.Tags = m.Tags
-			ru.Properties.CVEs = m.CVEs
+			props := map[string]any{}
+			if len(m.Tags) > 0 {
+				props["tags"] = append(append([]string{}, m.Tags...), m.CVEs...)
+			}
+			if k.SecuritySeverity != "" {
+				props["security-severity"] = k.SecuritySeverity
+			}
+			if len(k.CWEs) > 0 {
+				props["cwe"] = k.CWEs
+			}
+			ru := rule{ID: id, Name: k.Title, ShortDescription: msg{k.Title}, HelpURI: help, Properties: props}
+			if k.Description != "" {
+				ru.FullDescription = &msg{k.Description}
+			}
 			rules = append(rules, ru)
 			levels[id] = k.Level
 		}
+	}
+	seen := map[string]int{}
+	fingerprint := func(parts ...string) map[string]string {
+		k := strings.Join(parts, "\x00")
+		seen[k]++
+		h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", k, seen[k])))
+		return map[string]string{"earlylight/v1": hex.EncodeToString(h[:])}
 	}
 	results := []result{}
 	var notes []map[string]any
@@ -230,8 +274,15 @@ func SARIF(w io.Writer, r *Report) error {
 			ok = false
 			notes = append(notes, map[string]any{"level": "error", "message": msg{t.Name + ": " + t.Error}})
 		}
+		if t.Incomplete != "" {
+			ok = false
+			notes = append(notes, map[string]any{"level": "error", "message": msg{t.Name + ": incomplete: " + t.Incomplete}})
+		}
 		if g := t.Gaps(); g > 0 {
 			notes = append(notes, map[string]any{"level": "warning", "message": msg{fmt.Sprintf("%s: %d file(s) could not be scanned and are not covered", t.Name, g)}})
+		}
+		for _, p := range t.Problems {
+			notes = append(notes, map[string]any{"level": "warning", "message": msg{t.Name + ": " + p}})
 		}
 		for _, f := range t.Findings {
 			if f.Verdict != engine.Vulnerable && f.Verdict != engine.Unknown {
@@ -239,16 +290,22 @@ func SARIF(w io.Writer, r *Report) error {
 			}
 			id := f.Detector + "/" + f.Kind
 			level := levels[id]
+			switch f.Severity {
+			case "critical", "high":
+				level = "error"
+			case "medium", "low":
+				level = "warning"
+			}
 			if level == "" {
 				level = "error"
 			}
 			text := f.Message
+			if f.Reason != "" {
+				text += ". " + f.Reason
+			}
 			if f.Verdict == engine.Unknown {
 				level = "note"
-				text = "Could not be settled: " + f.Message
-				if f.Reason != "" {
-					text += " (" + f.Reason + ")"
-				}
+				text = "Could not be settled: " + text
 			}
 			var loc location
 			uri := f.Path
@@ -265,14 +322,29 @@ func SARIF(w io.Writer, r *Report) error {
 				uri = "https://" + t.Name + "/"
 			}
 			loc.PhysicalLocation.ArtifactLocation.URI = uri
-			props := map[string]string{"target": t.Name, "verdict": string(f.Verdict)}
+			if f.Line > 0 {
+				loc.PhysicalLocation.Region = &region{StartLine: f.Line}
+			}
+			props := map[string]any{"target": t.Name, "verdict": string(f.Verdict)}
+			keys := make([]string, 0, len(f.Facts))
 			for k, v := range f.Facts {
 				props[k] = v
+				keys = append(keys, k+"="+v)
 			}
-			for _, c := range f.CVEs {
-				props[c.ID] = string(c.Verdict)
+			sort.Strings(keys)
+			if len(f.CVEs) > 0 {
+				cv := map[string]string{}
+				for _, c := range f.CVEs {
+					cv[c.ID] = string(c.Verdict)
+				}
+				props["cves"] = cv
 			}
-			results = append(results, result{RuleID: id, Level: level, Message: msg{text}, Locations: []location{loc}, Properties: props})
+			res := result{RuleID: id, Level: level, Message: msg{text}, Locations: []location{loc}, Properties: props,
+				Fingerprints: fingerprint(append([]string{id, string(t.Type), t.Name, f.Path}, keys...)...)}
+			if f.Fix != "" {
+				res.Fixes = []fix{{msg{f.Fix}}}
+			}
+			results = append(results, res)
 		}
 	}
 	inv := map[string]any{"executionSuccessful": ok}

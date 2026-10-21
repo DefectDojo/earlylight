@@ -41,6 +41,7 @@ const (
 	Filesystem TargetKind = "filesystem"
 	Image      TargetKind = "image"
 	Host       TargetKind = "host"
+	Repository TargetKind = "repository"
 )
 
 // Kind is one type of finding a detector reports.
@@ -49,6 +50,11 @@ type Kind struct {
 	Title string
 	// Level is the SARIF level for a vulnerable finding: "error" or "warning".
 	Level string
+	// Description explains the kind in a sentence or two (SARIF fullDescription).
+	Description string
+	// SecuritySeverity is the CVSS-style score code scanners sort by ("9.2").
+	SecuritySeverity string
+	CWEs             []string
 }
 
 // Manifest describes a detector.
@@ -91,6 +97,7 @@ type Finding struct {
 	Detector string  `json:"detector"`
 	Kind     string  `json:"kind"`
 	Path     string  `json:"path"`
+	Line     int     `json:"line,omitempty"` // for findings in source files
 	Verdict  Verdict `json:"verdict"`
 	Reason   string  `json:"reason,omitempty"`
 	// Message is the exact fact, in words.
@@ -101,6 +108,9 @@ type Finding struct {
 	Facts map[string]string `json:"facts,omitempty"`
 	CVEs  []CVEResult       `json:"cves,omitempty"`
 	Fix   string            `json:"fix,omitempty"`
+	// Severity, when set, overrides the kind's SARIF level for this finding:
+	// critical and high are errors, medium and low warnings.
+	Severity string `json:"severity,omitempty"`
 	// Details is the detector's own record of the finding, kept whole.
 	Details any `json:"details,omitempty"`
 }
@@ -133,6 +143,18 @@ type TargetContext interface {
 	// Aliases returns every path that names the same file as p (symlinks, hard
 	// links), p included.
 	Aliases(p string) []string
+	// Links returns every symlink (path -> target as written) and hard link
+	// (path -> path it names) seen in the walk, for detectors that resolve
+	// them their own way.
+	Links() (symlinks, hardlinks map[string]string)
+	// SystemRoot is the OS path of the system root when a directory below it
+	// was scanned, so a detector can read the root's package databases. It is
+	// empty for images and for walks that start at the root.
+	SystemRoot() string
+	// Problem records something read only partly (a damaged package database).
+	Problem(msg string)
+	// Annotate records a fact about the whole target, such as its OS release.
+	Annotate(key string, v any)
 }
 
 // Scan is one detector's work on one target. Visit sees every file the engine

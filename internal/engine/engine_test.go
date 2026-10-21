@@ -155,7 +155,7 @@ func TestReadFilterIsAUnion(t *testing.T) {
 }
 
 func TestAliases(t *testing.T) {
-	c := newTargetCtx(Image)
+	c := newTargetCtx(Image, &Target{})
 	c.symlinks["/usr/bin/php"] = "php8.3"
 	c.symlinks["/lib"] = "usr/lib"
 	c.hardlinks["/usr/sbin/php-fpm"] = "/usr/sbin/php-fpm8.3"

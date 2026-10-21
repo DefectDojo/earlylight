@@ -22,5 +22,38 @@ jobs:
           go test ./internal/source -run '^$' -fuzz '^FuzzTar$' -fuzztime 30s
           go test ./internal/archive -run '^$' -fuzz '^FuzzWalk$' -fuzztime 30s
           go test ./detectors/emudhra/internal/detect -run '^$' -fuzz '^FuzzScan$' -fuzztime 30s
+          go test ./detectors/php2shell/internal/detect -run '^$' -fuzz '^FuzzInspect$' -fuzztime 20s
+          for f in FuzzParseDpkgStatus FuzzParseAPKInstalled FuzzParseHeaderBlob FuzzReadBDB FuzzReadNDB FuzzResolver; do
+            go test ./detectors/php2shell/internal/pkgdb -run '^$' -fuzz "^$f\$" -fuzztime 15s
+          done
+          for f in FuzzDockerfile FuzzCompose FuzzKubernetes FuzzHelmValues FuzzCI FuzzDotEnv; do
+            go test ./detectors/php2shell/internal/refs -run '^$' -fuzz "^$f\$" -fuzztime 10s
+          done
+          for f in FuzzCompareDpkg FuzzCompareAPK FuzzCompareRPM; do
+            go test ./detectors/php2shell/internal/version -run '^$' -fuzz "^$f\$" -fuzztime 10s
+          done
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  action:
+    # The published action, run from this checkout against the latest release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: el
+        uses: ./
+        with:
+          mode: fs
+          target: parity
+          fail-on: never
+      - name: Check outputs
+        run: |
+          test -s "${{ steps.el.outputs.sarif }}"
+          jq -e '.runs[0].tool.driver.name == "earlylight"' "${{ steps.el.outputs.sarif }}"
+          echo "exit code ${{ steps.el.outputs.exit-code }}"
+      - name: install.sh with signature check
+        run: |
+          curl -fsSL -o cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 && chmod +x cosign && sudo mv cosign /usr/local/bin/
+          EARLYLIGHT_BIN_DIR="$RUNNER_TEMP/bin" sh install.sh 2>&1 | tee install.log
+          grep -q 'verified checksums.txt signature' install.log
+          "$RUNNER_TEMP/bin/earlylight" version

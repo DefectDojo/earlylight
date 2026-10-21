@@ -45,6 +45,10 @@ type Options struct {
 	MaxFileSize int64
 	// Exclude lists absolute path prefixes inside the root to skip entirely.
 	Exclude []string
+	// Uncounted (Tar) lists path prefixes whose files are still read but not
+	// counted as scanned: an image's /proc, /sys and /dev, which some
+	// detectors skip and others read.
+	Uncounted []string
 	// Read decides from a file's path, first bytes and executable flag whether
 	// to read it in full. Nil reads every file.
 	Read func(abs string, head []byte, executable bool) bool
@@ -237,7 +241,9 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 		default:
 			continue
 		}
-		n++
+		if !excluded(abs, opts.Uncounted) {
+			n++
+		}
 		head := make([]byte, headSize)
 		k, err := io.ReadFull(tr, head)
 		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
