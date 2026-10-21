@@ -1,4 +1,9 @@
-# Early Light
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/svg/lockup/earlylight-horizontal-dark.svg">
+    <img alt="Early Light" src="brand/svg/lockup/earlylight-horizontal-light.svg" width="360">
+  </picture>
+</h1>
 
 One engine for DefectDojo's emerging-vulnerability scanners. Each new vulnerability ships as a detector in this repo instead of as a new repo. The binary is `earlylight`.
 
@@ -94,6 +99,7 @@ The engine enforces one rule for every detector: a finding can only be `fixed`, 
 | `detectors/emudhra` | Adapter, plus `internal/` copied verbatim from emudhra-scan |
 | `detectors/php2shell` | Adapter, `verbatim.go` from php2shell-scan's command line, and `internal/` copied verbatim from php2shell-scan |
 | `parity/` | Proves each port gives the same results as its standalone scanner |
+| `brand/` | The Early Light logo, favicons, avatar and social preview |
 
 `SNAPSHOT` records which emudhra-scan and php2shell-scan state each copy came from. The detection packages are verbatim copies with import paths rewritten, so re-syncing is a diff.
 
