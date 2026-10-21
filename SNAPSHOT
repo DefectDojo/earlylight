@@ -1,0 +1,5 @@
+emudhra-scan HEAD f28a25d, working-tree diff sha256 dfb3697578f4, untracked internal/detect/gofunc.go sha256 8ec0d4a1a142
+php2shell-scan: no commits yet; source/ and image/ copied 2026-10-21
+Engine-only changes since the copy (port these back to emudhra-scan and php2shell-scan):
+- internal/archive: PyInstaller zlib entries cap the untrusted ulen hint at clen*1032+1024, and read() copies a short single chunk so a lying hint cannot keep a large allocation alive
+- internal/source: readOne opens with O_NOFOLLOW|O_NONBLOCK and checks the opened file is the same regular file the walk saw
