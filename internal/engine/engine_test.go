@@ -192,8 +192,33 @@ func TestGaps(t *testing.T) {
 	tg.Skipped = append(tg.Skipped,
 		skip("/proc", "excluded: pseudo-filesystem", true),
 		skip("/x/testdata/bad.pem", "unparseable", false),
-		skip("/opt/app.jks", "unknown keystore password", false))
-	if g := tg.Gaps(); g != 1 {
-		t.Fatalf("gaps %d, want 1", g)
+		skip("/opt/app.jks", "unknown keystore password", false),
+		skip("/opt/app.jar!/testdata/cacerts", "unknown keystore password", false))
+	if g := tg.Gaps(); g != 2 {
+		t.Fatalf("gaps %d, want 2: an archive member named testdata/ is still a gap", g)
 	}
+}
+
+// A detector that panics on one file loses that file, not the scan.
+func TestDetectorPanicIsContained(t *testing.T) {
+	root := tree(t, map[string][]byte{"bad": []byte("x"), "good": []byte("y")})
+	seen := &[]string{}
+	p := &panicky{fake: fake{id: "t-panic", seen: seen}}
+	tg := ScanFS([]Detector{p}, root, Options{AsRoot: true})
+	if tg.Error != "" || len(*seen) != 1 || (*seen)[0] != "/good" {
+		t.Fatalf("error %q seen %v", tg.Error, *seen)
+	}
+	if len(tg.Skipped) != 1 || tg.Skipped[0].Path != "/bad" || tg.Gaps() != 1 {
+		t.Fatalf("the panicking file must be a coverage gap: %+v", tg.Skipped)
+	}
+}
+
+type panicky struct{ fake }
+
+func (p *panicky) NewScan(TargetKind) Scan { return p }
+func (p *panicky) Visit(f File) []Skip {
+	if f.Path == "/bad" {
+		panic("hostile input")
+	}
+	return p.fake.Visit(f)
 }

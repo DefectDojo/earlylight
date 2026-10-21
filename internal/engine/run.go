@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -46,7 +47,10 @@ func (t *Target) Count(v Verdict) int {
 func (t *Target) Gaps() int {
 	n := 0
 	for _, s := range t.Skipped {
-		if s.Excluded || strings.HasPrefix(s.Reason, "excluded:") || strings.Contains(s.Path, "/testdata/") {
+		// The test-fixture exemption applies to real paths only: names inside an
+		// archive are chosen by whoever built it, so they never earn it.
+		fixture := strings.Contains(s.Path, "/testdata/") && !strings.Contains(s.Path, "!/")
+		if s.Excluded || strings.HasPrefix(s.Reason, "excluded:") || fixture {
 			continue
 		}
 		n++
@@ -193,16 +197,41 @@ func (w *walker) send(f File, skip func(int) bool) {
 		if skip != nil && skip(i) {
 			continue
 		}
-		for _, sk := range s.Visit(f) {
+		for _, sk := range w.visitSafely(i, s, f) {
 			w.t.Skipped = append(w.t.Skipped, source.Skip{Path: sk.Path, Reason: sk.Reason})
 		}
 	}
 }
 
+// visitSafely runs one detector on one file. A detector that panics on a
+// hostile file loses that file, reported as not scanned, and the scan goes on.
+func (w *walker) visitSafely(i int, s Scan, f File) (skips []Skip) {
+	defer func() {
+		if r := recover(); r != nil {
+			skips = []Skip{{Path: f.Path, Reason: fmt.Sprintf("detector %s failed on this file (%v); not checked", w.dets[i].Manifest().ID, r)}}
+		}
+	}()
+	return s.Visit(f)
+}
+
 func (w *walker) finish() {
 	for i, s := range w.scans {
-		w.t.Findings = append(w.t.Findings, check(w.dets[i].Manifest().ID, s.Finish(w.ctx))...)
+		fs, err := finishSafely(s, w.ctx)
+		if err != nil {
+			w.t.Error = fmt.Sprintf("detector %s failed: %v", w.dets[i].Manifest().ID, err)
+			return
+		}
+		w.t.Findings = append(w.t.Findings, check(w.dets[i].Manifest().ID, fs)...)
 	}
+}
+
+func finishSafely(s Scan, ctx TargetContext) (fs []Finding, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return s.Finish(ctx), nil
 }
 
 // ScanFS scans a directory or file. With AsRoot (always for "/"), the directory
