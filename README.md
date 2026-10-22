@@ -130,6 +130,24 @@ python3 parity/parity.py path/to/emudhra-scan path/to/earlylight
 python3 parity/php.py path/to/php2shell-scan ./php2shell-scan ./earlylight path/to/emudhra-scan cases.json
 ```
 
+## Privacy
+
+Early Light runs entirely on your machine or CI runner. It has no telemetry, no analytics and no account, and it sends nothing to DefectDojo.
+
+It only makes network connections when a scan needs them:
+
+| What | Connects to |
+| --- | --- |
+| Installing (`install.sh` and the GitHub Action) | GitHub, to download the release and its `checksums.txt`. When `cosign` is installed, it also fetches Sigstore's public trust root to check the signature |
+| `scan image` | The registry that hosts the image you name |
+| `scan repo` and `fix` | The registries that host the images your source tree references. `--offline` turns this off, and `--public-registries-only` refuses private and internal addresses |
+| `scan host` | The hosts you name, for a TLS handshake |
+| `scan fs` | Nothing |
+
+Results stay where you put them: the SARIF file, the job summary and, when you set `upload-sarif: true`, GitHub code scanning in your own repository.
+
+DefectDojo's privacy policy is at [defectdojo.com/privacy-policy](https://defectdojo.com/privacy-policy).
+
 ## License
 
 BSD 3-Clause. The licenses of the Go standard library and the modules compiled into the binaries are in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt), which ships with every release and in the container image at `/licenses/`. After changing `go.mod`, run `scripts/third-party-notices.sh` and commit the result. CI fails when it is out of date.
