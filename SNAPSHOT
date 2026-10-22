@@ -6,3 +6,4 @@ Engine-only changes since the copy (port these back to emudhra-scan and php2shel
 - internal/engine: a detector panic on one file is contained and reported as not scanned; the testdata/ exemption from the coverage-gap count applies only to real files on a filesystem scan, never image paths, archive members or detector crashes (emudhra-scan exempts testdata/ everywhere)
 - detectors/php2shell/internal/report/report_test.go: gofmt whitespace only
 - detectors/php2shell/internal/refs/shell.go and yaml.go: Dockerfile and Compose variable expansion capped at 8 KiB (a chain of doubling ARGs exhausted memory and time); regression tests expansion_bomb_test.go and dotenv_bomb_test.go
+- detectors/emudhra/internal/detect/detect_test.go: TestManyBeginsNoEndIsFast checks linear growth instead of a 2 s limit (flaked under -race on slow CI; same fix as defectdojo-scan-and-fix #279)

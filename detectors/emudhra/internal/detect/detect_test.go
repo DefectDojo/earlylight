@@ -353,12 +353,25 @@ func FuzzGoHasBlocklist(f *testing.F) {
 // Many BEGIN markers and no END must stay linear (it was 64 KB of searching each).
 func TestManyBeginsNoEndIsFast(t *testing.T) {
 	d := mustDetector(t)
-	data := bytes.Repeat([]byte("-----BEGIN CERTIFICATE-----\n"), 200000) // ~5.6 MB
-	start := time.Now()
-	d.Scan("/evil", data)
-	if el := time.Since(start); el > 2*time.Second {
-		t.Fatalf("took %v", el)
+	// Scan time must grow linearly with unterminated BEGIN lines. A fixed time
+	// limit failed on slow CI runners under the race detector, so compare one
+	// size with four times that size instead: linear costs about 4x, the
+	// quadratic rescan this guards against about 16x, on any machine.
+	scan := func(n int) time.Duration {
+		data := bytes.Repeat([]byte("-----BEGIN CERTIFICATE-----\n"), n)
+		start := time.Now()
+		d.Scan("/evil", data)
+		return time.Since(start)
 	}
+	scan(1000)                                // warm up
+	small, large := scan(50000), scan(200000) // ~1.4 MB and ~5.6 MB
+	if floor := 20 * time.Millisecond; small < floor {
+		small = floor
+	}
+	if ratio := float64(large) / float64(small); ratio > 9 {
+		t.Fatalf("4x the input took %.1fx as long (%v vs %v): not linear", ratio, large, small)
+	}
+	data := bytes.Repeat([]byte("-----BEGIN CERTIFICATE-----\n"), 200000)
 	// A real block after the noise is still found.
 	g3 := pemOf(keyByName(t, "emSign ECC Root CA - G3").Certs[0])
 	if k := kinds(d.Scan("/evil2", append(data, g3...))); k[TrustsPathRoot] != 1 {
