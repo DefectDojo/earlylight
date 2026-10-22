@@ -1,4 +1,4 @@
-name: Early Light
+name: Early Light by DefectDojo
 description: Scan for emerging vulnerabilities with DefectDojo's Early Light engine and report SARIF.
 author: DefectDojo
 branding:
