@@ -12,11 +12,11 @@ import (
 
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/assess"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/fix"
-	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/refs"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/repocheck"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/report"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/source"
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 // Options configure a repository scan.

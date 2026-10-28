@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/refs"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry"
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 // TestNetworkPlan plans fixes against Docker Hub. Run with

@@ -10,8 +10,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/refs"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry"
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 // Resolver is what Check needs; *registry.Resolver implements it.

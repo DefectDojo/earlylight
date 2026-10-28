@@ -48,9 +48,9 @@ import (
 	"sync"
 
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/knowledge"
-	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/refs"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/version"
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 // Resolver is what Plan needs from a registry; *registry.Resolver implements

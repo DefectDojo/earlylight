@@ -94,7 +94,7 @@ func Text(w io.Writer, r *Report, o Options) {
 		case engine.Host:
 			unit = "items checked"
 		case engine.Repository:
-			unit = "image references"
+			unit = "image references and files"
 		}
 		vuln, unk := t.Count(engine.Vulnerable), t.Count(engine.Unknown)
 		switch {
