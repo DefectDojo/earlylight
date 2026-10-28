@@ -12,9 +12,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
-	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/refs"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry/registrytest"
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 type fixture struct {

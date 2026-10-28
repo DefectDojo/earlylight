@@ -8,9 +8,9 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/authn"
 
-	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/refs"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry/registrytest"
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 func TestCheck(t *testing.T) {

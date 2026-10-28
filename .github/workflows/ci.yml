@@ -27,11 +27,13 @@ jobs:
           go test ./internal/archive -run '^$' -fuzz '^FuzzWalk$' -fuzztime 30s
           go test ./detectors/emudhra/internal/detect -run '^$' -fuzz '^FuzzScan$' -fuzztime 30s
           go test ./detectors/php2shell/internal/detect -run '^$' -fuzz '^FuzzInspect$' -fuzztime 20s
+          go test ./detectors/brotli/internal/fingerprint -run '^$' -fuzz '^FuzzFingerprint$' -fuzztime 30s
+          go test ./detectors/brotli/internal/pins -run '^$' -fuzz '^FuzzPins$' -fuzztime 30s
           for f in FuzzParseDpkgStatus FuzzParseAPKInstalled FuzzParseHeaderBlob FuzzReadBDB FuzzReadNDB FuzzResolver; do
             go test ./detectors/php2shell/internal/pkgdb -run '^$' -fuzz "^$f\$" -fuzztime 15s
           done
           for f in FuzzDockerfile FuzzCompose FuzzKubernetes FuzzHelmValues FuzzCI FuzzDotEnv; do
-            go test ./detectors/php2shell/internal/refs -run '^$' -fuzz "^$f\$" -fuzztime 10s
+            go test ./internal/refs -run '^$' -fuzz "^$f\$" -fuzztime 10s
           done
           for f in FuzzCompareDpkg FuzzCompareAPK FuzzCompareRPM; do
             go test ./detectors/php2shell/internal/version -run '^$' -fuzz "^$f\$" -fuzztime 10s

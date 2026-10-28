@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/refs"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry"
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 // fakeResolver answers for docker.io/library/php exact tags only: the tag's

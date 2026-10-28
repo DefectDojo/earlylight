@@ -13,8 +13,9 @@ One engine for DefectDojo's emerging-vulnerability scanners. Each new vulnerabil
 | --- | --- | --- |
 | `emudhra` | Trust in the eight eMudhra intermediate CA keys compromised in October 2026 ([Mozilla bug 2083449](https://bugzilla.mozilla.org/show_bug.cgi?id=2083449)): trust stores, bundles, keystores and binaries that still trust them, Go binaries without Go's blocklist (CVE-2026-111943), and servers presenting certificates the compromised keys signed | `fs`, `image`, `host` |
 | `php2shell` | PHP runtimes vulnerable to CVE-2026-109618 and CVE-2026-109619 ("PHP2Shell"), fixed in PHP 8.2.35, 8.3.36, 8.4.27 and 8.5.12 ([GHSA-w8hw-w9fx-j79w](https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w), [GHSA-6wmf-4rv5-p3rp](https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp)). A packaged PHP is judged by its vendor's backport data, never by the version it reports. Also checks the images a source tree builds on and deploys, and can rewrite them to fixed images | `fs`, `image`, `repo`, `fix` |
+| `brotli` | Brotli decoders vulnerable to CVE-2026-111497 ("Node2Shell", "Broccoli2Shell"), Brotli 1.0.3 through 1.2.0, fixed in 1.0.10, 1.1.1 and 1.2.1 ([GHSA-9v8h-qqgm-4m35](https://github.com/advisories/GHSA-9v8h-qqgm-4m35)): system `libbrotlidec` and every copy bundled into other software (Node.js, .NET, Bun, Electron, Envoy and Istio, Python wheels such as Pillow, pyarrow, duckdb, pycurl and PyMuPDF, brotli4j, and more), on Linux, Windows and macOS. A decoder is judged first by the error code the fix added, so vendor backports are recognised without distribution data; a build that strips it by its own version stamp or by its code, which returns that error code only once fixed. In a source tree it finds the Node.js, .NET and Bun releases and the bundling packages a project pins, and `fix` moves each to the fixed release | `fs`, `image`, `repo`, `fix` |
 
-Each detector also builds as a standalone binary under the name people search for: `emudhra-scan` and `php2shell-scan`. They keep their original commands, flags and exit status rules.
+The detectors ported from standalone scanners also build as standalone binaries under the names people search for: `emudhra-scan` and `php2shell-scan`. They keep their original commands, flags and exit status rules. `brotli` was written here and runs through `earlylight` (`--detector brotli`).
 
 ## Install
 
@@ -39,6 +40,9 @@ Release binaries for Linux, macOS and Windows are on the [releases page](https:/
 earlylight detectors                                   # list detectors
 earlylight scan image php:8.3-fpm                      # every detector that scans images
 earlylight scan image --detector php2shell php:8.3-fpm
+earlylight scan image --detector brotli node:24.22.0-slim
+earlylight scan repo --detector brotli .                # Node.js, .NET, Bun and bundling packages a source tree pins
+earlylight fix --detector brotli --dry-run .            # the one-line moves to fixed releases
 earlylight scan image --platform all myorg/app:prod    # every platform the image has
 sudo earlylight scan fs /                              # this machine
 earlylight scan fs --as-root /host                     # a host mounted elsewhere
@@ -98,6 +102,8 @@ The engine enforces one rule for every detector: a finding can only be `fixed`, 
 | `internal/cli` | Command line shared by every binary |
 | `detectors/emudhra` | Adapter, plus `internal/` copied verbatim from emudhra-scan |
 | `detectors/php2shell` | Adapter, `verbatim.go` from php2shell-scan's command line, and `internal/` copied verbatim from php2shell-scan |
+| `detectors/brotli` | Adapter, plus `internal/fingerprint` (what a binary proves: the decoder's error table, its tables and code, exports and version stamps), `internal/assess` (the verdict and fix for one file) and `internal/pins` (pins and bundling packages in a source tree, and their verified edits), which know nothing about the engine |
+| `internal/refs` | Image references in Dockerfiles, Compose, Kubernetes, Helm values and CI files (moved from php2shell, unchanged, so every detector can read them) |
 | `parity/` | Proves each port gives the same results as its standalone scanner |
 | `brand/` | The Early Light logo, favicons, avatar and social preview |
 
@@ -108,6 +114,8 @@ The engine enforces one rule for every detector: a finding can only be `fixed`, 
 Every port must give exactly the verdicts of the scanner it came from before it ships:
 
 - `parity/parity.py` runs emudhra-scan and Early Light over emudhra-scan's public validation images, directories and live TLS servers ([RESULTS.md](parity/RESULTS.md)).
+- `parity/brotli.py` has no standalone scanner to compare with, so it checks every decoder in 38 images against the vendor's own fix status: Node.js, .NET, Bun, Envoy and curl images before and after their October 2026 releases, distribution packages pinned to their exact unfixed and backported builds, and the Python wheels ([BROTLI-RESULTS.md](parity/BROTLI-RESULTS.md)).
+- `parity/brotli_files.py` checks 73 release binaries and packages, unpacked and never run: Node.js, .NET and Bun for Windows and macOS, seven Electron releases, Envoy and Istio, and the packages that bundle the decoder ([BROTLI-FILES-RESULTS.md](parity/BROTLI-FILES-RESULTS.md)). A WebAssembly build of the decoder is the one case it cannot settle: it is reported as unknown.
 - `parity/php.py` runs php2shell-scan, this repo's php2shell-scan and Early Light over php2shell-scan's validation matrix: official images, distribution packages, source builds and hostile images. Each finding's complete record is compared field by field. It also covers filesystem scans at and below a system root, repository scans, `fix --dry-run`, and every detector at once ([PHP-RESULTS.md](parity/PHP-RESULTS.md)).
 
 ## Adding a detector
