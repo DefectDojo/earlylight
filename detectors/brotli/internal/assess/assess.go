@@ -53,7 +53,11 @@ const (
 	Envoy        Product = "envoy"
 	Electron     Product = "electron"
 	GoBrotli     Product = "go-andybalholm-brotli"
-	Other        Product = "other"
+	// PyWheel is a libbrotlidec that a Python wheel vendored next to its
+	// own code (auditwheel's and delvewheel's <package>.libs, delocate's
+	// <package>/.dylibs): updating the system package does not touch it.
+	PyWheel Product = "python-wheel"
+	Other   Product = "other"
 )
 
 // Finding is the verdict on one file.
@@ -129,6 +133,36 @@ func identify(p string, data []byte) (Product, fingerprint.Version, bool) {
 	return Other, fingerprint.Version{}, false
 }
 
+// wheelPackage names the Python package that vendored the library at p, from
+// the directory a wheel repair tool put it in: <package>.libs (auditwheel on
+// Linux, delvewheel on Windows) names the distribution, <module>/.dylibs
+// (delocate on macOS) the import package, so imported reports which. Only
+// paths inside site-packages, dist-packages or a wheel count, so a libtool
+// .libs build directory stays the system library.
+func wheelPackage(p string) (name string, imported, ok bool) {
+	p = strings.ReplaceAll(p, `\`, "/")
+	lower := strings.ToLower(p)
+	if !strings.Contains(lower, "/site-packages/") && !strings.Contains(lower, "/dist-packages/") && !strings.Contains(lower, ".whl!/") {
+		return "", false, false
+	}
+	if i := strings.LastIndex(p, "!/"); i >= 0 {
+		p = "/" + p[i+2:]
+	}
+	dir := path.Dir(p)
+	parent := path.Base(dir)
+	switch {
+	case parent == ".dylibs":
+		pkg := path.Base(path.Dir(dir))
+		if pkg == "." || pkg == "/" || pkg == "site-packages" || pkg == "dist-packages" {
+			return "", false, false
+		}
+		return pkg, true, true
+	case strings.HasSuffix(parent, ".libs") && parent != ".libs":
+		return strings.TrimSuffix(parent, ".libs"), false, true
+	}
+	return "", false, false
+}
+
 // update returns the fix for a product line: "Update Node.js 24.22.0 to
 // 24.22.1", or, for a line with no fixed release, the lines to move to.
 func update(name string, v fingerprint.Version, known bool, fixed map[int]fingerprint.Version, all string) string {
@@ -184,13 +218,23 @@ func label(p Product, v fingerprint.Version, known bool) string {
 func File(p string, data []byte) (Finding, bool) {
 	prod, v, known := identify(p, data)
 	f := Finding{Kind: Bundled, Path: p, Product: prod, Fix: fixFor(prod, v, known)}
+	what := label(prod, v, known)
 	if prod == LibBrotliDec {
-		f.Kind = Library
+		if pkg, imported, ok := wheelPackage(p); ok {
+			prod, f.Product = PyWheel, PyWheel
+			who := "the " + pkg + " Python package"
+			if imported {
+				who = "the Python package that provides " + pkg
+			}
+			f.Fix = "Upgrade " + who + " to a release whose wheel bundles Brotli 1.0.10, 1.1.1, 1.2.1 or later. Updating the system Brotli package does not change this copy."
+			what = " (vendored in " + who + ")"
+		} else {
+			f.Kind = Library
+		}
 	}
 	if known {
 		f.Version = v.String()
 	}
-	what := label(prod, v, known)
 	judge := func(s Status, reason string) {
 		f.Status, f.Reason = s, reason
 		if s == Fixed {
