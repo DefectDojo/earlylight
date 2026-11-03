@@ -38,6 +38,7 @@ Release binaries for Linux, macOS and Windows are on the [releases page](https:/
 
 ```bash
 earlylight detectors                                   # list detectors
+earlylight detectors --format json                     # the detector catalog, as each release's detectors.json
 earlylight scan image php:8.3-fpm                      # every detector that scans images
 earlylight scan image --detector php2shell php:8.3-fpm
 earlylight scan image --detector brotli node:24.22.0-slim
@@ -55,6 +56,8 @@ earlylight fix --dry-run .                             # show the image updates 
 `emudhra-scan fs|image|host` and `php2shell-scan fs|image|repo|fix` work as they always did. `php2shell-scan fs --as-root DIR PATH` takes the system root as its value, like the original.
 
 Exit status: `0` nothing vulnerable or unknown, `1` something vulnerable, `2` error (including "nothing was scanned"), `3` nothing vulnerable but something unknown, or with `--fail-on-skip`, something not scanned. Output is `--format text`, `json` or `sarif`. SARIF rule IDs are `<detector>/<kind>`.
+
+Each release also attaches `detectors.json`, listed in the signed `checksums.txt`. It is the output of `earlylight detectors --format json` for that release: for every detector its ID, title, CVEs, advisories, disclosure date, the commands that run it (`fs`, `image`, `host`, `repo`, `fix`) and its finding kinds. Tools such as DefectDojo read it to tell which detectors a release contains without running a binary. `schema` changes only when a field is removed or changes meaning.
 
 ## GitHub Action
 

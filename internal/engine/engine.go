@@ -48,7 +48,8 @@ const (
 type Kind struct {
 	ID    string // stable, used in SARIF rule IDs as "<detector>/<kind>"
 	Title string
-	// Level is the SARIF level for a vulnerable finding: "error" or "warning".
+	// Level is the SARIF level for a vulnerable finding: "error", "warning" or
+	// "note" (something to look at that is not itself a vulnerability).
 	Level string
 	// Description explains the kind in a sentence or two (SARIF fullDescription).
 	Description string
