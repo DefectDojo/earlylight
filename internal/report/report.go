@@ -19,11 +19,23 @@ import (
 
 // DetectorInfo is what the report says about each detector that ran.
 type DetectorInfo struct {
-	ID         string   `json:"id"`
-	Title      string   `json:"title"`
-	CVEs       []string `json:"cves,omitempty"`
-	Advisories []string `json:"advisories,omitempty"`
-	Data       string   `json:"data,omitempty"`
+	ID         string     `json:"id"`
+	Title      string     `json:"title"`
+	CVEs       []string   `json:"cves,omitempty"`
+	Advisories []string   `json:"advisories,omitempty"`
+	Data       string     `json:"data,omitempty"`
+	Kinds      []KindInfo `json:"kinds,omitempty"`
+}
+
+// KindInfo is one type of finding a detector reports, so a reader can rank a
+// finding by its kind without a table of its own.
+type KindInfo struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// Level is the SARIF level: error, warning or note.
+	Level string `json:"level"`
+	// Severity is the CVSS-style score ("9.2"), when the kind has one.
+	Severity string `json:"severity,omitempty"`
 }
 
 // Report is the whole run.
@@ -42,7 +54,11 @@ func New(tool, version string, dets []engine.Detector) *Report {
 	for _, d := range dets {
 		m := d.Manifest()
 		r.manifests = append(r.manifests, m)
-		r.Detectors = append(r.Detectors, DetectorInfo{ID: m.ID, Title: m.Title, CVEs: m.CVEs, Advisories: m.Advisories, Data: m.Data})
+		info := DetectorInfo{ID: m.ID, Title: m.Title, CVEs: m.CVEs, Advisories: m.Advisories, Data: m.Data}
+		for _, k := range m.Kinds {
+			info.Kinds = append(info.Kinds, KindInfo{ID: k.ID, Title: k.Title, Level: k.Level, Severity: k.SecuritySeverity})
+		}
+		r.Detectors = append(r.Detectors, info)
 	}
 	return r
 }
