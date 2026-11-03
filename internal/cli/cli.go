@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -85,7 +86,8 @@ func (c Config) usage() string {
 		fmt.Fprintf(&b, "  %s fix [flags] DIR...          move those image references to published fixed images\n", c.Tool)
 	}
 	if c.Detector == "" {
-		fmt.Fprintf(&b, "  %s detectors                  list the detectors\n", c.Tool)
+		fmt.Fprintf(&b, "  %s detectors [--format json]    list the detectors (json: the catalog each release\n", c.Tool)
+		fmt.Fprintf(&b, "  %s                              attaches as detectors.json)\n", strings.Repeat(" ", len(c.Tool)))
 	}
 	fmt.Fprintf(&b, "  %s version\n", c.Tool)
 	b.WriteString("\nFlags:\n")
@@ -144,6 +146,39 @@ func (l *list) Set(s string) error {
 	return nil
 }
 
+// detectors lists the detectors: one line each, or the catalog as JSON.
+func (c Config) detectors(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("detectors", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() { fmt.Fprint(stderr, c.usage()) }
+	format := fs.String("format", "text", "")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fs.Usage()
+		return 2
+	}
+	switch *format {
+	case "text":
+		for _, d := range engine.Detectors() {
+			m := d.Manifest()
+			fmt.Fprintf(stdout, "%-12s %s\n", m.ID, m.Title)
+		}
+	case "json":
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(c.catalog()); err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", c.Tool, err)
+			return 2
+		}
+	default:
+		fmt.Fprintf(stderr, "%s: unknown --format %q (detectors: text or json)\n", c.Tool, *format)
+		return 2
+	}
+	return 0
+}
+
 var kinds = map[string]engine.TargetKind{"fs": engine.Filesystem, "image": engine.Image, "host": engine.Host, "repo": engine.Repository, "fix": engine.Repository}
 
 // Run runs the command line and returns the exit status.
@@ -162,11 +197,7 @@ func Run(c Config, args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "detectors":
 		if c.Detector == "" {
-			for _, d := range engine.Detectors() {
-				m := d.Manifest()
-				fmt.Fprintf(stdout, "%-12s %s\n", m.ID, m.Title)
-			}
-			return 0
+			return c.detectors(args[1:], stdout, stderr)
 		}
 	}
 	if c.Detector == "" && args[0] != "fix" {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,5 +66,47 @@ func TestUnknownDetectorRefused(t *testing.T) {
 	var out, errb bytes.Buffer
 	if got := Run(Config{Tool: "earlylight", Summary: "t"}, []string{"scan", "fs", "--detector", "nope", "."}, &out, &errb); got != 2 {
 		t.Fatalf("exit %d", got)
+	}
+}
+
+func TestDetectorsCatalog(t *testing.T) {
+	c := Config{Tool: "earlylight", Version: "v9.9.9", Summary: "t"}
+	var out, errb bytes.Buffer
+	if got := Run(c, []string{"detectors", "--format", "json"}, &out, &errb); got != 0 {
+		t.Fatalf("exit %d: %s", got, errb.String())
+	}
+	var cat Catalog
+	if err := json.Unmarshal(out.Bytes(), &cat); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out.String())
+	}
+	if cat.Schema != CatalogSchema || cat.Tool != "earlylight" || cat.Version != "v9.9.9" {
+		t.Errorf("header = %d %q %q", cat.Schema, cat.Tool, cat.Version)
+	}
+	var e *CatalogEntry
+	for i := range cat.Detectors {
+		if cat.Detectors[i].ID == "t-unsure" {
+			e = &cat.Detectors[i]
+		}
+	}
+	if e == nil {
+		t.Fatalf("t-unsure missing:\n%s", out.String())
+	}
+	if strings.Join(e.Modes, ",") != "fs" || len(e.Kinds) != 1 || e.Kinds[0].ID != "runtime" || e.Kinds[0].Level != "error" {
+		t.Errorf("entry = %+v", e)
+	}
+	// Readers range over lists without checking for null.
+	if strings.Contains(out.String(), "null") {
+		t.Errorf("catalog has a null list:\n%s", out.String())
+	}
+
+	out.Reset()
+	if got := Run(c, []string{"detectors"}, &out, &errb); got != 0 || !strings.Contains(out.String(), "t-unsure") || strings.Contains(out.String(), "{") {
+		t.Errorf("text listing: exit %d\n%s", got, out.String())
+	}
+	for _, args := range [][]string{{"detectors", "--format", "sarif"}, {"detectors", "extra"}, {"detectors", "--nope"}} {
+		errb.Reset()
+		if got := Run(c, args, &out, &errb); got != 2 || errb.Len() == 0 {
+			t.Errorf("%v: exit %d, stderr %q", args, got, errb.String())
+		}
 	}
 }

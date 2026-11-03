@@ -22,6 +22,10 @@ import (
 // ID is the detector's ID.
 const ID = "emudhra"
 
+// goCVE is Go's fix for the compromised intermediates. Only unpatched-go
+// findings carry it: the trust findings are about the CA keys, which have no CVE.
+const goCVE = "CVE-2026-111943"
+
 // Detector implements engine.Detector and engine.Prober.
 type Detector struct {
 	det *detect.Detector
@@ -34,7 +38,7 @@ func (d *Detector) Manifest() engine.Manifest {
 	return engine.Manifest{
 		ID:         ID,
 		Title:      "Trust in the compromised eMudhra intermediate CA keys",
-		CVEs:       []string{"CVE-2026-111943"},
+		CVEs:       []string{goCVE},
 		Advisories: []string{"https://bugzilla.mozilla.org/show_bug.cgi?id=2083449"},
 		Disclosed:  "2026-10-20",
 		Targets:    []engine.TargetKind{engine.Filesystem, engine.Image, engine.Host},
@@ -153,6 +157,10 @@ func finding(r assess.Result) engine.Finding {
 	if !ok {
 		v = engine.Unknown
 	}
+	var cves []engine.CVEResult
+	if r.Kind == detect.UnpatchedGo {
+		cves = []engine.CVEResult{{ID: goCVE, Verdict: v, Reason: r.Reason}}
+	}
 	return engine.Finding{
 		Kind:    string(r.Kind),
 		Path:    r.Path,
@@ -161,6 +169,7 @@ func finding(r assess.Result) engine.Finding {
 		Message: r.Detail,
 		Method:  r.Method,
 		Facts:   facts,
+		CVEs:    cves,
 		Details: r.Finding,
 	}
 }

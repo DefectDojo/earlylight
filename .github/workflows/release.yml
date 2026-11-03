@@ -30,6 +30,10 @@ jobs:
           scripts/third-party-notices.sh "$RUNNER_TEMP/notices.txt"
           diff -u THIRD_PARTY_NOTICES.txt "$RUNNER_TEMP/notices.txt"
           cp LICENSE THIRD_PARTY_NOTICES.txt dist/
+          # The detector catalog DefectDojo reads to tell which detectors this release
+          # contains, also covered by the signed checksums.
+          "dist/earlylight_${GITHUB_REF_NAME}_linux_amd64" detectors --format json > dist/detectors.json
+          grep -q "\"version\": \"${GITHUB_REF_NAME}\"" dist/detectors.json
           (cd dist && sha256sum -- * > checksums.txt)
       - uses: sigstore/cosign-installer@v3
       - name: Sign checksums
