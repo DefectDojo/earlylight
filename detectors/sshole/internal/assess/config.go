@@ -50,8 +50,12 @@ func ParseConfig(files Files, p string) Config {
 	}
 	c.Read = true
 	block := 0
+	filesRead := 1
+	onStack := map[string]bool{}
 	var walk func(file string, data []byte, match []Criterion, depth int)
 	walk = func(file string, data []byte, match []Criterion, depth int) {
+		onStack[file] = true
+		defer delete(onStack, file)
 		cur := match
 		curBlock := block
 		for i, raw := range lines(data) {
@@ -80,6 +84,15 @@ func ParseConfig(files Files, p string) Config {
 						c.Missing = append(c.Missing, pat)
 					}
 					for _, g := range got {
+						if onStack[g] {
+							c.Missing = append(c.Missing, g+": includes itself")
+							continue
+						}
+						if filesRead >= maxIncludes {
+							c.Missing = append(c.Missing, g+": more than 256 included files; the rest are not read")
+							break
+						}
+						filesRead++
 						if b := files.Read(g); b != nil {
 							walk(g, b, cur, depth+1)
 						} else {
@@ -89,12 +102,22 @@ func ParseConfig(files Files, p string) Config {
 				}
 				continue
 			}
+			if len(c.Directives) >= maxDirectives {
+				c.Missing = append(c.Missing, file+": more than 100000 directives; the rest are not read")
+				return
+			}
 			c.Directives = append(c.Directives, Directive{Key: key, Args: args[1:], File: file, Line: i + 1, Match: cur, Block: curBlock})
 		}
 	}
 	walk(p, data, nil, 0)
 	return c
 }
+
+// Limits on what one sshd_config can make the parser read.
+const (
+	maxIncludes   = 256
+	maxDirectives = 100000
+)
 
 func hasGlob(p string) bool { return strings.ContainsAny(p, "*?[") }
 
@@ -240,23 +263,31 @@ func matchPatternList(s, list string) bool {
 	return got
 }
 
-// globMatch is OpenSSH's match_pattern: '*' and '?' only.
+// globMatch is OpenSSH's match_pattern: '*' and '?' only. Iterative, with
+// one backtrack point, so it runs in time linear in the input for each star.
 func globMatch(p, s string) bool {
-	if p == "" {
-		return s == ""
-	}
-	switch p[0] {
-	case '*':
-		for i := 0; i <= len(s); i++ {
-			if globMatch(p[1:], s[i:]) {
-				return true
-			}
+	pi, si := 0, 0
+	star, mark := -1, 0
+	for si < len(s) {
+		switch {
+		case pi < len(p) && (p[pi] == '?' || p[pi] == s[si]):
+			pi++
+			si++
+		case pi < len(p) && p[pi] == '*':
+			star, mark = pi, si
+			pi++
+		case star >= 0:
+			pi = star + 1
+			mark++
+			si = mark
+		default:
+			return false
 		}
-		return false
-	case '?':
-		return s != "" && globMatch(p[1:], s[1:])
 	}
-	return s != "" && p[0] == s[0] && globMatch(p[1:], s[1:])
+	for pi < len(p) && p[pi] == '*' {
+		pi++
+	}
+	return pi == len(p)
 }
 
 // Values returns every value a single-valued keyword can take for a

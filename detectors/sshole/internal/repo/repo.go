@@ -78,6 +78,9 @@ type Options struct {
 	// Base resolves an image the tree builds on: whether it is Alpine and
 	// which branch ("3.22", "edge"). nil: only what the name says.
 	Base func(ctx context.Context, image string) (alpine bool, branch string, err error)
+	// Files, when set, limits the scan to these repository-relative paths
+	// (a pull request's changed files).
+	Files []string
 }
 
 const (
@@ -91,6 +94,15 @@ var skipDirs = map[string]bool{".git": true, "node_modules": true, "vendor": tru
 func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 	var res Result
 	var list []string
+	if opts.Files != nil {
+		for _, rel := range opts.Files {
+			rel = path.Clean(strings.ReplaceAll(rel, "\\", "/"))
+			if kindOf(rel) != "" && !contains(list, rel) && rel != ".." && !strings.HasPrefix(rel, "../") && !path.IsAbs(rel) {
+				list = append(list, rel)
+			}
+		}
+		return scanList(ctx, root, list, opts, res)
+	}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			rel, _ := filepath.Rel(root, p)
@@ -124,6 +136,10 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 	if err != nil {
 		return res, err
 	}
+	return scanList(ctx, root, list, opts, res)
+}
+
+func scanList(ctx context.Context, root string, list []string, opts Options, res Result) (Result, error) {
 	for rel := range opts.Overlay {
 		if kindOf(rel) != "" && !contains(list, rel) {
 			list = append(list, rel)
@@ -136,6 +152,9 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 		if !ok {
 			var err error
 			b, err = readFile(root, rel)
+			if errors.Is(err, fs.ErrNotExist) && opts.Files != nil {
+				continue // a changed file the pull request deleted
+			}
 			if err != nil {
 				res.Skips = append(res.Skips, Skip{File: rel, Reason: err.Error()})
 				continue

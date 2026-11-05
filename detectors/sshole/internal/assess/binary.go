@@ -170,8 +170,8 @@ func Inspect(p string, data []byte) (*Binary, bool) {
 	}
 
 	for _, prog := range f.Progs {
-		if prog.Type != elf.PT_INTERP {
-			continue
+		if prog.Type != elf.PT_INTERP || prog.Filesz > 4096 {
+			continue // an interpreter path is short: a larger size is a hostile header
 		}
 		buf := make([]byte, prog.Filesz)
 		if _, err := prog.ReadAt(buf, 0); err == nil {

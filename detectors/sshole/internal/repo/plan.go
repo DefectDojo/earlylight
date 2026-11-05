@@ -209,3 +209,43 @@ func Printable(s string) string {
 	}
 	return b.String()
 }
+
+// Find rescans one file and returns the finding with this rule at this
+// line. spec, when not empty, picks between several on the line: the apk
+// spec or the text the finding's message quotes. gone is true when the file
+// has no such finding any more.
+func Find(ctx context.Context, root, file string, line int, rule, message string, opts Options) (f *Finding, gone bool, err error) {
+	fs, err := scanOne(ctx, root, file, opts, nil)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	var at []Finding
+	for _, g := range fs {
+		if g.Rule == rule && g.Line == line {
+			at = append(at, g)
+		}
+	}
+	if len(at) > 1 && message != "" {
+		var picked []Finding
+		for _, g := range at {
+			if strings.Contains(message, g.Message) || g.Props["spec"] != "" && strings.Contains(message, g.Props["spec"]) {
+				picked = append(picked, g)
+			}
+		}
+		if len(picked) > 0 {
+			at = picked
+		}
+	}
+	switch len(at) {
+	case 0:
+		return nil, true, nil
+	case 1:
+		return &at[0], false, nil
+	}
+	// Several identical findings on one line: the first; the rest come
+	// back on the next scan.
+	return &at[0], false, nil
+}

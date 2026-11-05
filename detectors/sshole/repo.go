@@ -4,7 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"strings"
 	"sync"
+
+	"github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/DefectDojo/earlylight/detectors/sshole/internal/repo"
 	"github.com/DefectDojo/earlylight/internal/engine"
@@ -99,6 +103,14 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 		if r, ok := cache[ref]; ok {
 			return r.alpine, r.branch, r.err
 		}
+		if err := registryRef(ref, o.PublicOnly); err != nil {
+			cache[ref] = res{err: err}
+			return false, "", err
+		}
+		if len(cache) >= maxBases {
+			err := fmt.Errorf("not resolved: this scan already read %d base images, its limit", maxBases)
+			return false, "", err
+		}
 		platform := o.Platform
 		if platform == "" && len(o.Platforms) > 0 {
 			platform = o.Platforms[0]
@@ -108,11 +120,56 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 			if err != nil {
 				return nil, err
 			}
-			return op.FS, nil
+			return limitedReadCloser{io.LimitReader(op.FS, maxBaseBytes), op.FS}, nil
 		})
 		cache[ref] = res{a, b, err}
 		return a, b, err
 	}
+}
+
+// Limits on base-image lookups: a source tree may not be yours, so what it
+// names cannot make a scan read without bound.
+const (
+	maxBases     = 32
+	maxBaseBytes = 2 << 30
+)
+
+type limitedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// registryRef accepts only a registry reference: never a local archive
+// (docker-archive:, rootfs:) or any other transport a Dockerfile could
+// name, and never a registry on a link-local address (cloud metadata), nor,
+// with publicOnly, on a loopback, private or internal one.
+func registryRef(ref string, publicOnly bool) error {
+	if strings.Contains(ref, "://") || strings.HasPrefix(ref, "docker-archive:") || strings.HasPrefix(ref, "rootfs:") || strings.HasPrefix(ref, "/") {
+		return fmt.Errorf("%q is not a registry reference", ref)
+	}
+	r, err := name.ParseReference(ref, name.StrictValidation)
+	if err != nil {
+		if r, err = name.ParseReference(ref); err != nil {
+			return fmt.Errorf("%q is not a valid image reference", ref)
+		}
+	}
+	host := r.Context().RegistryStr()
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("resolving %s: %w", host, err)
+	}
+	for _, ip := range ips {
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("%s resolves to a link-local address, which is never a registry", host)
+		}
+		if publicOnly && (ip.IsLoopback() || ip.IsPrivate()) {
+			return fmt.Errorf("%s resolves to a loopback or private address (--public-registries-only)", host)
+		}
+	}
+	return nil
 }
 
 // Fix rewrites what can be fixed: apk constraints to the fixed release and

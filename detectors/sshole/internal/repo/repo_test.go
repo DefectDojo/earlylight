@@ -235,3 +235,24 @@ func FuzzScanText(f *testing.F) {
 		splitShell(s)
 	})
 }
+
+func TestFindAndFiles(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a/Dockerfile", "FROM alpine:3.22\nRUN apk add openssh-server && usermod -p '*' bob\n")
+	write(t, root, "b/Dockerfile", "FROM alpine:3.22\nRUN apk add openssh\n")
+	ctx := context.Background()
+	res, err := Scan(ctx, root, Options{Files: []string{"a/Dockerfile", "gone/Dockerfile", "../x/Dockerfile"}})
+	if err != nil || len(res.Findings) != 2 || len(res.Skips) != 0 {
+		t.Fatalf("%v %+v", err, res)
+	}
+	f, gone, err := Find(ctx, root, "a/Dockerfile", 2, RuleStar, "", Options{})
+	if err != nil || gone || f == nil || !f.Fixable {
+		t.Fatalf("%v %v %+v", err, gone, f)
+	}
+	if _, gone, _ := Find(ctx, root, "a/Dockerfile", 1, RuleStar, "", Options{}); !gone {
+		t.Error("a line with no finding is not gone")
+	}
+	if _, gone, _ := Find(ctx, root, "missing/Dockerfile", 2, RuleStar, "", Options{}); !gone {
+		t.Error("a missing file is not gone")
+	}
+}

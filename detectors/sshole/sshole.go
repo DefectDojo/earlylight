@@ -249,21 +249,44 @@ func (f *files) diskPath(p string) (string, bool) {
 	return full, true
 }
 
+// diskRegular reports whether a regular file is at p below the system
+// root, following symbolic links only while they stay inside it. Nothing is
+// read.
 func (f *files) diskRegular(p string) bool {
 	full, ok := f.diskPath(p)
 	if !ok {
 		return false
 	}
-	fi, err := os.Stat(full)
+	real, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return false
+	}
+	root, err := filepath.EvalSymlinks(f.root)
+	if err != nil {
+		return false
+	}
+	if rel, err := filepath.Rel(root, real); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	fi, err := os.Stat(real)
 	return err == nil && fi.Mode().IsRegular()
 }
 
 // disk reads a regular file below the system root, never through a
-// symbolic link.
+// symbolic link in any component of its path.
 func (f *files) disk(p string) []byte {
 	full, ok := f.diskPath(p)
 	if !ok {
 		return nil
+	}
+	rel, _ := filepath.Rel(f.root, full)
+	cur := f.root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if err != nil || fi.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 	}
 	fi, err := os.Lstat(full)
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxKept {

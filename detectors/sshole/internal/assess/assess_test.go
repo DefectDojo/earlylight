@@ -337,3 +337,24 @@ func TestBranchFromRelease(t *testing.T) {
 		}
 	}
 }
+
+func TestGlobMatch(t *testing.T) {
+	cases := map[[2]string]bool{{"bob", "bob"}: true, {"b*", "bob"}: true, {"*o?", "bob"}: true, {"?", ""}: false, {"*", ""}: true, {"a*b*c", "axxbyyc"}: true, {"a*b*c", "axxbyy"}: false}
+	for k, want := range cases {
+		if globMatch(k[0], k[1]) != want {
+			t.Errorf("%q %q", k[0], k[1])
+		}
+	}
+	// Linear, not exponential: this would never finish with backtracking recursion.
+	if globMatch(strings.Repeat("*a", 200)+"b", strings.Repeat("a", 5000)) {
+		t.Error("matched")
+	}
+}
+
+func TestIncludeLoop(t *testing.T) {
+	fs := memFiles{"/etc/ssh/sshd_config": "Include /etc/ssh/a.conf\n", "/etc/ssh/a.conf": "Include /etc/ssh/a.conf /etc/ssh/sshd_config\nPasswordAuthentication no\n"}
+	c := ParseConfig(fs, "/etc/ssh/sshd_config")
+	if len(c.Directives) != 1 || len(c.Missing) == 0 {
+		t.Fatalf("%+v", c)
+	}
+}
