@@ -9,6 +9,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -181,6 +182,11 @@ type Detector interface {
 type Reader interface {
 	Wants(path string, head []byte, executable bool) bool
 }
+
+// ErrNotApplicable is what a Prober returns when the address does not run
+// the service it checks (no SSH server where a TLS check was asked for). The
+// host scan skips that detector, and fails only when every detector did.
+var ErrNotApplicable = errors.New("not applicable")
 
 // Prober is implemented by detectors that check live network hosts.
 type Prober interface {

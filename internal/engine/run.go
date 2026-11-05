@@ -400,7 +400,8 @@ func ScanHost(dets []Detector, addr string, opts Options) *Target {
 		addr = u.Host
 	}
 	t := &Target{Name: addr, Type: Host}
-	ran := false
+	ran, applied := false, false
+	var notApplicable []string
 	for _, d := range dets {
 		p, ok := d.(Prober)
 		if !ok || !d.Manifest().Supports(Host) {
@@ -408,6 +409,11 @@ func ScanHost(dets []Detector, addr string, opts Options) *Target {
 		}
 		ran = true
 		name, checked, fs, err := p.Probe(context.Background(), addr, opts.Timeout)
+		if errors.Is(err, ErrNotApplicable) {
+			notApplicable = append(notApplicable, d.Manifest().ID+": "+err.Error())
+			continue
+		}
+		applied = true
 		if name != "" {
 			t.Name = name
 		}
@@ -424,8 +430,11 @@ func ScanHost(dets []Detector, addr string, opts Options) *Target {
 		t.Read += checked
 		t.Findings = append(t.Findings, check(d.Manifest().ID, fs)...)
 	}
-	if !ran {
+	switch {
+	case !ran:
 		t.Error = "none of the selected detectors check network hosts"
+	case !applied:
+		t.Error = strings.Join(notApplicable, "; ")
 	}
 	return t
 }
