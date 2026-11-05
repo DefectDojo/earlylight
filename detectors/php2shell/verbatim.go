@@ -16,11 +16,11 @@ import (
 	"strings"
 
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/fix"
-	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/netguard"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/pkgdb"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/registry"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/report"
 	"github.com/DefectDojo/earlylight/detectors/php2shell/internal/reposcan"
+	"github.com/DefectDojo/earlylight/internal/netguard"
 )
 
 // systemDirs are read from the system root on every fs scan, so a scan of one

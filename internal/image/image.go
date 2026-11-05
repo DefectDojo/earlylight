@@ -4,6 +4,7 @@ package image
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -35,6 +36,10 @@ func Open(ref, platform string) (*Opened, error) {
 	if err != nil {
 		return nil, err
 	}
+	return opened(img)
+}
+
+func opened(img v1.Image) (*Opened, error) {
 	digest, err := img.Digest()
 	if err != nil {
 		return nil, err
@@ -88,15 +93,36 @@ func Platforms(ref string) ([]string, error) {
 	return out, nil
 }
 
+// OpenRegistry is Open for a registry reference only, with every request
+// carried by rt: a caller scanning references it does not trust passes a
+// guarded transport (internal/netguard). Local archives are refused.
+func OpenRegistry(ref, platform string, rt http.RoundTripper) (*Opened, error) {
+	if strings.HasPrefix(ref, "docker-archive:") || strings.HasPrefix(ref, "rootfs:") {
+		return nil, fmt.Errorf("%q: only registry references can be opened here", ref)
+	}
+	img, err := loadRemote(ref, platform, rt)
+	if err != nil {
+		return nil, err
+	}
+	return opened(img)
+}
+
 func load(ref, platform string) (v1.Image, error) {
 	if p, ok := strings.CutPrefix(ref, "docker-archive:"); ok {
 		return tarball.ImageFromPath(p, nil)
 	}
+	return loadRemote(ref, platform, nil)
+}
+
+func loadRemote(ref, platform string, rt http.RoundTripper) (v1.Image, error) {
 	r, err := name.ParseReference(ref)
 	if err != nil {
 		return nil, fmt.Errorf("parsing image reference %q: %w", ref, err)
 	}
 	opts := []remote.Option{remote.WithAuthFromKeychain(authn.DefaultKeychain)}
+	if rt != nil {
+		opts = append(opts, remote.WithTransport(rt))
+	}
 	if platform != "" {
 		p, err := v1.ParsePlatform(platform)
 		if err != nil {

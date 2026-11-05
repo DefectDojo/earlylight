@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"strings"
 	"sync"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/DefectDojo/earlylight/detectors/sshole/internal/repo"
 	"github.com/DefectDojo/earlylight/internal/engine"
 	"github.com/DefectDojo/earlylight/internal/image"
+	"github.com/DefectDojo/earlylight/internal/netguard"
 	"github.com/DefectDojo/earlylight/internal/source"
 )
 
@@ -103,7 +103,7 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 		if r, ok := cache[ref]; ok {
 			return r.alpine, r.branch, r.err
 		}
-		if err := registryRef(ref, o.PublicOnly); err != nil {
+		if err := registryRef(ref); err != nil {
 			cache[ref] = res{err: err}
 			return false, "", err
 		}
@@ -116,7 +116,11 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 			platform = o.Platforms[0]
 		}
 		a, b, err := repo.AlpineOf(func() (io.ReadCloser, error) {
-			op, err := image.Open(ref, platform)
+			// The guarded transport refuses link-local addresses (cloud
+			// metadata) always, and with --public-registries-only every
+			// loopback, private and internal one, on each connection and
+			// redirect.
+			op, err := image.OpenRegistry(ref, platform, netguard.Transport(o.PublicOnly))
 			if err != nil {
 				return nil, err
 			}
@@ -141,33 +145,13 @@ type limitedReadCloser struct {
 
 // registryRef accepts only a registry reference: never a local archive
 // (docker-archive:, rootfs:) or any other transport a Dockerfile could
-// name, and never a registry on a link-local address (cloud metadata), nor,
-// with publicOnly, on a loopback, private or internal one.
-func registryRef(ref string, publicOnly bool) error {
+// name. Addresses are checked by the guarded transport when it connects.
+func registryRef(ref string) error {
 	if strings.Contains(ref, "://") || strings.HasPrefix(ref, "docker-archive:") || strings.HasPrefix(ref, "rootfs:") || strings.HasPrefix(ref, "/") {
 		return fmt.Errorf("%q is not a registry reference", ref)
 	}
-	r, err := name.ParseReference(ref, name.StrictValidation)
-	if err != nil {
-		if r, err = name.ParseReference(ref); err != nil {
-			return fmt.Errorf("%q is not a valid image reference", ref)
-		}
-	}
-	host := r.Context().RegistryStr()
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("resolving %s: %w", host, err)
-	}
-	for _, ip := range ips {
-		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("%s resolves to a link-local address, which is never a registry", host)
-		}
-		if publicOnly && (ip.IsLoopback() || ip.IsPrivate()) {
-			return fmt.Errorf("%s resolves to a loopback or private address (--public-registries-only)", host)
-		}
+	if _, err := name.ParseReference(ref); err != nil {
+		return fmt.Errorf("%q is not a valid image reference", ref)
 	}
 	return nil
 }
