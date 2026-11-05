@@ -189,18 +189,32 @@ func kindOf(rel string) string {
 	name := path.Base(rel)
 	lower := strings.ToLower(name)
 	switch {
-	case lower == "dockerfile" || strings.HasPrefix(lower, "dockerfile.") || strings.HasSuffix(lower, ".dockerfile") ||
-		lower == "containerfile" || strings.HasPrefix(lower, "containerfile.") || strings.HasSuffix(lower, ".containerfile"):
+	case isDockerfile(lower):
 		return "dockerfile"
 	case strings.HasSuffix(lower, ".sh") || strings.HasSuffix(lower, ".bash") || strings.HasSuffix(lower, ".ash") ||
 		strings.HasPrefix(lower, "entrypoint") || strings.HasPrefix(lower, "docker-entrypoint"):
 		return "shell"
 	case strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml"):
 		return "yaml"
-	case strings.Contains(lower, "sshd_config"):
+	case strings.Contains(lower, "sshd_config") || strings.Contains("/"+strings.ToLower(rel), "/sshd_config.d/"):
 		return "sshd_config"
 	}
 	return ""
+}
+
+// isDockerfile matches the names the image reference finder reads:
+// Dockerfile, Dockerfile.dev, Dockerfile-dev, Dockerfile_dev, app.dockerfile
+// and the same for Containerfile.
+func isDockerfile(lower string) bool {
+	for _, n := range []string{"dockerfile", "containerfile"} {
+		if lower == n || strings.HasSuffix(lower, "."+n) {
+			return true
+		}
+		if strings.HasPrefix(lower, n) && strings.ContainsRune("._-", rune(lower[len(n)])) {
+			return true
+		}
+	}
+	return false
 }
 
 func readFile(root, rel string) ([]byte, error) {
