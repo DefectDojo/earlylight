@@ -15,7 +15,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CASES = os.path.join(HERE, "sshole")
-ORDER = ["vuln", "fixed", "pwoff", "usepam", "root", "matchonly", "latest", "debian"]
+ORDER = ["vuln", "fixed", "pwoff", "usepam", "root", "matchonly", "latest", "debian", "startup", "cmdline"]
 
 
 def main():

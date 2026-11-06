@@ -13,6 +13,7 @@ package assess
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -67,6 +68,11 @@ type Finding struct {
 	Password string   `json:"password_auth,omitempty"`
 	Donor    *Donor   `json:"donor,omitempty"`
 	Targets  []Target `json:"targets,omitempty"`
+	// StartedWith names where sshd -o options came from (the container
+	// command or a startup script).
+	StartedWith string `json:"started_with,omitempty"`
+	// AtStart lists startup scripts that change accounts or sshd_config.
+	AtStart []string `json:"at_start,omitempty"`
 	// Missing lists the conditions that do not hold today.
 	Missing []string `json:"missing,omitempty"`
 }
@@ -85,7 +91,9 @@ type Input struct {
 	// Image is true for container images, whose accounts and configuration
 	// an entrypoint can still change.
 	Image bool
-	Now   time.Time
+	// Startup is the image's command and startup scripts, for images.
+	Startup Startup
+	Now     time.Time
 }
 
 // Run assesses every OpenSSH server in the input.
@@ -162,7 +170,11 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 		if p, ok := in.Owners[b.Path]; ok && strings.HasPrefix(p.Name, "openssh") {
 			pp := p
 			f.Package = &pp
-			if fx, w, ok := apkStatus(p.Version); ok {
+			judge := apkStatus
+			if p.Format == "opkg" {
+				judge = opkgStatus
+			}
+			if fx, w, ok := judge(p.Version); ok {
 				fixed, why = fx, w
 			}
 			break
@@ -196,12 +208,29 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 	if cfgPath == "" {
 		cfgPath = "/etc/ssh/sshd_config"
 	}
+	scripts := in.Startup.startScripts(in.Resolve)
+	inv, invoked := pickInvocation(invocations(in.Startup, scripts), u)
+	if invoked && inv.config != "" {
+		cfgPath = inv.config
+	}
 	f.Config = cfgPath
 	cfg := ParseConfig(in.Files, cfgPath)
+	if invoked && len(inv.opts) > 0 {
+		cfg.Prepend(inv.opts)
+		f.StartedWith = inv.where
+	}
 	if !cfg.Read {
 		f.Status, f.Severity = Vulnerable, "medium"
 		f.Missing = append(f.Missing, cfgPath+" is not in the target, so the password settings are unknown")
 		f.Message = fmt.Sprintf("OpenSSH %s server on musl without the *sshole fix (%s not found)", main.Release, cfgPath)
+		for _, sc := range scripts {
+			if strings.Contains(sc.text, "sshd_config") {
+				f.AtStart = append(f.AtStart, sc.where)
+			}
+		}
+		if len(f.AtStart) > 0 {
+			f.Message += fmt.Sprintf("; its startup script (%s) writes sshd_config when the container starts", strings.Join(f.AtStart, ", "))
+		}
 		f.Reason = why
 		return f, true
 	}
@@ -286,7 +315,76 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 	}
 	f.Status, f.Severity = Vulnerable, "medium"
 	f.Message = fmt.Sprintf("OpenSSH %s server on musl without the *sshole fix; not exploitable as configured: %s", main.Release, strings.Join(missing, "; "))
+	if sig := startupSignals(scripts); sig.any() {
+		if t, ok := atStart(in, cfg, donor, sig); ok {
+			f.Kind, f.Severity = KindExposed, "high"
+			f.Targets = t
+			f.AtStart = sig.where
+			f.Message = fmt.Sprintf("OpenSSH %s server on musl without the *sshole fix is not exposed as the image ships, but its startup script (%s) %s when the container starts, after which a crafted password logs in to %s",
+				main.Release, strings.Join(sig.where, ", "), sig.describe(), targetNames(t))
+			return f, true
+		}
+		f.AtStart = sig.where
+		f.Message += fmt.Sprintf("; its startup script (%s) %s when the container starts, which this scan judges only as far as the image shows", strings.Join(sig.where, ", "), sig.describe())
+	}
 	return f, true
+}
+
+func targetNames(ts []Target) string {
+	var n []string
+	for _, t := range ts {
+		n = append(n, t.Account)
+	}
+	return strings.Join(n, ", ")
+}
+
+// pickInvocation finds the command line that starts this server.
+func pickInvocation(invs []invocation, u []*Binary) (invocation, bool) {
+	for _, inv := range invs {
+		for _, b := range u {
+			if inv.binary == b.Path || path.Base(inv.binary) == path.Base(b.Path) {
+				return inv, true
+			}
+		}
+	}
+	return invocation{}, false
+}
+
+// atStart applies what the startup scripts do (turn password logins on,
+// set a password field to "*", set passwords with chpasswd) and returns the
+// accounts a crafted password would then reach.
+func atStart(in Input, cfg Config, donor Donor, sig signals) ([]Target, bool) {
+	fails := donor.Fails
+	if donor.Account == "" && sig.passwords {
+		fails = "long" // chpasswd writes a sha512 hash, the first one pick_salt sees
+	}
+	if fails == "none" || sig.usePAMOn {
+		return nil, false
+	}
+	c := cfg
+	if sig.passwordOn {
+		c.Prepend([]Directive{{Key: "passwordauthentication", Args: []string{"yes"}, File: "startup"}})
+	}
+	var out []Target
+	for _, acc := range in.Accounts.List {
+		if acc.Field != "*" {
+			continue
+		}
+		if t, _ := reach(in, c, acc); t.Reach != "no" {
+			t.Reach = "maybe"
+			out = append(out, t)
+		}
+	}
+	if sig.starSet {
+		// An account the script creates or changes: an ordinary user with
+		// a shell.
+		acc := Account{Name: "(an account the startup script sets to \"*\")", UID: 1000, GID: 1000, Shell: "/bin/sh", Field: "*", Expire: -1}
+		if t, _ := reach(in, c, acc); t.Reach != "no" {
+			t.Reach = "maybe"
+			out = append(out, t)
+		}
+	}
+	return out, len(out) > 0
 }
 
 func hashType(setting string) string {
@@ -520,6 +618,9 @@ func fixText(in Input, f Finding) string {
 		}
 		return fmt.Sprintf("Upgrade %s (apk upgrade --no-cache %s); if this Alpine release has no fixed package, move to a supported Alpine branch. Fixed: %s. %s",
 			name, name, alpineFixedSummary(), mitigate)
+	}
+	if f.Package != nil && f.Package.Format == "opkg" {
+		return fmt.Sprintf("Upgrade %s from the OpenWrt packages feed (opkg update && opkg upgrade %s): 23.05 9.8p1-2, 24.10 9.9_p2-2 and 25.12 10.6_p2-1 have the fix; 22.03 and older have none. Restart sshd. %s", f.Package.Name, f.Package.Name, mitigate)
 	}
 	return "Update OpenSSH to 10.6p2 or later, or rebuild with upstream commit 4353fdc43 (\"avoid password authn bypass\"), and restart sshd. " + mitigate
 }

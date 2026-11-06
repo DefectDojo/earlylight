@@ -195,6 +195,8 @@ func newWorld(release string, pam bool, extra map[string]string) *world {
 	return w
 }
 
+func (w *world) now() time.Time { return time.Unix(20800*86400, 0) }
+
 func (w *world) run() []Finding {
 	return Run(Input{
 		Binaries: w.binaries,

@@ -1,10 +1,117 @@
 {
-  "vuln": [["/usr/sbin/sshd", "exposed", "vulnerable", "critical"], ["/usr/sbin/sshd.pam", "exposed", "vulnerable", "critical"]],
-  "fixed": [["/usr/sbin/sshd", "sshd", "fixed", ""], ["/usr/sbin/sshd.pam", "sshd", "fixed", ""]],
-  "pwoff": [["/usr/sbin/sshd", "sshd", "vulnerable", "medium"], ["/usr/sbin/sshd.pam", "sshd", "vulnerable", "medium"]],
-  "usepam": [["/usr/sbin/sshd", "exposed", "vulnerable", "critical"], ["/usr/sbin/sshd.pam", "sshd", "inactive", ""]],
-  "root": [["/usr/sbin/sshd", "exposed", "vulnerable", "critical"]],
-  "matchonly": [["/usr/sbin/sshd", "exposed", "vulnerable", "high"], ["/usr/sbin/sshd.pam", "exposed", "vulnerable", "high"]],
-  "latest": [["/usr/sbin/sshd", "sshd", "fixed", ""]],
-  "debian": []
+  "vuln": [
+    [
+      "/usr/sbin/sshd",
+      "exposed",
+      "vulnerable",
+      "critical"
+    ],
+    [
+      "/usr/sbin/sshd.pam",
+      "exposed",
+      "vulnerable",
+      "critical"
+    ]
+  ],
+  "fixed": [
+    [
+      "/usr/sbin/sshd",
+      "sshd",
+      "fixed",
+      ""
+    ],
+    [
+      "/usr/sbin/sshd.pam",
+      "sshd",
+      "fixed",
+      ""
+    ]
+  ],
+  "pwoff": [
+    [
+      "/usr/sbin/sshd",
+      "sshd",
+      "vulnerable",
+      "medium"
+    ],
+    [
+      "/usr/sbin/sshd.pam",
+      "sshd",
+      "vulnerable",
+      "medium"
+    ]
+  ],
+  "usepam": [
+    [
+      "/usr/sbin/sshd",
+      "exposed",
+      "vulnerable",
+      "critical"
+    ],
+    [
+      "/usr/sbin/sshd.pam",
+      "sshd",
+      "inactive",
+      ""
+    ]
+  ],
+  "root": [
+    [
+      "/usr/sbin/sshd",
+      "exposed",
+      "vulnerable",
+      "critical"
+    ]
+  ],
+  "matchonly": [
+    [
+      "/usr/sbin/sshd",
+      "exposed",
+      "vulnerable",
+      "high"
+    ],
+    [
+      "/usr/sbin/sshd.pam",
+      "exposed",
+      "vulnerable",
+      "high"
+    ]
+  ],
+  "latest": [
+    [
+      "/usr/sbin/sshd",
+      "sshd",
+      "fixed",
+      ""
+    ]
+  ],
+  "debian": [],
+  "startup": [
+    [
+      "/usr/sbin/sshd",
+      "exposed",
+      "vulnerable",
+      "high"
+    ],
+    [
+      "/usr/sbin/sshd.pam",
+      "exposed",
+      "vulnerable",
+      "high"
+    ]
+  ],
+  "cmdline": [
+    [
+      "/usr/sbin/sshd",
+      "exposed",
+      "vulnerable",
+      "critical"
+    ],
+    [
+      "/usr/sbin/sshd.pam",
+      "sshd",
+      "vulnerable",
+      "medium"
+    ]
+  ]
 }

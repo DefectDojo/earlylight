@@ -92,6 +92,7 @@ type targetCtx struct {
 	sysRoot   string // fs scans below the system root: its OS path
 	seen      map[string]bool
 	env       []string
+	cmd       []string
 	symlinks  map[string]string // absolute path -> target as written
 	hardlinks map[string]string // absolute path -> absolute path it names
 }
@@ -115,6 +116,7 @@ func (c *targetCtx) Annotate(key string, v any) {
 func (c *targetCtx) Kind() TargetKind     { return c.kind }
 func (c *targetCtx) Exists(p string) bool { return c.seen[p] }
 func (c *targetCtx) Env() []string        { return c.env }
+func (c *targetCtx) Command() []string    { return c.cmd }
 func (c *targetCtx) Aliases(p string) []string {
 	out := []string{p}
 	seen := map[string]bool{p: true}
@@ -374,7 +376,7 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 			t.Error = err.Error()
 			return t
 		}
-		rc, t.Digest, t.Platform, w.ctx.env = o.FS, o.Digest, o.Platform, o.Env
+		rc, t.Digest, t.Platform, w.ctx.env, w.ctx.cmd = o.FS, o.Digest, o.Platform, o.Env, o.Command
 	}
 	defer rc.Close()
 	so := w.sourceOptions(opts)

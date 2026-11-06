@@ -25,6 +25,9 @@ type Opened struct {
 	Platform string
 	// Env is the image configuration's environment.
 	Env []string
+	// Command is what the container runs: the configuration's Entrypoint
+	// followed by its Cmd.
+	Command []string
 }
 
 // Open resolves ref and returns the image's flattened filesystem.
@@ -47,6 +50,7 @@ func opened(img v1.Image) (*Opened, error) {
 	o := &Opened{Digest: digest.String()}
 	if cf, err := img.ConfigFile(); err == nil && cf != nil {
 		o.Env = cf.Config.Env
+		o.Command = append(append([]string(nil), cf.Config.Entrypoint...), cf.Config.Cmd...)
 		if cf.OS != "" {
 			o.Platform = cf.OS + "/" + cf.Architecture
 			if cf.Variant != "" {

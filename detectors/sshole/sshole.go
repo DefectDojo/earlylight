@@ -80,8 +80,17 @@ func (d *Detector) Load() error { return nil }
 // Wants reads executables (possible sshd binaries) and the few files the
 // verdict depends on.
 func (d *Detector) Wants(p string, head []byte, _ bool) bool {
-	return archive.IsExecutable(head) || keep(p)
+	return archive.IsExecutable(head) || keep(p) || isScript(head)
 }
+
+// isScript reports a "#!" script: a container's entrypoint or startup step.
+func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head[1] == '!' }
+
+// Limits on the startup scripts kept per target.
+const (
+	maxScript  = 256 << 10
+	maxScripts = 64 << 20
+)
 
 // keep reports whether a file's content feeds a verdict: account files,
 // the apk database, the Alpine release and anything that can be an
@@ -89,7 +98,10 @@ func (d *Detector) Wants(p string, head []byte, _ bool) bool {
 func keep(p string) bool {
 	switch p {
 	case "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/alpine-release", "/etc/os-release", "/usr/lib/os-release",
-		"/lib/apk/db/installed", "/usr/lib/apk/db/installed":
+		"/lib/apk/db/installed", "/usr/lib/apk/db/installed", "/usr/lib/opkg/status":
+		return true
+	}
+	if strings.HasPrefix(p, "/usr/lib/opkg/info/openssh") && strings.HasSuffix(p, ".list") {
 		return true
 	}
 	if strings.HasPrefix(p, "/etc/tcb/") && strings.HasSuffix(p, "/shadow") {
@@ -104,18 +116,24 @@ const maxKept = 4 << 20
 
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
-	return &scan{kind: kind, files: map[string][]byte{}}
+	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}}
 }
 
 type scan struct {
-	kind     engine.TargetKind
-	binaries []*assess.Binary
-	files    map[string][]byte
+	kind        engine.TargetKind
+	binaries    []*assess.Binary
+	files       map[string][]byte
+	scripts     map[string][]byte
+	scriptBytes int
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
 	if f.Member {
 		return nil // installed servers only, not copies inside archives
+	}
+	if isScript(f.Data) && len(f.Data) <= maxScript && s.scriptBytes+len(f.Data) <= maxScripts {
+		s.scripts[f.Path] = f.Data
+		s.scriptBytes += len(f.Data)
 	}
 	if keep(f.Path) && len(f.Data) <= maxKept && !archive.IsExecutable(f.Data) {
 		s.files[f.Path] = f.Data
@@ -148,6 +166,15 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 			}
 		}
 	}
+	if st := fs.Read("/usr/lib/opkg/status"); st != nil {
+		lists := map[string][]byte{}
+		for _, p := range fs.Glob("/usr/lib/opkg/info/openssh*.list") {
+			lists[strings.TrimSuffix(path.Base(p), ".list")] = fs.Read(p)
+		}
+		for k, v := range assess.OpkgOwners(st, lists) {
+			owners[k] = v
+		}
+	}
 	branch := assess.BranchFromRelease(string(fs.Read("/etc/alpine-release")))
 	if branch != "" {
 		ctx.Annotate("alpine_branch", branch)
@@ -160,6 +187,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Resolve:  res.resolve,
 		Branch:   branch,
 		Image:    s.kind == engine.Image,
+		Startup:  assess.Startup{Command: ctx.Command(), Scripts: s.scripts},
 	})
 	out := make([]engine.Finding, 0, len(found))
 	for _, x := range found {
@@ -193,6 +221,12 @@ func finding(x assess.Finding) engine.Finding {
 	if x.Donor != nil {
 		facts["salt_from"] = x.Donor.Account
 		facts["crypt_fails"] = x.Donor.Fails
+	}
+	if len(x.AtStart) > 0 {
+		facts["startup_scripts"] = strings.Join(x.AtStart, ",")
+	}
+	if x.StartedWith != "" {
+		facts["sshd_options_from"] = x.StartedWith
 	}
 	if len(x.Targets) > 0 {
 		var names []string

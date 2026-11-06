@@ -376,6 +376,12 @@ func (c Config) Lists(key string, acc Account, groups []string) [][]string {
 	return append(out, global)
 }
 
+// Prepend puts directives before the file's own, as global ones: sshd -o
+// options, which sshd reads before its config file, so they win.
+func (c *Config) Prepend(ds []Directive) {
+	c.Directives = append(append([]Directive(nil), ds...), c.Directives...)
+}
+
 // Global returns a global-only keyword's value (UsePAM), or def.
 func (c Config) Global(key, def string) string {
 	for _, d := range c.Directives {

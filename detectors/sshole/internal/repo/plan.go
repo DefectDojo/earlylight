@@ -91,7 +91,7 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 	if err != nil {
 		return nil, false, err
 	}
-	if count(after, f.Rule, e.Line) >= count(before, f.Rule, e.Line) {
+	if count(after, f.Rule, f.Line) >= count(before, f.Rule, f.Line) {
 		return nil, false, &Declined{Reason: "the edit did not clear the finding; change it by hand"}
 	}
 	if len(after) > len(before) {
@@ -117,6 +117,9 @@ func scanOne(ctx context.Context, root, file string, opts Options, data []byte) 
 		return s.yaml(file, string(data)), nil
 	case "sshd_config":
 		return s.sshdConfig(file, string(data)), nil
+	case "build":
+		s.build(file, string(data))
+		return s.finishBuild(), nil
 	}
 	return nil, nil
 }
@@ -137,6 +140,10 @@ func summary(f Finding) string {
 		return fmt.Sprintf("Require %s at %s or later, the Alpine release with the *sshole fix", f.Props["package"], f.Props["fixed"])
 	case RuleStar:
 		return "Set the password field to \"*NP*\" instead of \"*\", which keeps key logins and matches no password"
+	case RuleEOL:
+		return fmt.Sprintf("Moves the base image to %s, the nearest Alpine release with a fixed OpenSSH package. This is an Alpine release upgrade: review it and run your tests before you merge", f.Props["upgrade"])
+	case RuleAnsible:
+		return "Sets the Ansible apk task to state: latest, so every run installs the fixed OpenSSH package from the host's Alpine repositories"
 	}
 	return f.Fix
 }

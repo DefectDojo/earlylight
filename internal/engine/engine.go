@@ -142,6 +142,9 @@ type TargetContext interface {
 	Exists(path string) bool
 	// Env is the image configuration's environment ("KEY=value"), nil otherwise.
 	Env() []string
+	// Command is what the image's container runs (Entrypoint then Cmd), nil
+	// for anything but an image.
+	Command() []string
 	// Aliases returns every path that names the same file as p (symlinks, hard
 	// links), p included.
 	Aliases(p string) []string

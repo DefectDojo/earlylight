@@ -33,3 +33,13 @@ func FuzzConfig(f *testing.F) {
 		passwordValues(c, acc, nil)
 	})
 }
+
+func FuzzStartup(f *testing.F) {
+	f.Add("/bin/sh", "-c", "#!/bin/sh\nusermod -p '*' x; exec /usr/sbin/sshd -D -o PasswordAuthentication=yes -f /x")
+	f.Fuzz(func(t *testing.T, a, b, script string) {
+		st := Startup{Command: []string{a, b, script}, Scripts: map[string][]byte{"/entrypoint.sh": []byte(script), "/etc/cont-init.d/x": []byte(script)}}
+		sc := st.startScripts(nil)
+		invocations(st, sc)
+		startupSignals(sc).describe()
+	})
+}

@@ -31,6 +31,7 @@ jobs:
           go test ./detectors/brotli/internal/pins -run '^$' -fuzz '^FuzzPins$' -fuzztime 30s
           go test ./detectors/sshole/internal/assess -run '^$' -fuzz '^FuzzConfig$' -fuzztime 30s
           go test ./detectors/sshole/internal/assess -run '^$' -fuzz '^FuzzAccounts$' -fuzztime 30s
+          go test ./detectors/sshole/internal/assess -run '^$' -fuzz '^FuzzStartup$' -fuzztime 30s
           go test ./detectors/sshole/internal/repo -run '^$' -fuzz '^FuzzScanText$' -fuzztime 30s
           for f in FuzzParseDpkgStatus FuzzParseAPKInstalled FuzzParseHeaderBlob FuzzReadBDB FuzzReadNDB FuzzResolver; do
             go test ./detectors/php2shell/internal/pkgdb -run '^$' -fuzz "^$f\$" -fuzztime 15s

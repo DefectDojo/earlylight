@@ -10,6 +10,10 @@
 //   - star-account: a Dockerfile, script or Ansible task sets an account's
 //     password field to "*", the field the bypass logs in to.
 //   - password-config: something turns PasswordAuthentication on (a note).
+//   - ansible-apk: an Ansible apk task installs an OpenSSH server with
+//     state present, so hosts set up before the fix keep it.
+//   - build-config: a Buildroot, OpenWrt or Yocto configuration builds an
+//     OpenSSH server on musl.
 //   - not-checked: what could not be read or resolved.
 package repo
 
@@ -40,6 +44,8 @@ const (
 	RuleStar       = "star-account"
 	RulePassword   = "password-config"
 	RuleNotChecked = "not-checked"
+	RuleAnsible    = "ansible-apk"
+	RuleBuild      = "build-config"
 )
 
 // Finding is one thing in the tree.
@@ -170,8 +176,11 @@ func scanList(ctx context.Context, root string, list []string, opts Options, res
 			res.Findings = append(res.Findings, s.yaml(rel, string(b))...)
 		case "sshd_config":
 			res.Findings = append(res.Findings, s.sshdConfig(rel, string(b))...)
+		case "build":
+			s.build(rel, string(b))
 		}
 	}
+	res.Findings = append(res.Findings, s.finishBuild()...)
 	return res, nil
 }
 
@@ -198,6 +207,10 @@ func kindOf(rel string) string {
 		return "yaml"
 	case strings.Contains(lower, "sshd_config") || strings.Contains("/"+strings.ToLower(rel), "/sshd_config.d/"):
 		return "sshd_config"
+	case lower == ".config" || lower == "diffconfig" || strings.HasSuffix(lower, "defconfig") || lower == "local.conf" || lower == "auto.conf" || lower == "site.conf" ||
+		strings.HasSuffix(lower, ".bb") || strings.HasSuffix(lower, ".bbappend") || strings.HasSuffix(lower, ".inc") ||
+		strings.HasSuffix(lower, ".conf") && (strings.Contains(rel, "conf/distro/") || strings.Contains(rel, "conf/machine/")):
+		return "build"
 	}
 	return ""
 }
@@ -246,6 +259,26 @@ type scanner struct {
 	root  string
 	opts  Options
 	bases map[string]baseInfo
+	// vars are the current Dockerfile's ARG and ENV values.
+	vars map[string]varDef
+	// from is the current stage's FROM instruction.
+	from fromInfo
+	// Yocto evidence, joined across files at the end.
+	yoctoMusl []Finding
+	yoctoSSH  []Finding
+}
+
+// varDef is an ARG or ENV value and where it is written.
+type varDef struct {
+	value     string
+	line, col int // where value starts; line 0: not on one line
+}
+
+// fromInfo is a FROM instruction: the image and where its tag is written.
+type fromInfo struct {
+	image     string
+	line, col int    // where tagText starts on the FROM line, line 0: not editable
+	tagText   string // the image as written on the line
 }
 
 // span is a piece of shell text from a file: Text, and the file line each
@@ -363,17 +396,30 @@ var heredocRE = regexp.MustCompile(`<<-?\s*["']?([A-Za-z_][A-Za-z0-9_]*)["']?\s*
 func (s *scanner) dockerfile(rel, text string) []Finding {
 	var out []Finding
 	args := map[string]string{}
+	s.vars = map[string]varDef{}
+	defer func() { s.vars = nil }()
 	stages := map[string]baseInfo{}
 	var cur baseInfo
 	curImage := ""
 	for _, in := range parseDockerfile(text) {
 		switch in.cmd {
-		case "ARG":
-			for _, a := range strings.Fields(in.args.text) {
+		case "ARG", "ENV":
+			legacy := in.cmd == "ENV" && !strings.Contains(strings.Fields(in.args.text + " x")[0], "=")
+			if legacy {
+				// ENV KEY value with spaces
+				k, v, _ := strings.Cut(strings.TrimSpace(in.args.text), " ")
+				v = strings.TrimSpace(v)
+				args[k] = v
+				s.defineVar(k, v, in)
+				continue
+			}
+			for _, a := range fieldsQuotedKV(in.args.text) {
 				k, v, ok := strings.Cut(a, "=")
 				if ok {
-					args[k] = strings.Trim(v, `"'`)
-				} else if _, set := args[k]; !set {
+					v = strings.Trim(v, `"'`)
+					args[k] = v
+					s.defineVar(k, v, in)
+				} else if _, set := args[k]; !set && in.cmd == "ARG" {
 					args[k] = ""
 				}
 			}
@@ -397,6 +443,12 @@ func (s *scanner) dockerfile(rel, text string) []Finding {
 				cur = s.base(img)
 			}
 			curImage = img
+			s.from = fromInfo{image: img}
+			if len(in.physical) == 1 && img != "" && len(in.args.cols) > 0 {
+				if i := strings.Index(in.physical[0], img); i >= 0 && strings.Count(in.physical[0], img) == 1 {
+					s.from = fromInfo{image: img, line: in.line, col: in.args.cols[0] + i, tagText: img}
+				}
+			}
 			if as != "" {
 				stages[strings.ToLower(as)] = cur
 			}
@@ -695,24 +747,117 @@ func (s *scanner) apk(rel string, sp span, args []word, b baseInfo, image string
 			continue
 		}
 		if w.dynamic {
+			out = append(out, s.apkVariable(rel, sp, w, b, image, dockerfile)...)
 			continue
 		}
 		m := specRE.FindStringSubmatch(w.val)
 		if m == nil || !sshPackages[m[1]] {
 			continue
 		}
-		if f, ok := s.judgeSpec(rel, sp, w, m[1], m[2], m[3], b, image, dockerfile); ok {
+		l, col, same := sp.at(w)
+		raw := sp.text[w.start:w.end]
+		if f, ok := s.judgeSpec(rel, specAt{line: l, editLine: l, col: col, raw: raw, val: w.val, editable: same && !strings.Contains(raw, "\n")}, m[1], m[2], m[3], b, image, dockerfile); ok {
 			out = append(out, f)
 		}
 	}
 	return out
 }
 
+// apkVariable judges an apk add word that is a variable: an ARG or ENV
+// value from this Dockerfile, whose packages are judged and edited where
+// the value is written; anything else is reported as not checked when the
+// image may be Alpine.
+func (s *scanner) apkVariable(rel string, sp span, w word, b baseInfo, image string, dockerfile bool) []Finding {
+	l, _, _ := sp.at(w)
+	name := ""
+	if m := varRE.FindStringSubmatch(w.val); m != nil && m[0] == w.val {
+		name = m[1]
+		if name == "" {
+			name = m[3]
+		}
+	}
+	def, ok := s.vars[name]
+	if !ok {
+		if b.known && !b.alpine {
+			return nil
+		}
+		return []Finding{{Rule: RuleNotChecked, File: rel, Line: l, Level: "note", Props: map[string]string{"spec": w.val},
+			Message: fmt.Sprintf("installs packages named by %s with apk; their value is not set in this file, so whether they include an OpenSSH server without the *sshole fix is not checked", w.val),
+			Fix:     "If the list includes openssh or openssh-server, require it at the fixed release for the image's Alpine branch (" + fixedTable() + ")"}}
+	}
+	var out []Finding
+	off := 0
+	for _, tok := range strings.Fields(def.value) {
+		at := strings.Index(def.value[off:], tok) + off
+		off = at + len(tok)
+		m := specRE.FindStringSubmatch(tok)
+		if m == nil || !sshPackages[m[1]] {
+			continue
+		}
+		loc := specAt{line: l, editLine: def.line, col: def.col + at, raw: tok, val: tok, editable: def.line > 0, via: name}
+		if f, ok := s.judgeSpec(rel, loc, m[1], m[2], m[3], b, image, dockerfile); ok {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// specAt is where an apk package spec was found and where it is written.
+type specAt struct {
+	line, editLine, col int
+	raw, val            string
+	editable            bool
+	via                 string // the variable it came through
+}
+
+func (s *scanner) defineVar(k, v string, in instr) {
+	d := varDef{value: v}
+	if len(in.physical) == 1 && v != "" && len(in.args.cols) > 0 && strings.Count(in.physical[0], v) == 1 {
+		d.line, d.col = in.line, in.args.cols[0]+strings.Index(in.physical[0], v)
+	}
+	s.vars[k] = d
+}
+
+// fieldsQuotedKV splits ARG and ENV arguments, keeping quoted values whole.
+func fieldsQuotedKV(s string) []string {
+	var out []string
+	var b strings.Builder
+	var q byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case q != 0:
+			if c == q {
+				q = 0
+			}
+			b.WriteByte(c)
+		case c == '"' || c == '\'':
+			q = c
+			b.WriteByte(c)
+		case c == ' ' || c == '\t' || c == '\n' || c == '\\':
+			if b.Len() > 0 {
+				out = append(out, b.String())
+				b.Reset()
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if b.Len() > 0 {
+		out = append(out, b.String())
+	}
+	return out
+}
+
 // judgeSpec decides an apk dependency on an OpenSSH server package.
-func (s *scanner) judgeSpec(rel string, sp span, w word, pkg, op, ver string, b baseInfo, image string, dockerfile bool) (Finding, bool) {
-	l, col, sameLine := sp.at(w)
-	raw := sp.text[w.start:w.end]
-	props := map[string]string{"package": pkg, "spec": w.val}
+func (s *scanner) judgeSpec(rel string, at specAt, pkg, op, ver string, b baseInfo, image string, dockerfile bool) (Finding, bool) {
+	l, col := at.line, at.col
+	raw := at.raw
+	_ = col
+	props := map[string]string{"package": pkg, "spec": at.val}
+	if at.via != "" {
+		props["variable"] = at.via
+	}
 	if image != "" {
 		props["image"] = image
 	}
@@ -726,7 +871,7 @@ func (s *scanner) judgeSpec(rel string, sp span, w word, pkg, op, ver string, b 
 		if b.why != "" {
 			why += " (" + b.why + ")"
 		}
-		f.Message = fmt.Sprintf("installs %s with apk, but %s, so whether it is Alpine (musl) is not known", w.val, why)
+		f.Message = fmt.Sprintf("installs %s with apk, but %s, so whether it is Alpine (musl) is not known", at.val, why)
 		f.Fix = "If this image is Alpine, require " + pkg + " at the fixed release for its branch (" + fixedTable() + ")"
 		return f, true
 	}
@@ -736,8 +881,16 @@ func (s *scanner) judgeSpec(rel string, sp span, w word, pkg, op, ver string, b 
 	fixed, haveFixed := assess.AlpineFixedFor(b.branch)
 	if b.branch != "" && !haveFixed {
 		f.Rule, f.Level = RuleEOL, "error"
-		f.Message = fmt.Sprintf("installs %s on Alpine %s (%s), which has no OpenSSH package with the *sshole fix", w.val, b.branch, image)
+		f.Message = fmt.Sprintf("installs %s on Alpine %s (%s), which has no OpenSSH package with the *sshole fix", at.val, b.branch, image)
 		f.Fix = "Move the base image to an Alpine release with a fixed package (" + fixedTable() + "), or set PasswordAuthentication no and change every \"*\" password field to \"*NP*\""
+		// The official alpine image, tagged on its FROM line, moves to the
+		// nearest release with a fixed package, as a labelled upgrade.
+		if s.from.line > 0 && s.from.image == image && officialAlpine(image) {
+			up := alpineTagged(image, "3.16")
+			props["upgrade"] = up
+			f.Fixable = true
+			f.edit = &Edit{Line: s.from.line, Col: s.from.col, Old: s.from.tagText, New: up}
+		}
 		return f, true
 	}
 	ok, decided := satisfiesFix(op, ver, fixed, haveFixed)
@@ -747,10 +900,13 @@ func (s *scanner) judgeSpec(rel string, sp span, w word, pkg, op, ver string, b 
 	switch {
 	case op == "" || op == "~" || op == ">=" || op == ">":
 		f.Rule, f.Level = RuleUnpinned, "warning"
-		f.Message = fmt.Sprintf("installs %s with no floor at the fixed release; images built before 2026-11-05, or from a cached layer, keep the vulnerable OpenSSH server", w.val)
+		f.Message = fmt.Sprintf("installs %s with no floor at the fixed release; images built before 2026-11-05, or from a cached layer, keep the vulnerable OpenSSH server", at.val)
 	default:
 		f.Rule, f.Level = RulePin, "error"
-		f.Message = fmt.Sprintf("pins %s to a release without the *sshole fix", w.val)
+		f.Message = fmt.Sprintf("pins %s to a release without the *sshole fix", at.val)
+	}
+	if at.via != "" {
+		f.Message += fmt.Sprintf(" (through $%s, set on line %d)", at.via, at.editLine)
 	}
 	if !haveFixed {
 		f.Fix = "Require " + pkg + " at the fixed release for this image's Alpine branch (" + fixedTable() + ")"
@@ -761,11 +917,14 @@ func (s *scanner) judgeSpec(rel string, sp span, w word, pkg, op, ver string, b 
 		newSpec = pkg + "=" + fixed
 	}
 	quoted := "'" + newSpec + "'"
+	if at.via != "" {
+		quoted = newSpec // inside a variable's value the shell never reads > as a redirection
+	}
 	f.Fix = fmt.Sprintf("Require %s (Alpine %s), which rebuilds the layer with the fixed package", newSpec, branchName(b.branch))
 	props["fixed"] = fixed
-	if sameLine && !strings.Contains(raw, "\n") {
+	if at.editable {
 		f.Fixable = true
-		f.edit = &Edit{Line: l, Col: col, Old: raw, New: quoted}
+		f.edit = &Edit{Line: at.editLine, Col: at.col, Old: raw, New: quoted}
 	}
 	return f, true
 }
@@ -861,7 +1020,7 @@ var yamlStar = regexp.MustCompile(`^(\s*-?\s*(?:password|passwd)\s*:\s*)(["']?)\
 var yamlStarInline = regexp.MustCompile(`\bpassword=(["']?)\*(["']?)(\s|$)`)
 
 func (s *scanner) yaml(rel, text string) []Finding {
-	var out []Finding
+	out := s.ansible(rel, strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n"))
 	for i, l := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		if m := yamlStar.FindStringSubmatchIndex(l); m != nil {
 			old := l[m[2]:]
@@ -938,4 +1097,123 @@ func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
 		return true, "", nil // musl without Alpine's release file
 	}
 	return false, "", nil
+}
+
+// officialAlpine reports the official alpine image (alpine, library/alpine,
+// docker.io/library/alpine) with a tag.
+func officialAlpine(img string) bool {
+	name := img
+	if i := strings.Index(name, "@"); i >= 0 {
+		return false // a digest pin: change it by hand
+	}
+	i := strings.LastIndexByte(name, ':')
+	if i < 0 {
+		return false
+	}
+	name = strings.TrimPrefix(strings.TrimPrefix(name[:i], "docker.io/"), "library/")
+	return name == "alpine"
+}
+
+func alpineTagged(img, tag string) string {
+	return img[:strings.LastIndexByte(img, ':')+1] + tag
+}
+
+// Ansible apk tasks: `apk: name=... state=present`, or a mapping with
+// name and state. state: latest upgrades on every run.
+var (
+	ansibleModule = regexp.MustCompile(`^(\s*)(?:-\s+)?(?:community\.general\.)?apk:\s*(.*)$`)
+	ansibleKey    = regexp.MustCompile(`^(\s*)(name|state|pkg|package):\s*(.*)$`)
+	ansibleItem   = regexp.MustCompile(`^\s*-\s+["']?([A-Za-z0-9._+-]+)`)
+)
+
+func (s *scanner) ansible(rel string, lines []string) []Finding {
+	var out []Finding
+	for i := 0; i < len(lines); i++ {
+		m := ansibleModule.FindStringSubmatch(lines[i])
+		if m == nil {
+			continue
+		}
+		indent := len(m[1])
+		var names []string
+		state, stateLine, stateCol := "", 0, 0
+		nameLine := 0
+		if inline := strings.TrimSpace(m[2]); inline != "" && strings.Contains(inline, "=") {
+			for _, kv := range strings.Fields(inline) {
+				k, v, _ := strings.Cut(kv, "=")
+				switch k {
+				case "name", "pkg":
+					names = append(names, strings.Split(strings.Trim(v, `"'`), ",")...)
+				case "state":
+					state = strings.Trim(v, `"'`)
+					stateLine, stateCol = i+1, strings.Index(lines[i], kv)
+				}
+			}
+			nameLine = i + 1
+		} else {
+			for j := i + 1; j < len(lines); j++ {
+				l := lines[j]
+				if strings.TrimSpace(l) == "" {
+					continue
+				}
+				if len(l)-len(strings.TrimLeft(l, " ")) <= indent {
+					break
+				}
+				km := ansibleKey.FindStringSubmatch(l)
+				if km == nil {
+					continue
+				}
+				switch km[2] {
+				case "name", "pkg", "package":
+					nameLine = j + 1
+					v := strings.Trim(strings.TrimSpace(km[3]), "[]")
+					for _, n := range strings.Split(v, ",") {
+						if n = strings.Trim(strings.TrimSpace(n), `"'`); n != "" {
+							names = append(names, n)
+						}
+					}
+					for k := j + 1; k < len(lines); k++ {
+						im := ansibleItem.FindStringSubmatch(lines[k])
+						if im == nil || len(lines[k])-len(strings.TrimLeft(lines[k], " ")) <= len(km[1]) && !strings.HasPrefix(strings.TrimSpace(lines[k]), "-") {
+							break
+						}
+						names = append(names, im[1])
+					}
+				case "state":
+					state = strings.Trim(strings.TrimSpace(km[3]), `"'`)
+					stateLine, stateCol = j+1, len(km[1])
+				}
+			}
+		}
+		pkgs := []string{}
+		for _, n := range names {
+			if sm := specRE.FindStringSubmatch(n); sm != nil && sshPackages[sm[1]] {
+				pkgs = append(pkgs, n)
+			}
+		}
+		if len(pkgs) == 0 || state == "latest" || state == "absent" || state == "removed" {
+			continue
+		}
+		f := Finding{Rule: RuleAnsible, File: rel, Line: i + 1, Level: "warning", Props: map[string]string{"package": strings.Join(pkgs, ",")},
+			Message: fmt.Sprintf("Ansible apk task installs %s without state: latest; hosts set up before 2026-11-05 keep an OpenSSH server without the *sshole fix", strings.Join(pkgs, ", ")),
+			Fix:     "Set state: latest on the task (or run apk upgrade on the hosts), so each run installs the fixed package from the host's Alpine repositories"}
+		switch {
+		case stateLine > 0 && strings.Contains(lines[stateLine-1], "state=") && state != "":
+			old := "state=" + state
+			if c := strings.Index(lines[stateLine-1], old); c >= 0 {
+				f.Fixable, f.edit = true, &Edit{Line: stateLine, Col: c, Old: old, New: "state=latest"}
+			}
+		case stateLine > 0:
+			l := strings.TrimRight(lines[stateLine-1], "\r")
+			f.Fixable, f.edit = true, &Edit{Line: stateLine, Col: stateCol, Old: l[stateCol:], New: "state: latest"}
+		case nameLine > 0 && strings.Contains(lines[nameLine-1], "name=") || nameLine == i+1 && strings.Contains(m[2], "="):
+			l := strings.TrimRight(lines[i], "\r")
+			f.Fixable, f.edit = true, &Edit{Line: i + 1, Col: len(l), Old: "", New: " state=latest"}
+		case nameLine > 0:
+			l := strings.TrimRight(lines[nameLine-1], "\r")
+			ind := l[:len(l)-len(strings.TrimLeft(l, " "))]
+			f.Fixable, f.edit = true, &Edit{Line: nameLine, Col: len(l), Old: "", New: "\n" + ind + "state: latest"}
+		}
+		out = append(out, f)
+	}
+	return out
 }
