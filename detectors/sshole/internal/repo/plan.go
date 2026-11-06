@@ -208,7 +208,7 @@ func summary(f Finding) string {
 // New files are written first; one that exists already must hold the same
 // content.
 func Apply(root string, ch *Change) error {
-	if err := writeNewFiles(root, ch.NewFiles); err != nil {
+	if err := WriteNewFiles(root, ch.NewFiles); err != nil {
 		return err
 	}
 	if len(ch.Edits) == 0 {
@@ -320,7 +320,9 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 	return &at[0], false, nil
 }
 
-func writeNewFiles(root string, files map[string][]byte) error {
+// WriteNewFiles writes files a change adds, refusing symbolic links on
+// the way and any file that exists with other content.
+func WriteNewFiles(root string, files map[string][]byte) error {
 	paths := make([]string, 0, len(files))
 	for p := range files {
 		paths = append(paths, p)
