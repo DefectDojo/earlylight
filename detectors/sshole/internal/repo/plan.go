@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -17,6 +19,9 @@ type Change struct {
 	File    string
 	Edits   []Edit
 	Summary string
+	// NewFiles are files the change adds, by repository-relative path.
+	// Apply refuses to replace a file that exists with other content.
+	NewFiles map[string][]byte
 }
 
 // Declined is a plan that proposes no change, with the reason.
@@ -38,8 +43,16 @@ func IsDeclined(err error) (*Declined, bool) {
 // in memory and accepts the edit only when that finding is gone and nothing
 // new appeared. already is true when the finding is no longer there.
 func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, bool, error) {
-	if !f.Fixable || f.edit == nil {
+	if !f.Fixable || f.edit == nil && len(f.newFiles) == 0 {
 		return nil, false, &Declined{Reason: f.Fix}
+	}
+	for p, data := range f.newFiles {
+		if cur, err := readFile(root, p); err == nil && string(cur) != string(data) {
+			return nil, false, &Declined{Reason: fmt.Sprintf("%s already exists with other content; add the fix by hand", p)}
+		}
+	}
+	if f.edit == nil {
+		return planNewFiles(ctx, root, f, opts)
 	}
 	b, err := readFile(root, f.File)
 	if err != nil {
@@ -72,7 +85,7 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 		e = *match
 	}
 	newLine := line[:e.Col] + e.New + line[e.Col+len(e.Old):]
-	ch := &Change{File: f.File, Edits: []Edit{{Line: e.Line, Col: e.Col, Old: line, New: newLine}}, Summary: summary(f)}
+	ch := &Change{File: f.File, Edits: []Edit{{Line: e.Line, Col: e.Col, Old: line, New: newLine}}, Summary: summary(f), NewFiles: f.newFiles}
 
 	// Rescan the edited file in memory.
 	edited := append([]string{}, lines...)
@@ -83,6 +96,9 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 	edited[e.Line-1] = newLine + cr
 	o := opts
 	o.Overlay = map[string][]byte{f.File: []byte(strings.Join(edited, "\n"))}
+	for p, data := range f.newFiles {
+		o.Overlay[p] = data
+	}
 	before, err := scanOne(ctx, root, f.File, opts, nil)
 	if err != nil {
 		return nil, false, err
@@ -98,6 +114,28 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 		return nil, false, &Declined{Reason: "the edit raised a new finding; change it by hand"}
 	}
 	return ch, false, nil
+}
+
+// planNewFiles plans a fix that only adds files, checked by rescanning the
+// finding's file with the files in place.
+func planNewFiles(ctx context.Context, root string, f Finding, opts Options) (*Change, bool, error) {
+	o := opts
+	o.Overlay = map[string][]byte{}
+	for p, data := range f.newFiles {
+		o.Overlay[p] = data
+	}
+	before, err := scanOne(ctx, root, f.File, opts, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	after, err := scanOne(ctx, root, f.File, o, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if count(after, f.Rule, f.Line) >= count(before, f.Rule, f.Line) {
+		return nil, false, &Declined{Reason: "the added files did not clear the finding; add the fix by hand"}
+	}
+	return &Change{File: f.File, Summary: summary(f), NewFiles: f.newFiles}, false, nil
 }
 
 func scanOne(ctx context.Context, root, file string, opts Options, data []byte) ([]Finding, error) {
@@ -118,6 +156,21 @@ func scanOne(ctx context.Context, root, file string, opts Options, data []byte) 
 	case "sshd_config":
 		return s.sshdConfig(file, string(data)), nil
 	case "build":
+		// A Yocto finding needs the whole tree (TCLIBC and bbappends live
+		// in other files): rescan it, keeping this file's findings.
+		if s.yoctoNeedsTree(file) {
+			res, err := Scan(ctx, root, opts)
+			if err != nil {
+				return nil, err
+			}
+			var out []Finding
+			for _, f := range res.Findings {
+				if f.File == file {
+					out = append(out, f)
+				}
+			}
+			return out, nil
+		}
 		s.build(file, string(data))
 		return s.finishBuild(), nil
 	}
@@ -141,7 +194,9 @@ func summary(f Finding) string {
 	case RuleStar:
 		return "Set the password field to \"*NP*\" instead of \"*\", which keeps key logins and matches no password"
 	case RuleEOL:
-		return fmt.Sprintf("Moves the base image to %s, the nearest Alpine release with a fixed OpenSSH package. This is an Alpine release upgrade: review it and run your tests before you merge", f.Props["upgrade"])
+		return fmt.Sprintf("Moves the base image to %s, on the nearest Alpine release with a fixed OpenSSH package. This is an Alpine release upgrade: review it and run your tests before you merge", f.Props["upgrade"])
+	case RuleBuild:
+		return f.Props["fix_summary"]
 	case RuleAnsible:
 		return "Sets the Ansible apk task to state: latest, so every run installs the fixed OpenSSH package from the host's Alpine repositories"
 	}
@@ -150,7 +205,15 @@ func summary(f Finding) string {
 
 // Apply writes a change after checking each edited line still reads as
 // planned. It keeps line endings and the file mode, and writes atomically.
+// New files are written first; one that exists already must hold the same
+// content.
 func Apply(root string, ch *Change) error {
+	if err := writeNewFiles(root, ch.NewFiles); err != nil {
+		return err
+	}
+	if len(ch.Edits) == 0 {
+		return nil
+	}
 	p, err := refs.SafePath(root, ch.File)
 	if err != nil {
 		return err
@@ -255,4 +318,70 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 	// Several identical findings on one line: the first; the rest come
 	// back on the next scan.
 	return &at[0], false, nil
+}
+
+func writeNewFiles(root string, files map[string][]byte) error {
+	paths := make([]string, 0, len(files))
+	for p := range files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, rel := range paths {
+		data := files[rel]
+		// Create the directories one by one, refusing any symbolic link on
+		// the way, then check the whole path again.
+		if err := mkdirsNoLinks(root, path.Dir(path.Clean(rel))); err != nil {
+			return err
+		}
+		p, err := refs.SafePath(root, rel)
+		if err != nil {
+			return err
+		}
+		if fi, err := os.Lstat(p); err == nil {
+			cur, rerr := os.ReadFile(p)
+			if !fi.Mode().IsRegular() || rerr != nil || string(cur) != string(data) {
+				return fmt.Errorf("%s exists with other content", rel)
+			}
+			continue
+		}
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(data); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mkdirsNoLinks(root, dir string) error {
+	if dir == "." || dir == "" {
+		return nil
+	}
+	if path.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") {
+		return fmt.Errorf("%q leaves the repository", dir)
+	}
+	cur := root
+	for _, e := range strings.Split(dir, "/") {
+		cur = filepath.Join(cur, e)
+		fi, err := os.Lstat(cur)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			if err := os.Mkdir(cur, 0o755); err != nil {
+				return err
+			}
+		case err != nil:
+			return err
+		case fi.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("%s passes through a symbolic link", dir)
+		case !fi.IsDir():
+			return fmt.Errorf("%s is not a directory", cur)
+		}
+	}
+	return nil
 }

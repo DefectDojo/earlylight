@@ -28,6 +28,8 @@ type Opened struct {
 	// Command is what the container runs: the configuration's Entrypoint
 	// followed by its Cmd.
 	Command []string
+	// Entrypoint and Cmd are the configuration's own.
+	Entrypoint, Cmd []string
 }
 
 // Open resolves ref and returns the image's flattened filesystem.
@@ -51,6 +53,7 @@ func opened(img v1.Image) (*Opened, error) {
 	if cf, err := img.ConfigFile(); err == nil && cf != nil {
 		o.Env = cf.Config.Env
 		o.Command = append(append([]string(nil), cf.Config.Entrypoint...), cf.Config.Cmd...)
+		o.Entrypoint, o.Cmd = cf.Config.Entrypoint, cf.Config.Cmd
 		if cf.OS != "" {
 			o.Platform = cf.OS + "/" + cf.Architecture
 			if cf.Variant != "" {

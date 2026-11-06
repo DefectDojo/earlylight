@@ -14,6 +14,7 @@ import (
 
 	"github.com/DefectDojo/earlylight/internal/archive"
 	"github.com/DefectDojo/earlylight/internal/image"
+	"github.com/DefectDojo/earlylight/internal/netguard"
 	"github.com/DefectDojo/earlylight/internal/source"
 )
 
@@ -83,6 +84,38 @@ type Options struct {
 	PublicOnly bool     // contact only public registry addresses
 	Platforms  []string // the platforms that are built; empty means every platform
 	DryRun     bool     // fix: print changes without writing them
+	// Override replaces the image's Entrypoint or Cmd for detectors that
+	// read the container's command (a Compose or Kubernetes setting).
+	Override *CommandOverride
+	// Guarded opens registry images through the address-checking
+	// transport (image references from a source tree), honouring
+	// PublicOnly, and refuses local archives.
+	Guarded bool
+}
+
+// CommandOverride is a deployment's replacement for an image's Entrypoint
+// and Cmd. A nil field keeps the image's own; Compose's entrypoint without
+// command also clears Cmd (ClearCmd).
+type CommandOverride struct {
+	Entrypoint, Cmd *[]string
+	ClearCmd        bool
+}
+
+// Apply returns the command the container runs.
+func (o *CommandOverride) Apply(entrypoint, cmd []string) []string {
+	if o == nil {
+		return append(append([]string(nil), entrypoint...), cmd...)
+	}
+	if o.Entrypoint != nil {
+		entrypoint = *o.Entrypoint
+		if o.ClearCmd {
+			cmd = nil
+		}
+	}
+	if o.Cmd != nil {
+		cmd = *o.Cmd
+	}
+	return append(append([]string(nil), entrypoint...), cmd...)
 }
 
 // targetCtx is the TargetContext the engine builds while it walks a target.
@@ -359,7 +392,10 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 	t := &Target{Name: ref, Type: Image}
 	w := newWalker(dets, Image, t, opts)
 	var rc io.ReadCloser
-	if p, ok := strings.CutPrefix(ref, "rootfs:"); ok {
+	if p, ok := strings.CutPrefix(ref, "rootfs:"); ok && opts.Guarded {
+		t.Error = fmt.Sprintf("%q: only registry references are opened for a source tree", "rootfs:"+p)
+		return t
+	} else if ok {
 		if p == "-" {
 			rc = io.NopCloser(os.Stdin)
 		} else {
@@ -371,12 +407,19 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 			rc = f
 		}
 	} else {
-		o, err := image.Open(ref, opts.Platform)
+		open := image.Open
+		if opts.Guarded {
+			open = func(ref, platform string) (*image.Opened, error) {
+				return image.OpenRegistry(ref, platform, netguard.Transport(opts.PublicOnly))
+			}
+		}
+		o, err := open(ref, opts.Platform)
 		if err != nil {
 			t.Error = err.Error()
 			return t
 		}
-		rc, t.Digest, t.Platform, w.ctx.env, w.ctx.cmd = o.FS, o.Digest, o.Platform, o.Env, o.Command
+		rc, t.Digest, t.Platform, w.ctx.env = o.FS, o.Digest, o.Platform, o.Env
+		w.ctx.cmd = opts.Override.Apply(o.Entrypoint, o.Cmd)
 	}
 	defer rc.Close()
 	so := w.sourceOptions(opts)

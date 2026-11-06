@@ -6,13 +6,17 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/DefectDojo/earlylight/detectors/sshole/internal/repo"
 	"github.com/DefectDojo/earlylight/internal/engine"
 	"github.com/DefectDojo/earlylight/internal/image"
 	"github.com/DefectDojo/earlylight/internal/netguard"
+	"github.com/DefectDojo/earlylight/internal/refs"
 	"github.com/DefectDojo/earlylight/internal/source"
 )
 
@@ -39,6 +43,8 @@ func repoKinds() []engine.Kind {
 			Description: "A Dockerfile, script or Ansible or cloud-init task that sets an account's password field to \"*\" (usermod -p, chpasswd -e, sed on /etc/shadow). On an OpenSSH server on musl without the fix, a crafted password logs in to that account. \"*NP*\" keeps key logins and matches no password on any build."},
 		{ID: KindPassword, Title: "PasswordAuthentication turned on", Level: "note",
 			Description: "Something turns PasswordAuthentication on. With an OpenSSH server on musl that lacks the fix, every account with the password field \"*\" is exposed."},
+		{ID: KindImage, Title: "Image the source tree uses runs an OpenSSH server exposed to *sshole", Level: "error", SecuritySeverity: "9.8", CWEs: cwe,
+			Description: "An image a Dockerfile, Compose file, Kubernetes manifest, Helm values or CI file names holds an OpenSSH server on musl without the fix, judged as scan image does, with the command the file sets for it."},
 		{ID: KindNotChecked, Title: "OpenSSH install not checked for the *sshole fix", Level: "note",
 			Description: "An apk add of an OpenSSH server whose base image could not be identified, or a file that could not be read. It is not known to be safe."},
 	}
@@ -47,10 +53,13 @@ func repoKinds() []engine.Kind {
 // ScanRepo checks a source tree.
 func (d *Detector) ScanRepo(ctx context.Context, dir string, o engine.Options) *engine.Target {
 	t := &engine.Target{Name: dir, Type: engine.Repository}
-	res, err := repo.Scan(ctx, dir, repo.Options{Base: baseResolver(o)})
+	res, err := repo.Scan(ctx, dir, repoOptions(o))
 	if err != nil {
 		t.Error = err.Error()
 		return t
+	}
+	if !o.Offline {
+		d.scanImages(dir, o, t)
 	}
 	t.Files = res.Files
 	if res.Truncated {
@@ -82,6 +91,128 @@ func repoFinding(f repo.Finding) engine.Finding {
 		out.Severity = "medium"
 	}
 	return out
+}
+
+func repoOptions(o engine.Options) repo.Options {
+	ro := repo.Options{Base: baseResolver(o)}
+	if !o.Offline {
+		ro.Tags = tagLister(o)
+	}
+	return ro
+}
+
+// KindImage: an image the source tree builds on or deploys holds an
+// OpenSSH server exposed to *sshole.
+const KindImage = "image"
+
+// maxRepoImages bounds the images one source-tree scan pulls.
+const maxRepoImages = 20
+
+// scanImages pulls the images the tree references (Dockerfile FROM,
+// Compose, Kubernetes, Helm values, CI) through the guarded transport and
+// judges them like scan image does, with the command a Compose service or
+// Kubernetes container sets in place of the image's own.
+func (d *Detector) scanImages(dir string, o engine.Options, t *engine.Target) {
+	rs, _, err := refs.Scan(dir, refs.Options{})
+	if err != nil {
+		t.Problems = append(t.Problems, "image references: "+err.Error())
+		return
+	}
+	type key struct{ image, cmd string }
+	seen := map[key]bool{}
+	pulled := 0
+	for _, r := range rs {
+		if r.Image == "" || r.Image == "scratch" || strings.Contains(r.Image, "$") {
+			continue
+		}
+		ov := repo.OverrideFor(dir, r, nil)
+		k := key{r.Image, fmt.Sprint(ov)}
+		if ov != nil && ov.Entrypoint != nil {
+			k.cmd = strings.Join(*ov.Entrypoint, " ")
+		}
+		if ov != nil && ov.Cmd != nil {
+			k.cmd += "|" + strings.Join(*ov.Cmd, " ")
+		}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if pulled >= maxRepoImages {
+			t.Skipped = append(t.Skipped, source.Skip{Path: fmt.Sprintf("%s:%d", r.File, r.Line), Reason: fmt.Sprintf("image %s not pulled: this scan already pulled %d images", r.Image, maxRepoImages)})
+			continue
+		}
+		pulled++
+		eo := engine.Options{Platform: o.Platform, MaxFileSize: o.MaxFileSize, Guarded: true, PublicOnly: o.PublicOnly}
+		if ov != nil {
+			eo.Override = &engine.CommandOverride{Entrypoint: ov.Entrypoint, Cmd: ov.Cmd, ClearCmd: ov.ClearCmd}
+		}
+		it := engine.ScanImage([]engine.Detector{d}, r.Image, eo)
+		if it.Error != "" {
+			t.Findings = append(t.Findings, engine.Finding{Kind: KindNotChecked, Path: r.File, Line: r.Line, Verdict: engine.Unknown,
+				Reason: "the image could not be pulled", Message: fmt.Sprintf("image %s could not be checked for *sshole: %s", r.Image, it.Error), Method: "registry",
+				Facts: map[string]string{"image": r.Image}})
+			continue
+		}
+		for _, f := range it.Findings {
+			if f.Verdict.Cleared() {
+				continue
+			}
+			g := f
+			g.Kind, g.Path, g.Line, g.Method = KindImage, r.File, r.Line, "registry"
+			if g.Facts == nil {
+				g.Facts = map[string]string{}
+			}
+			g.Facts["image"], g.Facts["server"] = r.Image, f.Path
+			via := ""
+			if ov != nil {
+				via = " (with the command this file sets)"
+				g.Facts["command_override"] = "yes"
+			}
+			g.Message = fmt.Sprintf("image %s%s: %s: %s", r.Image, via, f.Path, f.Message)
+			g.Fix = f.Fix + " Use a release of " + r.Image + " built with the fix, or rebuild it; then redeploy."
+			if f.Kind == KindExposed && g.Severity == "" {
+				g.Severity = "critical"
+			}
+			t.Findings = append(t.Findings, g)
+		}
+	}
+}
+
+// tagLister lists an image repository's tags through the guarded
+// transport, a page at a time, at most 20,000, within the timeout.
+func tagLister(o engine.Options) func(context.Context, string) ([]string, error) {
+	return func(ctx context.Context, img string) ([]string, error) {
+		if err := registryRef(img); err != nil {
+			return nil, err
+		}
+		repoName, err := name.NewRepository(img)
+		if err != nil {
+			return nil, err
+		}
+		timeout := o.Timeout
+		if timeout <= 0 {
+			timeout = 60 * time.Second
+		}
+		lctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		p, err := remote.NewPuller(remote.WithContext(lctx), remote.WithTransport(netguard.Transport(o.PublicOnly)), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+		if err != nil {
+			return nil, err
+		}
+		l, err := p.Lister(lctx, repoName)
+		if err != nil {
+			return nil, err
+		}
+		var tags []string
+		for l.HasNext() && len(tags) < 20000 {
+			page, err := l.Next(lctx)
+			if err != nil {
+				return nil, err
+			}
+			tags = append(tags, page.Tags...)
+		}
+		return tags, nil
+	}
 }
 
 // baseResolver reads /etc/alpine-release from the images a tree builds on,
@@ -160,7 +291,7 @@ func registryRef(ref string) error {
 // "*" password fields to "*NP*". Each edit is rescanned in memory first.
 func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, stdout, stderr io.Writer) int {
 	code := 0
-	opts := repo.Options{Base: baseResolver(o)}
+	opts := repoOptions(o)
 	for _, dir := range dirs {
 		res, err := repo.Scan(ctx, dir, opts)
 		if err != nil {

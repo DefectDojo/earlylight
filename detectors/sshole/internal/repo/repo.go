@@ -60,6 +60,9 @@ type Finding struct {
 	Props   map[string]string `json:"props,omitempty"`
 	// edit is the planned replacement, kept for Plan.
 	edit *Edit
+	// newFiles are files the fix adds (a patch, a bbappend), by
+	// repository-relative path.
+	newFiles map[string][]byte
 }
 
 // Skip is a file that was not read, and why.
@@ -87,6 +90,10 @@ type Options struct {
 	// Files, when set, limits the scan to these repository-relative paths
 	// (a pull request's changed files).
 	Files []string
+	// Tags lists an image repository's tags, for moving an end-of-life
+	// Alpine-based image to a tag on a fixed Alpine release. nil: no
+	// registry lookups.
+	Tags func(ctx context.Context, image string) ([]string, error)
 }
 
 const (
@@ -264,8 +271,9 @@ type scanner struct {
 	// from is the current stage's FROM instruction.
 	from fromInfo
 	// Yocto evidence, joined across files at the end.
-	yoctoMusl []Finding
-	yoctoSSH  []Finding
+	yoctoMusl    []Finding
+	yoctoSSH     []Finding
+	yoctoPatched []string
 }
 
 // varDef is an ARG or ENV value and where it is written.
@@ -890,6 +898,15 @@ func (s *scanner) judgeSpec(rel string, at specAt, pkg, op, ver string, b baseIn
 			props["upgrade"] = up
 			f.Fixable = true
 			f.edit = &Edit{Line: s.from.line, Col: s.from.col, Old: s.from.tagText, New: up}
+		} else if s.from.line > 0 && s.from.image == image {
+			// Another image built on Alpine ("python:3.9-alpine3.14"): a
+			// tag of it on the nearest fixed Alpine release, when the
+			// registry has one and it is that release.
+			if up := s.alpineRetag(image); up != "" {
+				props["upgrade"] = up
+				f.Fixable = true
+				f.edit = &Edit{Line: s.from.line, Col: s.from.col, Old: s.from.tagText, New: up}
+			}
 		}
 		return f, true
 	}
@@ -1216,4 +1233,63 @@ func (s *scanner) ansible(rel string, lines []string) []Finding {
 		out = append(out, f)
 	}
 	return out
+}
+
+var alpineSuffixRE = regexp.MustCompile(`^(.*alpine)(\d+)\.(\d+)$`)
+
+// alpineRetag finds a tag of image on the nearest Alpine release with a
+// fixed OpenSSH package: same tag with only the Alpine release changed,
+// confirmed by reading the candidate's /etc/alpine-release.
+func (s *scanner) alpineRetag(image string) string {
+	if s.opts.Tags == nil || s.opts.Base == nil || strings.Contains(image, "@") {
+		return ""
+	}
+	i := strings.LastIndexByte(image, ':')
+	if i < 0 || i < strings.LastIndexByte(image, '/') {
+		return ""
+	}
+	name, tag := image[:i], image[i+1:]
+	m := alpineSuffixRE.FindStringSubmatch(tag)
+	if m == nil {
+		return ""
+	}
+	tags, err := s.opts.Tags(s.ctx, name)
+	if err != nil {
+		return ""
+	}
+	type cand struct {
+		tag        string
+		maj, minor int
+	}
+	var cands []cand
+	for _, t := range tags {
+		cm := alpineSuffixRE.FindStringSubmatch(t)
+		if cm == nil || cm[1] != m[1] {
+			continue
+		}
+		branch := cm[2] + "." + cm[3]
+		if _, ok := assess.AlpineFixedFor(branch); !ok {
+			continue
+		}
+		maj, _ := strconv.Atoi(cm[2])
+		min, _ := strconv.Atoi(cm[3])
+		cands = append(cands, cand{t, maj, min})
+	}
+	sort.Slice(cands, func(a, b int) bool {
+		if cands[a].maj != cands[b].maj {
+			return cands[a].maj < cands[b].maj
+		}
+		return cands[a].minor < cands[b].minor
+	})
+	for i, c := range cands {
+		if i >= 3 {
+			break
+		}
+		img := name + ":" + c.tag
+		alpine, branch, err := s.opts.Base(s.ctx, img)
+		if err == nil && alpine && branch == fmt.Sprintf("%d.%d", c.maj, c.minor) {
+			return img
+		}
+	}
+	return ""
 }
