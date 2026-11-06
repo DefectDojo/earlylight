@@ -49,7 +49,7 @@ func TestStartupScripts(t *testing.T) {
 		{"turns on passwords and sets a star", "#!/bin/sh\nsed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config\nusermod -p '*' \"$USER\"\nexec /usr/sbin/sshd -D\n", KindExposed, true},
 		{"star but passwords stay off", "#!/bin/sh\necho \"$USER:*\" | chpasswd -e\nexec /usr/sbin/sshd -D\n", KindServer, true},
 		{"nothing relevant", "#!/bin/sh\nssh-keygen -A\nexec /usr/sbin/sshd -D\n", KindServer, false},
-		{"UsePAM on", "#!/bin/sh\necho 'PasswordAuthentication yes' >> /etc/ssh/sshd_config\necho 'UsePAM yes' >> /etc/ssh/sshd_config\nusermod -p '*' x\n", KindServer, true},
+		{"UsePAM on without a PAM build", "#!/bin/sh\necho 'PasswordAuthentication yes' >> /etc/ssh/sshd_config\necho 'UsePAM yes' >> /etc/ssh/sshd_config\nusermod -p '*' x\n", KindExposed, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -96,5 +96,41 @@ func TestOpkg(t *testing.T) {
 		if fixed, _, ok := opkgStatus(v); !ok || fixed != want {
 			t.Errorf("%s: %v %v", v, fixed, ok)
 		}
+	}
+}
+
+func TestStartupReviewCases(t *testing.T) {
+	quiet := map[string]string{"/etc/shadow": strings.Replace(stdShadow, "bob:*", "bob:!", 1), "/etc/ssh/sshd_config.d/00.conf": "PasswordAuthentication no\n"}
+	// UsePAM yes protects nothing on a build without PAM.
+	w := newWorld("10.0p2", false, quiet)
+	script := "#!/bin/sh\necho 'UsePAM yes' >> /etc/ssh/sshd_config\necho 'PasswordAuthentication yes' >> /etc/ssh/sshd_config\nusermod -p '*' x\n"
+	if f := one(t, runStartup(w, Startup{Command: []string{"/e.sh"}, Scripts: map[string][]byte{"/e.sh": []byte(script)}})); f.Kind != KindExposed {
+		t.Errorf("non-PAM build with UsePAM: %+v", f)
+	}
+	// "-e" elsewhere on the line is not chpasswd's flag.
+	w = newWorld("10.0p2", false, map[string]string{"/etc/shadow": strings.Replace(stdShadow, sha512Alice, "!", 1)})
+	script = "#!/bin/sh\necho -e \"admin:$PW\" | chpasswd\n"
+	if f := one(t, runStartup(w, Startup{Command: []string{"/e.sh"}, Scripts: map[string][]byte{"/e.sh": []byte(script)}})); f.Kind != KindExposed {
+		t.Errorf("echo -e | chpasswd: %+v", f)
+	}
+	// Two scripts that start sshd differently: their options are not applied.
+	w = newWorld("10.0p2", false, nil)
+	scripts := map[string][]byte{"/etc/cont-init.d/a": []byte("#!/bin/sh\n/usr/sbin/sshd -D -o PasswordAuthentication=no\n"), "/etc/cont-init.d/b": []byte("#!/bin/sh\n/usr/sbin/sshd -D\n")}
+	if f := one(t, runStartup(w, Startup{Scripts: scripts})); f.Kind != KindExposed {
+		t.Errorf("disagreeing invocations lowered the verdict: %+v", f)
+	}
+	// A config test and an echo do not count.
+	scripts = map[string][]byte{"/etc/cont-init.d/a": []byte("#!/bin/sh\n/usr/sbin/sshd -t -o PasswordAuthentication=no\necho /usr/sbin/sshd -o PasswordAuthentication=no\n")}
+	if f := one(t, runStartup(w, Startup{Scripts: scripts})); f.Kind != KindExposed {
+		t.Errorf("test-mode invocation applied: %+v", f)
+	}
+}
+
+func TestStartupUsePAMOnPAMBuild(t *testing.T) {
+	quiet := map[string]string{"/etc/shadow": strings.Replace(stdShadow, "bob:*", "bob:!", 1), "/etc/ssh/sshd_config.d/00.conf": "PasswordAuthentication no\n"}
+	w := newWorld("10.0p2", true, quiet)
+	script := "#!/bin/sh\necho 'PasswordAuthentication yes' >> /etc/ssh/sshd_config\necho 'UsePAM yes' >> /etc/ssh/sshd_config\nusermod -p '*' x\n"
+	if f := one(t, runStartup(w, Startup{Command: []string{"/e.sh"}, Scripts: map[string][]byte{"/e.sh": []byte(script)}})); f.Kind != KindServer {
+		t.Errorf("PAM build with UsePAM yes at start: %+v", f)
 	}
 }

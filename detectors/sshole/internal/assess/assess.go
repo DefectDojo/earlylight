@@ -316,7 +316,7 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 	f.Status, f.Severity = Vulnerable, "medium"
 	f.Message = fmt.Sprintf("OpenSSH %s server on musl without the *sshole fix; not exploitable as configured: %s", main.Release, strings.Join(missing, "; "))
 	if sig := startupSignals(scripts); sig.any() {
-		if t, ok := atStart(in, cfg, donor, sig); ok {
+		if t, ok := atStart(in, cfg, donor, sig, f.PAM); ok {
 			f.Kind, f.Severity = KindExposed, "high"
 			f.Targets = t
 			f.AtStart = sig.where
@@ -338,27 +338,58 @@ func targetNames(ts []Target) string {
 	return strings.Join(n, ", ")
 }
 
-// pickInvocation finds the command line that starts this server.
+// pickInvocation finds the command line that starts this server: the
+// container command's when it runs sshd, else the startup scripts' when they
+// all agree. Command lines that disagree are not applied: options must not
+// lower a verdict on a guess.
 func pickInvocation(invs []invocation, u []*Binary) (invocation, bool) {
+	var mine []invocation
 	for _, inv := range invs {
 		for _, b := range u {
 			if inv.binary == b.Path || path.Base(inv.binary) == path.Base(b.Path) {
-				return inv, true
+				mine = append(mine, inv)
+				break
 			}
 		}
 	}
-	return invocation{}, false
+	if len(mine) == 0 {
+		return invocation{}, false
+	}
+	for _, inv := range mine {
+		if inv.where == "the container command" {
+			return inv, true
+		}
+	}
+	for _, inv := range mine[1:] {
+		if inv.config != mine[0].config || !sameOpts(inv.opts, mine[0].opts) {
+			return invocation{}, false
+		}
+	}
+	return mine[0], true
+}
+
+func sameOpts(a, b []Directive) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Key != b[i].Key || strings.Join(a[i].Args, " ") != strings.Join(b[i].Args, " ") {
+			return false
+		}
+	}
+	return true
 }
 
 // atStart applies what the startup scripts do (turn password logins on,
 // set a password field to "*", set passwords with chpasswd) and returns the
 // accounts a crafted password would then reach.
-func atStart(in Input, cfg Config, donor Donor, sig signals) ([]Target, bool) {
+func atStart(in Input, cfg Config, donor Donor, sig signals, pamBuilt bool) ([]Target, bool) {
 	fails := donor.Fails
 	if donor.Account == "" && sig.passwords {
 		fails = "long" // chpasswd writes a sha512 hash, the first one pick_salt sees
 	}
-	if fails == "none" || sig.usePAMOn {
+	// UsePAM yes protects only a build with PAM in it.
+	if fails == "none" || sig.usePAMOn && pamBuilt {
 		return nil, false
 	}
 	c := cfg

@@ -186,6 +186,13 @@ func fieldsQuoted(s string) []string {
 var sshdValueFlags = "CEbcghkpu" // sshd.c getopt "C:E:b:c:f:g:h:k:o:p:u:..."
 
 func parseSSHD(argv []string, where string) (invocation, bool) {
+	// A line that only prints, tests or looks for sshd does not run it.
+	if len(argv) > 0 {
+		switch path.Base(argv[0]) {
+		case "echo", "printf", "test", "[", "[[", "grep", "pgrep", "pkill", "kill", "which", "command", "type", "ls", "cat", "if", "case":
+			return invocation{}, false
+		}
+	}
 	i := 0
 	for i < len(argv) {
 		b := path.Base(argv[i])
@@ -196,6 +203,11 @@ func parseSSHD(argv []string, where string) (invocation, bool) {
 	}
 	if i >= len(argv) {
 		return invocation{}, false
+	}
+	for _, a := range argv[i+1:] {
+		if a == "-t" || a == "-T" || a == "-G" {
+			return invocation{}, false // a config test, not the server
+		}
 	}
 	inv := invocation{binary: argv[i], where: where}
 	for j := i + 1; j < len(argv); j++ {
@@ -225,7 +237,7 @@ func parseSSHD(argv []string, where string) (invocation, bool) {
 // accounts before sshd runs.
 var (
 	pwOnRE     = regexp.MustCompile(`(?i)PasswordAuthentication\s*[= ]\s*["']?yes`)
-	usePAMOnRE = regexp.MustCompile(`(?i)UsePAM\s*[= ]\s*["']?yes`)
+	usePAMOnRE = regexp.MustCompile(`(?im)^[^#\n]*UsePAM\s*[= ]\s*["']?yes`)
 	starSetRE  = []*regexp.Regexp{
 		regexp.MustCompile(`(?:usermod|useradd)\b[^\n]*(?:-p|--password)[ =]\s*(?:'\*'|"\*"|\\\*|\*)(?:\s|$)`),
 		regexp.MustCompile(`[A-Za-z0-9_$.{}-]+:\*['"]?\s*\|\s*chpasswd\s+(?:-e|--encrypted)`),
@@ -275,8 +287,25 @@ func startupSignals(scripts []script) signals {
 			}
 		}
 		for _, line := range strings.Split(sc.text, "\n") {
-			if chpasswdRE.MatchString(line) && !strings.Contains(line, "-e") && !strings.Contains(line, "--encrypted") {
-				g.passwords, hit = true, true // busybox and shadow chpasswd write sha512 hashes by default
+			if !chpasswdRE.MatchString(line) {
+				continue
+			}
+			for _, part := range splitCommands(line) {
+				words := fieldsQuoted(part)
+				for i, w := range words {
+					if path.Base(w) != "chpasswd" {
+						continue
+					}
+					encrypted := false
+					for _, a := range words[i+1:] {
+						if a == "-e" || a == "--encrypted" || strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "e") {
+							encrypted = true
+						}
+					}
+					if !encrypted {
+						g.passwords, hit = true, true // busybox and shadow chpasswd write sha512 hashes by default
+					}
+				}
 			}
 		}
 		if hit {
