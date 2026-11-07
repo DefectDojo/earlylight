@@ -14,6 +14,7 @@ import (
 
 	"github.com/DefectDojo/earlylight/internal/archive"
 	"github.com/DefectDojo/earlylight/internal/image"
+	"github.com/DefectDojo/earlylight/internal/netguard"
 	"github.com/DefectDojo/earlylight/internal/source"
 )
 
@@ -83,6 +84,38 @@ type Options struct {
 	PublicOnly bool     // contact only public registry addresses
 	Platforms  []string // the platforms that are built; empty means every platform
 	DryRun     bool     // fix: print changes without writing them
+	// Override replaces the image's Entrypoint or Cmd for detectors that
+	// read the container's command (a Compose or Kubernetes setting).
+	Override *CommandOverride
+	// Guarded opens registry images through the address-checking
+	// transport (image references from a source tree), honouring
+	// PublicOnly, and refuses local archives.
+	Guarded bool
+}
+
+// CommandOverride is a deployment's replacement for an image's Entrypoint
+// and Cmd. A nil field keeps the image's own; Compose's entrypoint without
+// command also clears Cmd (ClearCmd).
+type CommandOverride struct {
+	Entrypoint, Cmd *[]string
+	ClearCmd        bool
+}
+
+// Apply returns the command the container runs.
+func (o *CommandOverride) Apply(entrypoint, cmd []string) []string {
+	if o == nil {
+		return append(append([]string(nil), entrypoint...), cmd...)
+	}
+	if o.Entrypoint != nil {
+		entrypoint = *o.Entrypoint
+		if o.ClearCmd {
+			cmd = nil
+		}
+	}
+	if o.Cmd != nil {
+		cmd = *o.Cmd
+	}
+	return append(append([]string(nil), entrypoint...), cmd...)
 }
 
 // targetCtx is the TargetContext the engine builds while it walks a target.
@@ -92,6 +125,7 @@ type targetCtx struct {
 	sysRoot   string // fs scans below the system root: its OS path
 	seen      map[string]bool
 	env       []string
+	cmd       []string
 	symlinks  map[string]string // absolute path -> target as written
 	hardlinks map[string]string // absolute path -> absolute path it names
 }
@@ -115,6 +149,7 @@ func (c *targetCtx) Annotate(key string, v any) {
 func (c *targetCtx) Kind() TargetKind     { return c.kind }
 func (c *targetCtx) Exists(p string) bool { return c.seen[p] }
 func (c *targetCtx) Env() []string        { return c.env }
+func (c *targetCtx) Command() []string    { return c.cmd }
 func (c *targetCtx) Aliases(p string) []string {
 	out := []string{p}
 	seen := map[string]bool{p: true}
@@ -357,7 +392,10 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 	t := &Target{Name: ref, Type: Image}
 	w := newWalker(dets, Image, t, opts)
 	var rc io.ReadCloser
-	if p, ok := strings.CutPrefix(ref, "rootfs:"); ok {
+	if p, ok := strings.CutPrefix(ref, "rootfs:"); ok && opts.Guarded {
+		t.Error = fmt.Sprintf("%q: only registry references are opened for a source tree", "rootfs:"+p)
+		return t
+	} else if ok {
 		if p == "-" {
 			rc = io.NopCloser(os.Stdin)
 		} else {
@@ -369,12 +407,19 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 			rc = f
 		}
 	} else {
-		o, err := image.Open(ref, opts.Platform)
+		open := image.Open
+		if opts.Guarded {
+			open = func(ref, platform string) (*image.Opened, error) {
+				return image.OpenRegistry(ref, platform, netguard.Transport(opts.PublicOnly))
+			}
+		}
+		o, err := open(ref, opts.Platform)
 		if err != nil {
 			t.Error = err.Error()
 			return t
 		}
 		rc, t.Digest, t.Platform, w.ctx.env = o.FS, o.Digest, o.Platform, o.Env
+		w.ctx.cmd = opts.Override.Apply(o.Entrypoint, o.Cmd)
 	}
 	defer rc.Close()
 	so := w.sourceOptions(opts)
@@ -400,7 +445,8 @@ func ScanHost(dets []Detector, addr string, opts Options) *Target {
 		addr = u.Host
 	}
 	t := &Target{Name: addr, Type: Host}
-	ran := false
+	ran, applied := false, false
+	var notApplicable []string
 	for _, d := range dets {
 		p, ok := d.(Prober)
 		if !ok || !d.Manifest().Supports(Host) {
@@ -408,6 +454,11 @@ func ScanHost(dets []Detector, addr string, opts Options) *Target {
 		}
 		ran = true
 		name, checked, fs, err := p.Probe(context.Background(), addr, opts.Timeout)
+		if errors.Is(err, ErrNotApplicable) {
+			notApplicable = append(notApplicable, d.Manifest().ID+": "+err.Error())
+			continue
+		}
+		applied = true
 		if name != "" {
 			t.Name = name
 		}
@@ -424,8 +475,11 @@ func ScanHost(dets []Detector, addr string, opts Options) *Target {
 		t.Read += checked
 		t.Findings = append(t.Findings, check(d.Manifest().ID, fs)...)
 	}
-	if !ran {
+	switch {
+	case !ran:
 		t.Error = "none of the selected detectors check network hosts"
+	case !applied:
+		t.Error = strings.Join(notApplicable, "; ")
 	}
 	return t
 }
