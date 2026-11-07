@@ -231,7 +231,7 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 	}
 	var mu sync.Mutex
 	cache := map[string]res{}
-	return func(_ context.Context, ref string) (bool, string, error) {
+	return func(ctx context.Context, ref string) (bool, string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if r, ok := cache[ref]; ok {
@@ -249,17 +249,24 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 		if platform == "" && len(o.Platforms) > 0 {
 			platform = o.Platforms[0]
 		}
+		// The deadline is on the requests themselves, so a stalled read
+		// is cancelled, not only the next one.
+		lctx, cancel := context.WithTimeout(ctx, baseLookupTime)
+		defer cancel()
 		a, b, err := repo.AlpineOf(func() (io.ReadCloser, error) {
 			// The guarded transport refuses link-local addresses (cloud
 			// metadata) always, and with --public-registries-only every
 			// loopback, private and internal one, on each connection and
 			// redirect.
-			rc, err := image.OpenBaseLayer(ref, platform, netguard.Transport(o.PublicOnly))
+			rc, err := image.OpenBaseLayer(lctx, ref, platform, netguard.Transport(o.PublicOnly))
 			if err != nil {
 				return nil, err
 			}
-			return deadlineReader{limitedReadCloser{io.LimitReader(rc, maxBaseBytes), rc}, time.Now().Add(baseLookupTime)}, nil
+			return limitedReadCloser{io.LimitReader(rc, maxBaseBytes), rc}, nil
 		})
+		if err != nil && lctx.Err() != nil {
+			err = timeoutError{}
+		}
 		cache[ref] = res{a, b, err}
 		return a, b, err
 	}
@@ -272,20 +279,6 @@ const (
 	maxBaseBytes   = 512 << 20 // one layer
 	baseLookupTime = 90 * time.Second
 )
-
-// deadlineReader fails reads after a deadline, so a slow registry cannot
-// hold a scan.
-type deadlineReader struct {
-	io.ReadCloser
-	until time.Time
-}
-
-func (d deadlineReader) Read(p []byte) (int, error) {
-	if time.Now().After(d.until) {
-		return 0, timeoutError{}
-	}
-	return d.ReadCloser.Read(p)
-}
 
 type timeoutError struct{}
 
