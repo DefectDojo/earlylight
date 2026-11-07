@@ -1158,6 +1158,34 @@ func (s *scanner) sshdConfig(rel, text string) []Finding {
 // maxBaseEntries bounds the tar entries a base-image lookup reads.
 const maxBaseEntries = 200000
 
+// ErrTooLarge is a base layer past a read limit: not checked, never "not
+// Alpine".
+var ErrTooLarge = errors.New("the base layer is larger than the lookup reads")
+
+// CappedReader reads at most N bytes and then fails with ErrTooLarge, where
+// io.LimitReader would end quietly and make a truncated layer look whole.
+type CappedReader struct {
+	R io.Reader
+	N int64
+}
+
+func (c *CappedReader) Read(p []byte) (int, error) {
+	if c.N <= 0 {
+		// One byte more means the layer goes on past the limit.
+		var one [1]byte
+		if n, _ := c.R.Read(one[:]); n > 0 {
+			return 0, ErrTooLarge
+		}
+		return 0, io.EOF
+	}
+	if int64(len(p)) > c.N {
+		p = p[:c.N]
+	}
+	n, err := c.R.Read(p)
+	c.N -= int64(n)
+	return n, err
+}
+
 // AlpineOf reads an image's filesystem for /etc/alpine-release. open
 // returns the flattened filesystem as a tar stream.
 func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
@@ -1170,7 +1198,7 @@ func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
 	musl := false
 	for entries := 0; ; entries++ {
 		if entries >= maxBaseEntries {
-			return false, "", errors.New("the base layer has too many entries to read")
+			return false, "", ErrTooLarge
 		}
 		h, err := tr.Next()
 		if err == io.EOF {

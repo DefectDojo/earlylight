@@ -262,10 +262,12 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 			if err != nil {
 				return nil, err
 			}
-			return limitedReadCloser{io.LimitReader(rc, maxBaseBytes), rc}, nil
+			return limitedReadCloser{&repo.CappedReader{R: rc, N: maxBaseBytes}, rc}, nil
 		})
-		if err != nil && lctx.Err() != nil {
-			err = timeoutError{}
+		if err != nil && lctx.Err() != nil && ctx.Err() == nil {
+			// The lookup's own deadline: an image can be slow on purpose,
+			// so this is "not checked", not a failure that may pass.
+			err = fmt.Errorf("reading the base image took longer than %s", baseLookupTime)
 		}
 		cache[ref] = res{a, b, err}
 		return a, b, err
@@ -280,10 +282,7 @@ const (
 	baseLookupTime = 90 * time.Second
 )
 
-type timeoutError struct{}
 
-func (timeoutError) Error() string   { return "reading the base image took too long" }
-func (timeoutError) Temporary() bool { return true }
 
 type limitedReadCloser struct {
 	io.Reader

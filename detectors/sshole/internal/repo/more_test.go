@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -376,5 +377,17 @@ func TestYoctoPRMode(t *testing.T) {
 	res, err := Scan(context.Background(), root, Options{Files: []string{"meta-a/recipes-core/images/a.bb"}})
 	if err != nil || len(res.Findings) != 1 || res.Findings[0].Rule != RuleBuild {
 		t.Fatalf("%v %+v", err, res)
+	}
+}
+
+func TestCappedReader(t *testing.T) {
+	r := &CappedReader{R: strings.NewReader("abcdef"), N: 3}
+	b, err := io.ReadAll(r)
+	if string(b) != "abc" || err != ErrTooLarge {
+		t.Fatalf("%q %v", b, err)
+	}
+	r = &CappedReader{R: strings.NewReader("abc"), N: 3}
+	if b, err := io.ReadAll(r); string(b) != "abc" || err != nil {
+		t.Fatalf("exact: %q %v", b, err)
 	}
 }
