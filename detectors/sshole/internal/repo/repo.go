@@ -1155,6 +1155,9 @@ func (s *scanner) sshdConfig(rel, text string) []Finding {
 
 // ---- base image resolution
 
+// maxBaseEntries bounds the tar entries a base-image lookup reads.
+const maxBaseEntries = 200000
+
 // AlpineOf reads an image's filesystem for /etc/alpine-release. open
 // returns the flattened filesystem as a tar stream.
 func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
@@ -1165,7 +1168,10 @@ func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
 	defer rc.Close()
 	tr := tar.NewReader(rc)
 	musl := false
-	for {
+	for entries := 0; ; entries++ {
+		if entries >= maxBaseEntries {
+			return false, "", errors.New("the base layer has too many entries to read")
+		}
 		h, err := tr.Next()
 		if err == io.EOF {
 			break
