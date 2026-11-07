@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -281,5 +282,112 @@ func TestAlpineRetag(t *testing.T) {
 	opts.Base = func(_ context.Context, img string) (bool, string, error) { return true, "3.14", nil }
 	if fs := scan(t, root, opts); fs[0].Fixable {
 		t.Fatalf("trusted a tag: %+v", fs)
+	}
+}
+
+type tempErr struct{}
+
+func (tempErr) Error() string   { return "timeout" }
+func (tempErr) Temporary() bool { return true }
+
+func TestBaseLookupsOnlyWhenNeeded(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a/Dockerfile", "FROM node:22\nRUN npm ci\nFROM golang:1.27 AS build\nRUN go build\n")
+	write(t, root, "b/Dockerfile", "FROM acme/base:1\nRUN apk add openssh-server=9.9_p1-r2\n")
+	var asked []string
+	opts := Options{Base: func(_ context.Context, img string) (bool, string, error) {
+		asked = append(asked, img)
+		return true, "3.21", nil
+	}}
+	fs := scan(t, root, opts)
+	if strings.Join(asked, ",") != "acme/base:1" {
+		t.Fatalf("looked up %v", asked)
+	}
+	if len(fs) != 1 || fs[0].Rule != RulePin {
+		t.Fatalf("%+v", fs)
+	}
+	// A temporary failure is reported to the caller, and the finding's
+	// message does not carry the error.
+	opts.Base = func(context.Context, string) (bool, string, error) { return false, "", tempErr{} }
+	res, err := Scan(context.Background(), root, opts)
+	if err != nil || len(res.Transient) != 1 || strings.Contains(res.Findings[0].Message, "timeout") {
+		t.Fatalf("%v %+v", err, res)
+	}
+}
+
+func TestWriteNewFilesSafety(t *testing.T) {
+	root := t.TempDir()
+	files := map[string][]byte{"ext/patches/openssh/9.9p2/x.patch": []byte("p"), "ext/patches/openssh/10.0p1/x.patch": []byte("p")}
+	// Parallel writers of the same files all succeed.
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func() { errs <- WriteNewFiles(root, files) }()
+	}
+	for i := 0; i < 8; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Other content, .git, and a symlinked directory are refused before
+	// anything is written.
+	if err := WriteNewFiles(root, map[string][]byte{"ext/patches/openssh/9.9p2/x.patch": []byte("q")}); err == nil {
+		t.Error("replaced a file")
+	}
+	if err := WriteNewFiles(root, map[string][]byte{"a/new.txt": []byte("x"), ".git/hooks/x": []byte("x")}); err == nil {
+		t.Error("wrote into .git")
+	}
+	if _, err := os.Stat(filepath.Join(root, "a")); err == nil {
+		t.Error("partial write before a refusal")
+	}
+	os.Symlink(t.TempDir(), filepath.Join(root, "link"))
+	if err := WriteNewFiles(root, map[string][]byte{"link/x": []byte("x")}); err == nil {
+		t.Error("wrote through a symlink")
+	}
+}
+
+func TestBuildrootGitPatchDir(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Config.in", "")
+	write(t, root, "configs/a_defconfig", "BR2_TOOLCHAIN_BUILDROOT_MUSL=y\nBR2_GLOBAL_PATCH_DIR=\".git/hooks\"\nBR2_PACKAGE_OPENSSH=y\n")
+	fs := scan(t, root, Options{})
+	if len(fs) != 1 {
+		t.Fatalf("%+v", fs)
+	}
+	if _, _, err := Plan(context.Background(), root, fs[0], Options{}); err == nil || !strings.Contains(err.Error(), ".git") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestFindMovedLine(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Dockerfile", "FROM alpine:3.22\nRUN usermod -p '*' bob\n")
+	fs := scan(t, root, Options{})
+	write(t, root, "Dockerfile", "FROM alpine:3.22\n# a comment added above\nRUN usermod -p '*' bob\n")
+	f, gone, err := Find(context.Background(), root, "Dockerfile", fs[0].Line, RuleStar, fs[0].Message, Options{})
+	if err != nil || gone || f == nil || f.Line != 3 {
+		t.Fatalf("%v %v %+v", err, gone, f)
+	}
+}
+
+func TestYoctoPRMode(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "meta-a/conf/layer.conf", "LAYERSERIES_COMPAT_a = \"scarthgap\"\n")
+	write(t, root, "meta-a/conf/distro/a.conf", "TCLIBC = \"musl\"\n")
+	write(t, root, "meta-a/recipes-core/images/a.bb", "IMAGE_INSTALL:append = \" openssh\"\n")
+	res, err := Scan(context.Background(), root, Options{Files: []string{"meta-a/recipes-core/images/a.bb"}})
+	if err != nil || len(res.Findings) != 1 || res.Findings[0].Rule != RuleBuild {
+		t.Fatalf("%v %+v", err, res)
+	}
+}
+
+func TestCappedReader(t *testing.T) {
+	r := &CappedReader{R: strings.NewReader("abcdef"), N: 3}
+	b, err := io.ReadAll(r)
+	if string(b) != "abc" || err != ErrTooLarge {
+		t.Fatalf("%q %v", b, err)
+	}
+	r = &CappedReader{R: strings.NewReader("abc"), N: 3}
+	if b, err := io.ReadAll(r); string(b) != "abc" || err != nil {
+		t.Fatalf("exact: %q %v", b, err)
 	}
 }

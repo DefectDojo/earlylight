@@ -62,6 +62,9 @@ func (d *Detector) ScanRepo(ctx context.Context, dir string, o engine.Options) *
 		d.scanImages(dir, o, t)
 	}
 	t.Files = res.Files
+	if len(res.Transient) > 0 {
+		t.Incomplete = "a base image lookup failed and may succeed later, so the installs on it are not judged: " + strings.Join(res.Transient, "; ")
+	}
 	if res.Truncated {
 		t.Incomplete = "the source tree has too many files to walk; what lies past the limit is not checked"
 	}
@@ -228,7 +231,7 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 	}
 	var mu sync.Mutex
 	cache := map[string]res{}
-	return func(_ context.Context, ref string) (bool, string, error) {
+	return func(ctx context.Context, ref string) (bool, string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if r, ok := cache[ref]; ok {
@@ -246,17 +249,26 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 		if platform == "" && len(o.Platforms) > 0 {
 			platform = o.Platforms[0]
 		}
+		// The deadline is on the requests themselves, so a stalled read
+		// is cancelled, not only the next one.
+		lctx, cancel := context.WithTimeout(ctx, baseLookupTime)
+		defer cancel()
 		a, b, err := repo.AlpineOf(func() (io.ReadCloser, error) {
 			// The guarded transport refuses link-local addresses (cloud
 			// metadata) always, and with --public-registries-only every
 			// loopback, private and internal one, on each connection and
 			// redirect.
-			op, err := image.OpenRegistry(ref, platform, netguard.Transport(o.PublicOnly))
+			rc, err := image.OpenBaseLayer(lctx, ref, platform, netguard.Transport(o.PublicOnly))
 			if err != nil {
 				return nil, err
 			}
-			return limitedReadCloser{io.LimitReader(op.FS, maxBaseBytes), op.FS}, nil
+			return limitedReadCloser{&repo.CappedReader{R: rc, N: maxBaseBytes}, rc}, nil
 		})
+		if err != nil && lctx.Err() != nil && ctx.Err() == nil {
+			// The lookup's own deadline: an image can be slow on purpose,
+			// so this is "not checked", not a failure that may pass.
+			err = fmt.Errorf("reading the base image took longer than %s", baseLookupTime)
+		}
 		cache[ref] = res{a, b, err}
 		return a, b, err
 	}
@@ -265,8 +277,9 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 // Limits on base-image lookups: a source tree may not be yours, so what it
 // names cannot make a scan read without bound.
 const (
-	maxBases     = 32
-	maxBaseBytes = 2 << 30
+	maxBases       = 32
+	maxBaseBytes   = 512 << 20 // one layer
+	baseLookupTime = 90 * time.Second
 )
 
 type limitedReadCloser struct {

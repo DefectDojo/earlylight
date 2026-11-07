@@ -31,6 +31,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/DefectDojo/earlylight/detectors/sshole/internal/assess"
 	"github.com/DefectDojo/earlylight/internal/refs"
@@ -73,6 +74,10 @@ type Skip struct {
 
 // Result is a scan of a tree.
 type Result struct {
+	// Transient lists base-image lookups that failed in a way that may not
+	// happen again; a reimporting caller should fail rather than report
+	// the affected installs as unchecked.
+	Transient []string
 	Findings  []Finding
 	Skips     []Skip
 	Files     int
@@ -114,7 +119,41 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 				list = append(list, rel)
 			}
 		}
-		return scanList(ctx, root, list, opts, res)
+		// A Yocto finding joins files (TCLIBC in a distro conf, the image
+		// recipe, bbappends): read the tree's other Yocto files too, and
+		// report only on the changed ones.
+		yocto := false
+		for _, rel := range list {
+			if kindOf(rel) == "build" && (&scanner{}).yoctoNeedsTree(rel) {
+				yocto = true
+			}
+		}
+		if !yocto {
+			return scanList(ctx, root, list, opts, res)
+		}
+		changed := map[string]bool{}
+		for _, rel := range list {
+			changed[rel] = true
+		}
+		full := append([]string(nil), list...)
+		_ = walkRepo(root, func(rel string) {
+			if !changed[rel] && kindOf(rel) == "build" && (&scanner{}).yoctoNeedsTree(rel) {
+				full = append(full, rel)
+			}
+		})
+		out, err := scanList(ctx, root, full, opts, res)
+		if err != nil {
+			return out, err
+		}
+		var kept []Finding
+		for _, f := range out.Findings {
+			if changed[f.File] {
+				kept = append(kept, f)
+			}
+		}
+		out.Findings = kept
+		out.Files = len(list)
+		return out, nil
 	}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -188,6 +227,7 @@ func scanList(ctx context.Context, root string, list []string, opts Options, res
 		}
 	}
 	res.Findings = append(res.Findings, s.finishBuild()...)
+	res.Transient = s.transient
 	return res, nil
 }
 
@@ -256,16 +296,20 @@ func readFile(root, rel string) ([]byte, error) {
 }
 
 type baseInfo struct {
+	img           string // the image, for resolving it only when a verdict needs it
 	alpine, known bool
 	branch        string
 	why           string
 }
 
 type scanner struct {
-	ctx   context.Context
-	root  string
-	opts  Options
-	bases map[string]baseInfo
+	ctx         context.Context
+	root        string
+	opts        Options
+	bases       map[string]baseInfo
+	lookups     int
+	lookupStart time.Time
+	transient   []string
 	// vars are the current Dockerfile's ARG and ENV values.
 	vars map[string]varDef
 	// from is the current stage's FROM instruction.
@@ -485,22 +529,64 @@ func expand(s string, args map[string]string) string {
 
 var alpineTagRE = regexp.MustCompile(`(?:^|[-_.])alpine(\d+\.\d+)`)
 
-// base decides whether an image is Alpine and which branch, from its name
-// and, when a resolver is set, from the image itself.
+// base decides from an image's name whether it is Alpine and which branch.
+// Nothing is pulled here: need resolves the image itself, and only when a
+// stage installs an OpenSSH server.
 func (s *scanner) base(img string) baseInfo {
-	if b, ok := s.bases[img]; ok {
+	b := baseFromName(img)
+	b.img = img
+	return b
+}
+
+// Limits on the base images one scan reads: how many, and how long all
+// lookups may take together, so images that are slow on purpose cannot hold
+// a scan past its own timeout.
+const (
+	maxBaseLookups    = 32
+	maxBaseLookupTime = 3 * time.Minute
+)
+
+// TemporaryError is a lookup failure that may not happen again (a timeout,
+// a 5xx): a caller that reimports should fail the scan rather than report
+// the install as unchecked.
+type TemporaryError interface{ Temporary() bool }
+
+// need resolves what the name left open by reading the image, once per
+// image, through the resolver.
+func (s *scanner) need(b baseInfo) baseInfo {
+	if b.known && !(b.alpine && b.branch == "") || s.opts.Base == nil || b.img == "" || b.img == "scratch" || strings.Contains(b.img, "$") {
 		return b
 	}
-	b := baseFromName(img)
-	if (!b.known || b.alpine && b.branch == "") && s.opts.Base != nil && img != "" && img != "scratch" && !strings.Contains(img, "$") {
-		if alpine, branch, err := s.opts.Base(s.ctx, img); err == nil {
-			b = baseInfo{alpine: alpine, known: true, branch: branch}
-		} else if !b.known {
-			b.why = err.Error()
+	if r, ok := s.bases[b.img]; ok {
+		return r
+	}
+	r := b
+	if s.lookups == 0 {
+		s.lookupStart = time.Now()
+	}
+	if s.lookups >= maxBaseLookups || time.Since(s.lookupStart) > maxBaseLookupTime {
+		if !r.known {
+			r.why = fmt.Sprintf("this scan's base-image lookups reached their limit (%d images, %s)", maxBaseLookups, maxBaseLookupTime)
+		}
+		s.bases[b.img] = r
+		return r
+	}
+	s.lookups++
+	lctx, cancel := context.WithTimeout(s.ctx, maxBaseLookupTime-time.Since(s.lookupStart))
+	defer cancel()
+	if alpine, branch, err := s.opts.Base(lctx, b.img); err == nil {
+		r = baseInfo{img: b.img, alpine: alpine, known: true, branch: branch}
+	} else {
+		var te TemporaryError
+		if errors.As(err, &te) && te.Temporary() {
+			s.transient = append(s.transient, b.img+": "+err.Error())
+		}
+		if !r.known {
+			r.why = err.Error()
 		}
 	}
-	s.bases[img] = b
-	return b
+	s.bases[b.img] = r
+	return r
 }
 
 func baseFromName(img string) baseInfo {
@@ -786,6 +872,7 @@ func (s *scanner) apkVariable(rel string, sp span, w word, b baseInfo, image str
 	}
 	def, ok := s.vars[name]
 	if !ok {
+		b = s.need(b)
 		if b.known && !b.alpine {
 			return nil
 		}
@@ -869,17 +956,17 @@ func (s *scanner) judgeSpec(rel string, at specAt, pkg, op, ver string, b baseIn
 	if image != "" {
 		props["image"] = image
 	}
+	b = s.need(b)
 	if b.branch != "" {
 		props["branch"] = b.branch
 	}
 	f := Finding{File: rel, Line: l, Props: props}
 	if !b.known {
 		f.Rule, f.Level = RuleNotChecked, "note"
-		why := "the base image could not be identified"
 		if b.why != "" {
-			why += " (" + b.why + ")"
+			props["reason"] = b.why // not in the message: the title must not change with each error
 		}
-		f.Message = fmt.Sprintf("installs %s with apk, but %s, so whether it is Alpine (musl) is not known", at.val, why)
+		f.Message = fmt.Sprintf("installs %s with apk, but the base image could not be identified, so whether it is Alpine (musl) is not known", at.val)
 		f.Fix = "If this image is Alpine, require " + pkg + " at the fixed release for its branch (" + fixedTable() + ")"
 		return f, true
 	}
@@ -1080,8 +1167,40 @@ func (s *scanner) sshdConfig(rel, text string) []Finding {
 
 // ---- base image resolution
 
-// AlpineOf reads an image's filesystem for /etc/alpine-release. open
-// returns the flattened filesystem as a tar stream.
+// maxBaseEntries bounds the tar entries a base-image lookup reads.
+const maxBaseEntries = 200000
+
+// ErrTooLarge is a base layer past a read limit: not checked, never "not
+// Alpine".
+var ErrTooLarge = errors.New("the base layer is larger than the lookup reads")
+
+// CappedReader reads at most N bytes and then fails with ErrTooLarge, where
+// io.LimitReader would end quietly and make a truncated layer look whole.
+type CappedReader struct {
+	R io.Reader
+	N int64
+}
+
+func (c *CappedReader) Read(p []byte) (int, error) {
+	if c.N <= 0 {
+		// One byte more means the layer goes on past the limit.
+		var one [1]byte
+		if n, _ := c.R.Read(one[:]); n > 0 {
+			return 0, ErrTooLarge
+		}
+		return 0, io.EOF
+	}
+	if int64(len(p)) > c.N {
+		p = p[:c.N]
+	}
+	n, err := c.R.Read(p)
+	c.N -= int64(n)
+	return n, err
+}
+
+// AlpineOf reads a tar stream (a base image's first layer) for
+// /etc/alpine-release; a musl loader without it is Alpine-like, and a glibc
+// os-release ends the read early.
 func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
 	rc, err := open()
 	if err != nil {
@@ -1090,7 +1209,10 @@ func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
 	defer rc.Close()
 	tr := tar.NewReader(rc)
 	musl := false
-	for {
+	for entries := 0; ; entries++ {
+		if entries >= maxBaseEntries {
+			return false, "", ErrTooLarge
+		}
 		h, err := tr.Next()
 		if err == io.EOF {
 			break
@@ -1108,6 +1230,15 @@ func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
 			return true, assess.BranchFromRelease(string(b)), nil
 		case strings.HasPrefix(name, "/lib/ld-musl-"):
 			musl = true
+		case (name == "/etc/os-release" || name == "/usr/lib/os-release") && h.Typeflag == tar.TypeReg:
+			// A glibc distribution says so here: stop reading.
+			b, err := io.ReadAll(io.LimitReader(tr, 4096))
+			if err != nil {
+				return false, "", err
+			}
+			if glibcDistro(string(b)) {
+				return false, "", nil
+			}
 		}
 	}
 	if musl {
@@ -1292,4 +1423,20 @@ func (s *scanner) alpineRetag(image string) string {
 		}
 	}
 	return ""
+}
+
+var osIDRE = regexp.MustCompile(`(?m)^ID=["']?([a-z0-9._-]+)`)
+
+// glibcDistro reports an os-release ID of a distribution built on glibc.
+func glibcDistro(osRelease string) bool {
+	m := osIDRE.FindStringSubmatch(osRelease)
+	if m == nil {
+		return false
+	}
+	switch m[1] {
+	case "debian", "ubuntu", "fedora", "rhel", "centos", "rocky", "almalinux", "amzn", "ol", "opensuse-leap", "opensuse-tumbleweed",
+		"sles", "arch", "wolfi", "chainguard", "photon", "mariner", "azurelinux", "cos", "distroless", "gentoo", "nixos":
+		return true
+	}
+	return false
 }

@@ -2,6 +2,7 @@
 package image
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -114,6 +115,28 @@ func OpenRegistry(ref, platform string, rt http.RoundTripper) (*Opened, error) {
 	return opened(img)
 }
 
+// OpenBaseLayer returns the uncompressed tar of a registry image's first
+// (lowest) layer, where a base image keeps its OS release files, through
+// rt. Reading one layer bounds what a base-image lookup downloads.
+// Every request, the layer download included, is bound to ctx.
+func OpenBaseLayer(ctx context.Context, ref, platform string, rt http.RoundTripper) (io.ReadCloser, error) {
+	if strings.HasPrefix(ref, "docker-archive:") || strings.HasPrefix(ref, "rootfs:") {
+		return nil, fmt.Errorf("%q: only registry references can be opened here", ref)
+	}
+	img, err := loadRemoteCtx(ctx, ref, platform, rt)
+	if err != nil {
+		return nil, err
+	}
+	ls, err := img.Layers()
+	if err != nil {
+		return nil, err
+	}
+	if len(ls) == 0 {
+		return nil, fmt.Errorf("%s has no layers", ref)
+	}
+	return ls[0].Uncompressed()
+}
+
 func load(ref, platform string) (v1.Image, error) {
 	if p, ok := strings.CutPrefix(ref, "docker-archive:"); ok {
 		return tarball.ImageFromPath(p, nil)
@@ -122,11 +145,15 @@ func load(ref, platform string) (v1.Image, error) {
 }
 
 func loadRemote(ref, platform string, rt http.RoundTripper) (v1.Image, error) {
+	return loadRemoteCtx(context.Background(), ref, platform, rt)
+}
+
+func loadRemoteCtx(ctx context.Context, ref, platform string, rt http.RoundTripper) (v1.Image, error) {
 	r, err := name.ParseReference(ref)
 	if err != nil {
 		return nil, fmt.Errorf("parsing image reference %q: %w", ref, err)
 	}
-	opts := []remote.Option{remote.WithAuthFromKeychain(authn.DefaultKeychain)}
+	opts := []remote.Option{remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx)}
 	if rt != nil {
 		opts = append(opts, remote.WithTransport(rt))
 	}

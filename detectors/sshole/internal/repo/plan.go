@@ -47,8 +47,8 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 		return nil, false, &Declined{Reason: f.Fix}
 	}
 	for p, data := range f.newFiles {
-		if cur, err := readFile(root, p); err == nil && string(cur) != string(data) {
-			return nil, false, &Declined{Reason: fmt.Sprintf("%s already exists with other content; add the fix by hand", p)}
+		if err := checkNewPath(root, p, data); err != nil {
+			return nil, false, &Declined{Reason: err.Error() + "; add the fix by hand"}
 		}
 	}
 	if f.edit == nil {
@@ -309,6 +309,22 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 			at = picked
 		}
 	}
+	if len(at) == 0 && message != "" {
+		// The line moved (an edit above it): the same finding elsewhere in
+		// the file, when there is exactly one, is still this finding.
+		var moved []Finding
+		for _, g := range fs {
+			if g.Rule == rule && strings.Contains(message, g.Message) {
+				moved = append(moved, g)
+			}
+		}
+		if len(moved) == 1 {
+			return &moved[0], false, nil
+		}
+		if len(moved) > 1 {
+			return nil, false, &Declined{Reason: fmt.Sprintf("line %d of %s no longer has this finding and the file has %d like it; rescan and fix the new findings", line, file, len(moved))}
+		}
+	}
 	switch len(at) {
 	case 0:
 		return nil, true, nil
@@ -328,10 +344,19 @@ func WriteNewFiles(root string, files map[string][]byte) error {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+	// Check every path before writing anything, so a refusal leaves no
+	// partial change behind.
+	for _, rel := range paths {
+		if err := checkNewPath(root, rel, files[rel]); err != nil {
+			return err
+		}
+	}
 	for _, rel := range paths {
 		data := files[rel]
 		// Create the directories one by one, refusing any symbolic link on
-		// the way, then check the whole path again.
+		// the way, then check the whole path again. Another writer (a
+		// parallel fix of a sibling file) may create the same directories
+		// and files: identical content already there is success.
 		if err := mkdirsNoLinks(root, path.Dir(path.Clean(rel))); err != nil {
 			return err
 		}
@@ -339,23 +364,101 @@ func WriteNewFiles(root string, files map[string][]byte) error {
 		if err != nil {
 			return err
 		}
-		if fi, err := os.Lstat(p); err == nil {
-			cur, rerr := os.ReadFile(p)
-			if !fi.Mode().IsRegular() || rerr != nil || string(cur) != string(data) {
-				return fmt.Errorf("%s exists with other content", rel)
-			}
+		if same, err := sameFile(p, data); err != nil {
+			return fmt.Errorf("%s: %w", rel, err)
+		} else if same {
 			continue
 		}
-		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		// Write a temporary file, then link it into place: the link fails
+		// rather than replace a file, and a reader never sees half a file.
+		tmp, err := os.CreateTemp(filepath.Dir(p), ".earlylight-new-*")
 		if err != nil {
 			return err
 		}
-		if _, err := f.Write(data); err != nil {
-			f.Close()
+		name := tmp.Name()
+		_, werr := tmp.Write(data)
+		cerr := tmp.Close()
+		if werr == nil {
+			werr = cerr
+		}
+		if werr == nil {
+			werr = os.Chmod(name, 0o644)
+		}
+		if werr != nil {
+			os.Remove(name)
+			return werr
+		}
+		lerr := os.Link(name, p)
+		os.Remove(name)
+		if errors.Is(lerr, os.ErrExist) {
+			if same, serr := sameFile(p, data); serr == nil && same {
+				continue
+			}
+			return fmt.Errorf("%s exists with other content", rel)
+		}
+		if lerr != nil {
+			return lerr
+		}
+	}
+	return nil
+}
+
+// sameFile reports whether a regular file with exactly data is at p; an
+// error when something else is there.
+func sameFile(p string, data []byte) (bool, error) {
+	fi, err := os.Lstat(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !fi.Mode().IsRegular() {
+		return false, errors.New("exists and is not a regular file")
+	}
+	cur, err := os.ReadFile(p)
+	if err != nil {
+		return false, err
+	}
+	if string(cur) != string(data) {
+		return false, errors.New("exists with other content")
+	}
+	return true, nil
+}
+
+// checkNewPath refuses a path outside the repository, inside .git, or
+// through a symbolic link that already exists, and an existing file with
+// other content.
+func checkNewPath(root, rel string, data []byte) error {
+	clean := path.Clean(rel)
+	if rel == "" || path.IsAbs(rel) || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(rel, "\\") {
+		return fmt.Errorf("%q leaves the repository", rel)
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if strings.EqualFold(part, ".git") {
+			return fmt.Errorf("%q is inside .git", rel)
+		}
+	}
+	cur := root
+	parts := strings.Split(clean, "/")
+	for i, e := range parts {
+		cur = filepath.Join(cur, e)
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // the rest is created
+		}
+		if err != nil {
 			return err
 		}
-		if err := f.Close(); err != nil {
-			return err
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%q passes through a symbolic link", rel)
+		}
+		if i == len(parts)-1 {
+			if _, err := sameFile(cur, data); err != nil {
+				return fmt.Errorf("%s %w", rel, err)
+			}
+		} else if !fi.IsDir() {
+			return fmt.Errorf("%q: %s is not a directory", rel, path.Join(parts[:i+1]...))
 		}
 	}
 	return nil
@@ -374,8 +477,11 @@ func mkdirsNoLinks(root, dir string) error {
 		fi, err := os.Lstat(cur)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			if err := os.Mkdir(cur, 0o755); err != nil {
+			if err := os.Mkdir(cur, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
 				return err
+			}
+			if fi, err := os.Lstat(cur); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%s could not be created as a directory", cur)
 			}
 		case err != nil:
 			return err

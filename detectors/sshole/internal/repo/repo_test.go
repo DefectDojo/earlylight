@@ -177,7 +177,7 @@ func TestPlanDeclines(t *testing.T) {
 	// A failed resolution leaves it unchecked.
 	bad := Options{Base: func(context.Context, string) (bool, string, error) { return false, "", errors.New("denied") }}
 	write(t, root, "Dockerfile", "FROM registry.example/x\nRUN apk add openssh-server\n")
-	if fs := scan(t, root, bad); len(fs) != 1 || fs[0].Rule != RuleNotChecked || !strings.Contains(fs[0].Message, "denied") {
+	if fs := scan(t, root, bad); len(fs) != 1 || fs[0].Rule != RuleNotChecked || fs[0].Props["reason"] != "denied" || strings.Contains(fs[0].Message, "denied") {
 		t.Fatalf("%+v", fs)
 	}
 }
@@ -198,6 +198,9 @@ func TestAlpineOf(t *testing.T) {
 	}
 	if a, _, _ := AlpineOf(mk(map[string]string{"lib/ld-musl-x86_64.so.1": ""})); !a {
 		t.Error("musl without release file")
+	}
+	if a, _, _ := AlpineOf(mk(map[string]string{"etc/os-release": "ID=debian\nVERSION_ID=12\n", "lib/ld-musl-x86_64.so.1": ""})); a {
+		t.Error("debian os-release did not stop the read")
 	}
 	if a, _, _ := AlpineOf(mk(map[string]string{"etc/debian_version": "12"})); a {
 		t.Error("debian taken for alpine")
