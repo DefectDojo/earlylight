@@ -31,6 +31,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/DefectDojo/earlylight/detectors/sshole/internal/assess"
 	"github.com/DefectDojo/earlylight/internal/refs"
@@ -302,12 +303,13 @@ type baseInfo struct {
 }
 
 type scanner struct {
-	ctx       context.Context
-	root      string
-	opts      Options
-	bases     map[string]baseInfo
-	lookups   int
-	transient []string
+	ctx         context.Context
+	root        string
+	opts        Options
+	bases       map[string]baseInfo
+	lookups     int
+	lookupStart time.Time
+	transient   []string
 	// vars are the current Dockerfile's ARG and ENV values.
 	vars map[string]varDef
 	// from is the current stage's FROM instruction.
@@ -536,8 +538,13 @@ func (s *scanner) base(img string) baseInfo {
 	return b
 }
 
-// maxBaseLookups bounds the base images one scan reads.
-const maxBaseLookups = 32
+// Limits on the base images one scan reads: how many, and how long all
+// lookups may take together, so images that are slow on purpose cannot hold
+// a scan past its own timeout.
+const (
+	maxBaseLookups    = 32
+	maxBaseLookupTime = 3 * time.Minute
+)
 
 // TemporaryError is a lookup failure that may not happen again (a timeout,
 // a 5xx): a caller that reimports should fail the scan rather than report
@@ -554,15 +561,20 @@ func (s *scanner) need(b baseInfo) baseInfo {
 		return r
 	}
 	r := b
-	if s.lookups >= maxBaseLookups {
+	if s.lookups == 0 {
+		s.lookupStart = time.Now()
+	}
+	if s.lookups >= maxBaseLookups || time.Since(s.lookupStart) > maxBaseLookupTime {
 		if !r.known {
-			r.why = fmt.Sprintf("this scan already read %d base images, its limit", maxBaseLookups)
+			r.why = fmt.Sprintf("this scan's base-image lookups reached their limit (%d images, %s)", maxBaseLookups, maxBaseLookupTime)
 		}
 		s.bases[b.img] = r
 		return r
 	}
 	s.lookups++
-	if alpine, branch, err := s.opts.Base(s.ctx, b.img); err == nil {
+	lctx, cancel := context.WithTimeout(s.ctx, maxBaseLookupTime-time.Since(s.lookupStart))
+	defer cancel()
+	if alpine, branch, err := s.opts.Base(lctx, b.img); err == nil {
 		r = baseInfo{img: b.img, alpine: alpine, known: true, branch: branch}
 	} else {
 		var te TemporaryError
