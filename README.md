@@ -86,6 +86,13 @@ jobs:
 
 The action installs the release it is pinned to (checksum-verified), writes SARIF to `earlylight.sarif` for DefectDojo or code scanning, and puts a findings table in the job summary. Outputs: `sarif`, `exit-code`.
 
+## Import into DefectDojo
+
+DefectDojo Pro and the Open Source edition import both report formats: the JSON report as the **Early Light Scan** scan type, or the SARIF report as **SARIF**. JSON keeps more: `unknown` findings are tagged `needs-review`, and component names and versions are filled in.
+
+- [Scan with Early Light](https://docs.defectdojo.com/import_data/import_scan_files/earlylight/): install, scan, and import from the UI, the API or GitHub Actions
+- [Early Light parser](https://docs.defectdojo.com/supported_tools/parsers/file/earlylight/): how each JSON field maps to a DefectDojo Finding
+
 ## Verdicts
 
 | Verdict | Meaning | Counted |
