@@ -1198,8 +1198,9 @@ func (c *CappedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// AlpineOf reads an image's filesystem for /etc/alpine-release. open
-// returns the flattened filesystem as a tar stream.
+// AlpineOf reads a tar stream (a base image's first layer) for
+// /etc/alpine-release; a musl loader without it is Alpine-like, and a glibc
+// os-release ends the read early.
 func AlpineOf(open func() (io.ReadCloser, error)) (bool, string, error) {
 	rc, err := open()
 	if err != nil {
