@@ -114,6 +114,27 @@ func OpenRegistry(ref, platform string, rt http.RoundTripper) (*Opened, error) {
 	return opened(img)
 }
 
+// OpenBaseLayer returns the uncompressed tar of a registry image's first
+// (lowest) layer, where a base image keeps its OS release files, through
+// rt. Reading one layer bounds what a base-image lookup downloads.
+func OpenBaseLayer(ref, platform string, rt http.RoundTripper) (io.ReadCloser, error) {
+	if strings.HasPrefix(ref, "docker-archive:") || strings.HasPrefix(ref, "rootfs:") {
+		return nil, fmt.Errorf("%q: only registry references can be opened here", ref)
+	}
+	img, err := loadRemote(ref, platform, rt)
+	if err != nil {
+		return nil, err
+	}
+	ls, err := img.Layers()
+	if err != nil {
+		return nil, err
+	}
+	if len(ls) == 0 {
+		return nil, fmt.Errorf("%s has no layers", ref)
+	}
+	return ls[0].Uncompressed()
+}
+
 func load(ref, platform string) (v1.Image, error) {
 	if p, ok := strings.CutPrefix(ref, "docker-archive:"); ok {
 		return tarball.ImageFromPath(p, nil)

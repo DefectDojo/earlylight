@@ -62,6 +62,9 @@ func (d *Detector) ScanRepo(ctx context.Context, dir string, o engine.Options) *
 		d.scanImages(dir, o, t)
 	}
 	t.Files = res.Files
+	if len(res.Transient) > 0 {
+		t.Incomplete = "a base image lookup failed and may succeed later, so the installs on it are not judged: " + strings.Join(res.Transient, "; ")
+	}
 	if res.Truncated {
 		t.Incomplete = "the source tree has too many files to walk; what lies past the limit is not checked"
 	}
@@ -251,11 +254,11 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 			// metadata) always, and with --public-registries-only every
 			// loopback, private and internal one, on each connection and
 			// redirect.
-			op, err := image.OpenRegistry(ref, platform, netguard.Transport(o.PublicOnly))
+			rc, err := image.OpenBaseLayer(ref, platform, netguard.Transport(o.PublicOnly))
 			if err != nil {
 				return nil, err
 			}
-			return limitedReadCloser{io.LimitReader(op.FS, maxBaseBytes), op.FS}, nil
+			return deadlineReader{limitedReadCloser{io.LimitReader(rc, maxBaseBytes), rc}, time.Now().Add(baseLookupTime)}, nil
 		})
 		cache[ref] = res{a, b, err}
 		return a, b, err
@@ -265,9 +268,29 @@ func baseResolver(o engine.Options) func(context.Context, string) (bool, string,
 // Limits on base-image lookups: a source tree may not be yours, so what it
 // names cannot make a scan read without bound.
 const (
-	maxBases     = 32
-	maxBaseBytes = 2 << 30
+	maxBases       = 32
+	maxBaseBytes   = 512 << 20 // one layer
+	baseLookupTime = 90 * time.Second
 )
+
+// deadlineReader fails reads after a deadline, so a slow registry cannot
+// hold a scan.
+type deadlineReader struct {
+	io.ReadCloser
+	until time.Time
+}
+
+func (d deadlineReader) Read(p []byte) (int, error) {
+	if time.Now().After(d.until) {
+		return 0, timeoutError{}
+	}
+	return d.ReadCloser.Read(p)
+}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "reading the base image took too long" }
+func (timeoutError) Temporary() bool { return true }
 
 type limitedReadCloser struct {
 	io.Reader
