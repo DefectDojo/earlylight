@@ -282,8 +282,6 @@ const (
 	baseLookupTime = 90 * time.Second
 )
 
-
-
 type limitedReadCloser struct {
 	io.Reader
 	io.Closer
