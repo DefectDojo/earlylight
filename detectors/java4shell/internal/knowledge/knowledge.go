@@ -1,0 +1,289 @@
+// Package knowledge holds what is known about Java4Shell (CVE-2026-114938)
+// release by release, and judges a Java version against it. FACTS.md, next
+// to the detector, gives the source of every number here.
+package knowledge
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// CVE is the vulnerability this detector checks.
+const CVE = "CVE-2026-114938"
+
+// Bug is the OpenJDK bug that fixed it.
+const Bug = "JDK-8393212"
+
+// Checked is the date the release data was last checked.
+const Checked = "2026-11-17"
+
+// Status is what the release data says about a version.
+type Status string
+
+const (
+	// Vulnerable: a release with the AVX-512 VBMI decode path and without the fix.
+	Vulnerable Status = "vulnerable"
+	// Fixed: a release with the fix.
+	Fixed Status = "fixed"
+	// NotAffected: a release without the vulnerable code.
+	NotAffected Status = "not-affected"
+	// Unknown: the release data does not settle it.
+	Unknown Status = "unknown"
+)
+
+// Version is a Java version as the runtime reports it: its numbers
+// (feature, interim, update, patch and any vendor numbers), the build number
+// after "+" and whether it is an early-access build.
+type Version struct {
+	Nums  []int
+	Build int // -1 when absent
+	EA    bool
+	Raw   string
+}
+
+// Feature is the major release (8, 11, 17...).
+func (v Version) Feature() int {
+	if len(v.Nums) == 0 {
+		return 0
+	}
+	return v.Nums[0]
+}
+
+// String is the dotted version without the build.
+func (v Version) String() string { return join(v.Nums) }
+
+func join(ns []int) string {
+	parts := make([]string, len(ns))
+	for i, n := range ns {
+		parts[i] = strconv.Itoa(n)
+	}
+	return strings.Join(parts, ".")
+}
+
+const maxVersionLen = 120
+
+// Parse reads the version strings Java runtimes report: "17.0.21.1+2-LTS",
+// "21.0.13.0.3+1", "17.0.21+9-1-deb12u1-Debian", "1.8.0_452-b09",
+// "28-ea+24", "25.0.5". A string that does not start with a version is
+// refused.
+func Parse(s string) (Version, bool) {
+	v := Version{Build: -1, Raw: s}
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > maxVersionLen {
+		return v, false
+	}
+	// Java 8 and older: 1.8.0_452-b09.
+	if rest, ok := strings.CutPrefix(s, "1."); ok {
+		feat, rest2 := leadingInt(rest)
+		if feat < 2 || feat > 8 || !strings.HasPrefix(rest2, ".0") {
+			return v, false
+		}
+		v.Nums = []int{feat, 0}
+		rest2 = strings.TrimPrefix(rest2, ".0")
+		if r, ok := strings.CutPrefix(rest2, "_"); ok {
+			u, r2 := leadingInt(r)
+			if u < 0 {
+				return v, false
+			}
+			v.Nums = append(v.Nums, u)
+			rest2 = r2
+		}
+		if i := strings.Index(rest2, "-b"); i >= 0 {
+			if b, _ := leadingInt(rest2[i+2:]); b >= 0 {
+				v.Build = b
+			}
+		}
+		v.EA = strings.Contains(rest2, "-ea")
+		return v, true
+	}
+	rest := s
+	for {
+		n, r := leadingInt(rest)
+		if n < 0 {
+			break
+		}
+		v.Nums = append(v.Nums, n)
+		rest = r
+		if len(v.Nums) > 8 {
+			return v, false
+		}
+		if !strings.HasPrefix(rest, ".") {
+			break
+		}
+		rest = rest[1:]
+	}
+	if len(v.Nums) == 0 || v.Nums[0] < 9 || v.Nums[0] > 99 {
+		return v, false
+	}
+	// A pre-release identifier ("-ea", "-internal") comes before the build.
+	if r, ok := strings.CutPrefix(rest, "-"); ok {
+		pre := r
+		rest = ""
+		if i := strings.IndexByte(r, '+'); i >= 0 {
+			pre, rest = r[:i], r[i:]
+		}
+		v.EA = strings.HasPrefix(pre, "ea")
+	}
+	if r, ok := strings.CutPrefix(rest, "+"); ok {
+		if b, _ := leadingInt(r); b >= 0 {
+			v.Build = b
+		}
+	}
+	return v, true
+}
+
+func leadingInt(s string) (int, string) {
+	i := 0
+	for i < len(s) && i < 9 && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return -1, s
+	}
+	n, err := strconv.Atoi(s[:i])
+	if err != nil {
+		return -1, s
+	}
+	return n, s[i:]
+}
+
+// Compare compares two dotted versions, missing numbers counting as zero.
+func Compare(a, b []int) int {
+	for i := 0; i < len(a) || i < len(b); i++ {
+		x, y := 0, 0
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		switch {
+		case x < y:
+			return -1
+		case x > y:
+			return 1
+		}
+	}
+	return 0
+}
+
+// Line is one Java feature release line.
+type Line struct {
+	Feature int
+	// Introduced is the first version with the AVX-512 VBMI decode path
+	// (nil: the whole line has it).
+	Introduced []int
+	// IntroducedBuild is the first build of Introduced that has it (17.0.6+3).
+	IntroducedBuild int
+	// Fixed is the first release with the fix (nil: none).
+	Fixed []int
+	// Note is why the line has no fix, or other context.
+	Note string
+}
+
+// Lines is the release data, newest last. FACTS.md gives the sources.
+var Lines = []Line{
+	{Feature: 17, Introduced: []int{17, 0, 6}, IntroducedBuild: 3, Fixed: []int{17, 0, 21, 1}},
+	{Feature: 18, Note: "JDK 18 is end of life and received no fix"},
+	{Feature: 19, Note: "JDK 19 is end of life and received no fix"},
+	{Feature: 20, Note: "JDK 20 is end of life and received no fix"},
+	{Feature: 21, Fixed: []int{21, 0, 13, 1}},
+	{Feature: 22, Note: "JDK 22 is end of life and received no fix"},
+	{Feature: 23, Note: "JDK 23 is end of life and received no fix"},
+	{Feature: 24, Note: "JDK 24 is end of life and received no fix"},
+	{Feature: 25, Fixed: []int{25, 0, 5, 1}},
+	{Feature: 26, Note: "JDK 26 is end of life (last release 26.0.2.1) and received no fix"},
+	{Feature: 27, Fixed: []int{27, 0, 1, 1}},
+}
+
+// EAFeature is the line in early access, and the last EA build known to
+// lack the fix (the fix reached mainline after jdk-28+24).
+const (
+	EAFeature       = 28
+	EALastUnfixed   = 24
+	newestFeature   = 28
+	firstVBMIDecode = 17
+)
+
+// LineOf returns the release line of a feature release.
+func LineOf(feature int) (Line, bool) {
+	for _, l := range Lines {
+		if l.Feature == feature {
+			return l, true
+		}
+	}
+	return Line{}, false
+}
+
+// FixedVersion is the first fixed release of a line, "" when it has none.
+func FixedVersion(feature int) string {
+	if l, ok := LineOf(feature); ok && l.Fixed != nil {
+		return join(l.Fixed)
+	}
+	return ""
+}
+
+// Upgrade names the releases to move to from a line without a fix.
+func Upgrade(feature int) string {
+	switch {
+	case feature <= 21:
+		return "21.0.13.1 (or 25.0.5.1)"
+	case feature <= 25:
+		return "25.0.5.1 (or 27.0.1.1)"
+	}
+	return "27.0.1.1 (or 25.0.5.1, a long-term support release)"
+}
+
+// Judge says what the release data shows about a HotSpot runtime of version
+// v on x86-64, with the reason in words.
+func Judge(v Version) (Status, string) {
+	f := v.Feature()
+	ver := v.String()
+	switch {
+	case f == 0:
+		return Unknown, "the version could not be read"
+	case f < firstVBMIDecode:
+		return NotAffected, fmt.Sprintf("Java %s: OpenJDK %d has no x86-64 Base64 decode intrinsic, so it does not have the vulnerable AVX-512 code", ver, f)
+	case f == EAFeature:
+		if v.Build >= 0 && v.Build <= EALastUnfixed {
+			return Vulnerable, fmt.Sprintf("JDK %d early-access build %d: the fix reached mainline after jdk-28+%d", f, v.Build, EALastUnfixed)
+		}
+		return Unknown, fmt.Sprintf("JDK %d early-access build %s: the fix reached mainline on 2026-11-16, after jdk-28+%d; check that this build includes %s", f, buildText(v), EALastUnfixed, Bug)
+	case f > newestFeature:
+		return Unknown, fmt.Sprintf("Java %s is newer than this detector's release data (%s)", ver, Checked)
+	}
+	l, ok := LineOf(f)
+	if !ok {
+		return Unknown, fmt.Sprintf("Java %s is not in this detector's release data", ver)
+	}
+	if l.Introduced != nil {
+		c := Compare(v.Nums, l.Introduced)
+		if c < 0 || c == 0 && v.EA && v.Build >= 0 && v.Build < l.IntroducedBuild {
+			return NotAffected, fmt.Sprintf("Java %s predates %s, the first %d update with the AVX-512 VBMI Base64 decoder (8268276)", ver, join(l.Introduced), f)
+		}
+	}
+	if l.Fixed == nil {
+		return Vulnerable, fmt.Sprintf("Java %s has the AVX-512 VBMI Base64 decoder without the fix: %s", ver, l.Note)
+	}
+	if Compare(v.Nums, l.Fixed) < 0 {
+		return Vulnerable, fmt.Sprintf("Java %s is older than %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, Bug)
+	}
+	// Releases of the same update as the fix (17.0.21.1, 17.0.21.2) carry
+	// it. A later update (17.0.22) was not released when the data was
+	// checked, and its development builds did not have the fix yet.
+	if len(v.Nums) >= 3 && len(l.Fixed) >= 3 && v.Nums[2] > l.Fixed[2] || len(v.Nums) >= 2 && v.Nums[1] > l.Fixed[1] {
+		return Unknown, fmt.Sprintf("Java %s is a later update than %s; it was not released when this detector's data was checked (%s), and the %d update repository did not have %s yet: check its release notes", ver, join(l.Fixed), Checked, f, Bug)
+	}
+	if v.EA {
+		return Unknown, fmt.Sprintf("Java %s is an early-access build; check that it includes %s", ver, Bug)
+	}
+	return Fixed, fmt.Sprintf("Java %s is at or past %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, Bug)
+}
+
+func buildText(v Version) string {
+	if v.Build < 0 {
+		return "(no build number)"
+	}
+	return strconv.Itoa(v.Build)
+}
