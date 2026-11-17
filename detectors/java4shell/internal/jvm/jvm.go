@@ -102,7 +102,7 @@ func Inspect(p string, data []byte) (*Library, bool) {
 	if len(b) > maxScan {
 		b = b[:maxScan]
 	}
-	if m := vmLine.FindSubmatch(b); m != nil {
+	if m := findVMLine(b); m != nil {
 		l.VMName, l.VMVersion, l.JREVersion = string(m[1]), string(m[2]), string(m[5])
 		l.Platform = string(m[3]) + "-" + string(m[4])
 	}
@@ -111,6 +111,28 @@ func Inspect(p string, data []byte) (*Library, bool) {
 		l.OpenJ9 = true
 	}
 	return l, true
+}
+
+// findVMLine looks for the version line only around the literal " JRE (",
+// so a large file of printable text cannot make the regular expression
+// scan it all from every position.
+func findVMLine(b []byte) [][]byte {
+	const before, after, maxHits = 260, 100, 4096
+	anchor := []byte(" JRE (")
+	off := 0
+	for hits := 0; hits < maxHits; hits++ {
+		i := bytes.Index(b[off:], anchor)
+		if i < 0 {
+			return nil
+		}
+		at := off + i
+		lo, hi := max(0, at-before), min(len(b), at+len(anchor)+after)
+		if m := vmLine.FindSubmatch(b[lo:hi]); m != nil {
+			return m
+		}
+		off = at + len(anchor)
+	}
+	return nil
 }
 
 // header reads an executable header: the format and the architectures.

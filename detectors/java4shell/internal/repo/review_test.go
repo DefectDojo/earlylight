@@ -1,0 +1,56 @@
+package repo
+
+import (
+	"testing"
+)
+
+// Regressions from the independent review.
+func TestReviewRepo(t *testing.T) {
+	root := tree(t, map[string]string{
+		"a/Dockerfile":     "FROM eclipse-temurin:21.0.13_9-jre\nENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics\nENV _JAVA_OPTIONS=-XX:+UseBASE64Intrinsics\n",
+		"b/Dockerfile":     "FROM eclipse-temurin:21.0.13_9-jre\nENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics\nENV JAVA_TOOL_OPTIONS=-Xmx1g\n",
+		"c/Dockerfile":     "FROM amazonlinux:2023\nRUN dnf install -y java-21-amazon-corretto-headless-1:21.0.13.11-1\n",
+		"d/Dockerfile":     "FROM amazoncorretto:21.0.13.11\n",
+		"e/.tool-versions": "java corretto-21.0.13.11\n",
+		"f/.java-version":  "corretto-21.0.13.11.1\n",
+		"g/.tool-versions": "java corretto-21.0.13.1.2\n",
+	})
+	res := scan(t, root)
+	for _, c := range []struct {
+		file   string
+		line   int
+		rule   string
+		status string
+	}{
+		{"a/Dockerfile", 1, RuleImagePin, StatusVulnerable},
+		{"b/Dockerfile", 1, RuleImagePin, StatusVulnerable},
+		{"c/Dockerfile", 2, RulePackage, StatusVulnerable},
+		{"d/Dockerfile", 1, RuleImagePin, StatusVulnerable},
+		{"e/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"f/.java-version", 1, RuleJavaPin, StatusVulnerable},
+	} {
+		f, ok := find(res, c.file, c.line)
+		if !ok || f.Rule != c.rule || f.Status != c.status {
+			t.Errorf("%s:%d: %+v (found %v), want %s %s", c.file, c.line, f, ok, c.rule, c.status)
+		}
+	}
+	if f, ok := find(res, "g/.tool-versions", 1); ok {
+		t.Errorf("fixed Corretto reported: %+v", f)
+	}
+	if CorrettoJava("21.0.5.11.1") != "21.0.5" || CorrettoJava("21.0.13.1.2") != "21.0.13.1" || CorrettoJava("21.0.13.0.11") != "21.0.13.0" {
+		t.Error("CorrettoJava")
+	}
+
+	// setup-java early access is not judged or rewritten.
+	root = tree(t, map[string]string{".github/workflows/a.yml": "jobs:\n  a:\n    steps:\n      - uses: actions/setup-java@v4\n        with:\n          distribution: corretto\n          java-version: '21.0.13-ea'\n"})
+	if res := scan(t, root); len(res.Findings) != 0 {
+		t.Errorf("early access: %+v", res.Findings)
+	}
+
+	// The first fixed build sorts numerically.
+	e := &pinEdit{family: Families[0], feature: 21}
+	e.tv, _ = Families[0].ParseTag("21.0.13_9-jre")
+	if got, _ := target([]string{"21.0.13.1_10-jre", "21.0.13.1_2-jre"}, e); got != "21.0.13.1_2-jre" {
+		t.Errorf("target %s", got)
+	}
+}

@@ -204,7 +204,7 @@ func TestMitigations(t *testing.T) {
 
 	// CATALINA_OPTS counts when the container runs catalina.sh.
 	in = base()
-	in.Env = []string{"CATALINA_OPTS=-XX:-UseBASE64Intrinsics"}
+	in.Env = []string{"CATALINA_OPTS=-XX:-UseBASE64Intrinsics", "JAVA_HOME=/opt/java/openjdk"}
 	if f := one(t, in); f.Status != Vulnerable {
 		t.Errorf("CATALINA_OPTS without catalina.sh: %+v", f)
 	}

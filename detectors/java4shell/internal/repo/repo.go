@@ -382,7 +382,11 @@ func (s *scanner) javaVersionFile(rel, text string) {
 			continue
 		}
 		if m := versionInText.FindStringIndex(l); m != nil {
-			s.judgeVersion(rel, i+1, m[0], l[m[0]:m[1]], ".java-version", vendorWord(l))
+			ver := l[m[0]:m[1]]
+			if vendorWord(l) == "corretto" {
+				ver = CorrettoJava(ver)
+			}
+			s.judgeVersion(rel, i+1, m[0], ver, ".java-version", vendorWord(l))
 		}
 		return // jenv reads the first line
 	}
@@ -430,14 +434,27 @@ func (s *scanner) asdfValue(rel string, line int, value, source string) {
 	}
 	ver := m[2]
 	if m[1] == "corretto" {
-		// corretto-21.0.5.11.1: the fourth number is Corretto's build when
-		// the fifth is 1. Keep the Java part.
-		parts := strings.Split(ver, ".")
-		if len(parts) == 5 && parts[3] != "1" && parts[3] != "0" {
-			ver = strings.Join(parts[:3], ".")
-		}
+		ver = CorrettoJava(strings.TrimSuffix(ver, "."))
 	}
 	s.judgeVersion(rel, line, 0, strings.TrimSuffix(ver, "."), source, m[1])
+}
+
+// CorrettoJava turns an Amazon Corretto version into the Java version it
+// ships. Corretto has written its build number in the fourth place
+// (21.0.5.11.1: Java 21.0.5, build 11) and, since the out-of-band releases,
+// the OpenJDK patch number there (21.0.13.1.2: Java 21.0.13.1, build 2).
+// OpenJDK patch numbers are small, so a fourth number above 3 is a build.
+func CorrettoJava(ver string) string {
+	parts := strings.Split(ver, ".")
+	if len(parts) >= 4 {
+		n := 0
+		fmt.Sscanf(parts[3], "%d", &n)
+		if n > 3 {
+			return strings.Join(parts[:3], ".")
+		}
+		return strings.Join(parts[:4], ".")
+	}
+	return ver
 }
 
 func (s *scanner) toolVersions(rel, text string) {
@@ -524,7 +541,10 @@ func (s *scanner) workflow(rel string, b []byte) {
 
 func (s *scanner) setupJava(rel string, v *yaml.Node, dist string, text []string) {
 	ver := strings.TrimSpace(v.Value)
-	ver = strings.TrimSuffix(strings.TrimSuffix(ver, "-ea"), ".x")
+	if strings.HasSuffix(ver, "-ea") {
+		return // an early-access build: not a release this data judges
+	}
+	ver = strings.TrimSuffix(ver, ".x")
 	m := versionInText.FindString(ver)
 	if m == "" || m != ver && !strings.HasPrefix(ver, m+"+") {
 		return
@@ -708,11 +728,15 @@ func (s *scanner) dockerfile(rel, text string) {
 	// endStage marks the packages a stage installs as mitigated when the
 	// stage sets the mitigation (before or after the install: ENV applies
 	// to the image the stage makes).
+	stageEnv := map[string]string{}
 	endStage := func() {
-		how, ok := s.mitigated[fmt.Sprintf("%s:%d", rel, from)]
-		if !ok {
+		o := jvm.FromEnv(stageEnv, nil, 17, nil)
+		ok, how := o.Mitigates()
+		if !ok || from == 0 {
 			return
 		}
+		how = strings.Replace(how, "(from ", "(from ENV in "+rel+": ", 1)
+		s.mitigated[fmt.Sprintf("%s:%d", rel, from)] = how
 		for k := stageStart; k < len(s.findings); k++ {
 			f := &s.findings[k]
 			if f.File == rel && f.Rule == RulePackage && f.Status == StatusVulnerable {
@@ -736,23 +760,15 @@ func (s *scanner) dockerfile(rel, text string) {
 		switch {
 		case fromLine.MatchString(trim):
 			endStage()
-			from, stageStart = i+1, len(s.findings)
+			from, stageStart, stageEnv = i+1, len(s.findings), map[string]string{}
 		case envJTO.MatchString(trim):
-			var o jvm.Options
+			// The last ENV of each variable in the stage is what the
+			// image keeps; the mitigation is decided when the stage ends.
 			body := envJTO.ReplaceAllString(trim, "")
 			for _, kv := range jvm.Words(body) {
-				k, v, ok := strings.Cut(kv, "=")
-				if !ok {
-					continue
+				if k, v, ok := strings.Cut(kv, "="); ok {
+					stageEnv[k] = v
 				}
-				for _, n := range jvm.EnvVars {
-					if k == n {
-						o.Apply(v, "ENV "+k+" in "+rel)
-					}
-				}
-			}
-			if ok, how := o.Mitigates(); ok && from > 0 {
-				s.mitigated[fmt.Sprintf("%s:%d", rel, from)] = how
 			}
 		case strings.HasPrefix(strings.ToUpper(trim), "RUN "):
 			s.packages(rel, i+1, trim)
@@ -824,6 +840,9 @@ func (s *scanner) packages(rel string, line int, run string) {
 				up = up[i+1:]
 			}
 			up = strings.ReplaceAll(up, "_p", "+")
+			if strings.Contains(h.name, "corretto") {
+				up = CorrettoJava(up)
+			}
 			if v, ok := knowledge.Parse(up); ok {
 				if st, why := knowledge.Judge(v); st == knowledge.Vulnerable {
 					s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "error", Status: StatusVulnerable, Reason: why,

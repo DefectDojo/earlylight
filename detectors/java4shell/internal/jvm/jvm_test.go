@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
 )
@@ -234,4 +235,17 @@ func FuzzSettings(f *testing.F) {
 		o.Apply(string(b), "fuzz")
 		JavaOptions(Words(string(b)))
 	})
+}
+
+func TestInspectLargePrintable(t *testing.T) {
+	// Printable text everywhere used to make the version-line search scan
+	// from every position.
+	b := append(testlib.Build(testlib.Lib{}), bytes.Repeat([]byte("VM (1) for a-b JRE x "), (16<<20)/21)...)
+	start := time.Now()
+	if l, ok := Inspect("/a/lib/server/libjvm.so", b); !ok || l.JREVersion != "" {
+		t.Fatalf("%+v", l)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("16 MiB of printable text took %s", d)
+	}
 }

@@ -206,6 +206,10 @@ const (
 	firstVBMIDecode = 17
 )
 
+// maxPatch is the largest fourth version number taken as an OpenJDK patch
+// release.
+const maxPatch = 3
+
 // LineOf returns the release line of a feature release.
 func LineOf(feature int) (Line, bool) {
 	for _, l := range Lines {
@@ -256,6 +260,12 @@ func Judge(v Version) (Status, string) {
 	l, ok := LineOf(f)
 	if !ok {
 		return Unknown, fmt.Sprintf("Java %s is not in this detector's release data", ver)
+	}
+	if len(v.Nums) >= 4 && v.Nums[3] > maxPatch {
+		// OpenJDK patch numbers are small (17.0.8.1, 21.0.13.1); a larger
+		// fourth number is a vendor's build number (Amazon Corretto's
+		// 21.0.13.11), which says nothing about the patch.
+		return Unknown, fmt.Sprintf("Java %s: the fourth number looks like a vendor build number, not an OpenJDK patch release, so the version does not show whether %s is in", ver, Bug)
 	}
 	if l.Introduced != nil {
 		c := Compare(v.Nums, l.Introduced)

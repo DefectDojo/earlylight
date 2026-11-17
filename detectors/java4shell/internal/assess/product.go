@@ -37,6 +37,11 @@ var products = []struct{ part, name string }{
 	{"/cassandra", "Apache Cassandra"}, {"/neo4j", "Neo4j"}, {"/gitbucket", "GitBucket"}, {"/rundeck", "Rundeck"},
 }
 
+// notProduct are directories too general to be a product's install
+// directory.
+var notProduct = map[string]bool{"/": true, "/opt": true, "/usr": true, "/usr/local": true, "/usr/share": true, "/usr/lib": true,
+	"/srv": true, "/home": true, "/root": true, "/app": true, "/var": true, "/var/lib": true, "/Applications": true, "C:/Program Files": true}
+
 // standard reports a runtime installed on its own.
 func standard(root string) bool {
 	for _, p := range standardPlaces {
@@ -55,9 +60,7 @@ func Product(root string) (name, dir string, ok bool) {
 	}
 	dir = root
 	// A macOS runtime: <product>.app/Contents/jbr/Contents/Home.
-	if strings.HasSuffix(dir, "/Contents/Home") {
-		dir = strings.TrimSuffix(dir, "/Contents/Home")
-	}
+	dir = strings.TrimSuffix(dir, "/Contents/Home")
 	if !runtimeDirs[path.Base(dir)] {
 		// Products also nest it one level deeper (lib/runtime/jre,
 		// app/third-party/java/<version>).
@@ -68,10 +71,19 @@ func Product(root string) (name, dir string, ok bool) {
 		dir = path.Dir(dir)
 	}
 	dir = path.Dir(dir)
-	for _, x := range []string{"/third-party", "/app", "/lib", "/Contents"} {
-		dir = strings.TrimSuffix(dir, x)
+	// Only the layouts that put the runtime below such a directory.
+	if path.Base(dir) == "third-party" {
+		dir = path.Dir(dir)
+		if path.Base(dir) == "app" {
+			dir = path.Dir(dir)
+		}
 	}
-	if dir == "/" || dir == "." || dir == "" {
+	if b := path.Base(dir); b == "Contents" && strings.HasSuffix(path.Dir(dir), ".app") {
+		dir = path.Dir(dir)
+	}
+	if notProduct[dir] || strings.Count(dir, "/") < 2 && !strings.Contains(dir, ":") {
+		// /opt/jre, /app/jre, /usr/jre: a runtime in a general directory,
+		// not part of a product.
 		return "", "", false
 	}
 	for _, p := range products {

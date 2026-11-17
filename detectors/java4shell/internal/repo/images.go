@@ -122,6 +122,11 @@ func (f Family) ParseTag(tag string) (TagVersion, bool) {
 	if tv.Nums[0] < 8 || tv.Nums[0] > 99 {
 		return TagVersion{}, false
 	}
+	if f.Repo == "amazoncorretto" && len(tv.Nums) >= 4 && tv.Nums[3] > 3 {
+		// Corretto's own build number in the fourth place: the Java
+		// version is the first three, exactly.
+		tv.Nums, tv.Exact = tv.Nums[:3], true
+	}
 	if f.exact != nil {
 		if b := f.exact.FindString(rest); b != "" {
 			b = strings.TrimSuffix(b, "-")

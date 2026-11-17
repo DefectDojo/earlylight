@@ -308,9 +308,11 @@ func mitigation(in Input, env map[string]string, root string, feature int, f *Fi
 			o.Apply(v, "the image's JDK_JAVA_OPTIONS")
 		}
 		// Script variables count when the container's command passes them on.
+		// They reach only the JVM the script starts: the one JAVA_HOME or
+		// JRE_HOME names, or the java on PATH.
 		vars := scriptVarsOf(in)
 		for _, n := range jvm.ScriptVars {
-			if v, ok := env[n]; ok && vars[n] {
+			if v, ok := env[n]; ok && vars[n] && javaHomeIs(in, env, root) {
 				o.Apply(v, "the image's "+n+" (passed on by the container's start script)")
 			}
 		}
@@ -338,10 +340,7 @@ func mitigation(in Input, env map[string]string, root string, feature int, f *Fi
 	}
 	// systemd units: they cover the service, and the runtime only when it
 	// is bundled in the product the service starts.
-	for _, s := range in.Settings {
-		if s.Kind != "systemd" {
-			continue
-		}
+	for _, s := range jvm.MergeUnits(in.Settings) {
 		so := s.Options(feature)
 		ok, how := so.Mitigates()
 		if !ok || s.Exec == "" {

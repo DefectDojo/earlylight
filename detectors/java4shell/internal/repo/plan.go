@@ -82,9 +82,17 @@ func target(tags []string, e *pinEdit) (string, bool) {
 		if c := knowledge.Compare(cs[i].tv.Nums, cs[j].tv.Nums); c != 0 {
 			return c < 0
 		}
-		return cs[i].tv.Build < cs[j].tv.Build
+		return buildNum(cs[i].tv.Build) < buildNum(cs[j].tv.Build)
 	})
 	return cs[0].tag, true
+}
+
+// buildNum is the number in a tag's build part ("_10", "-9"), so _10 sorts
+// after _2.
+func buildNum(b string) int {
+	n := 0
+	fmt.Sscanf(strings.TrimLeft(b, "_-"), "%d", &n)
+	return n
 }
 
 func planTag(ctx context.Context, root string, f Finding, reg Registry, opts Options) (*Change, error) {

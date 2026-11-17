@@ -61,6 +61,7 @@ func TestJudge(t *testing.T) {
 		{"21.0.13.0.3+1", Vulnerable},
 		{"21.0.13.1+2", Fixed},
 		{"21.0.14+1", Unknown},
+		{"21.0.13.11", Unknown}, // Corretto's build number in the fourth place
 		{"24.0.2+12", Vulnerable},
 		{"25.0.5+8", Vulnerable},
 		{"25.0.5.1+2", Fixed},
