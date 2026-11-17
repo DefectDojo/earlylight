@@ -95,7 +95,8 @@ func TestScanTree(t *testing.T) {
 	root := tree(t, map[string]string{
 		"Dockerfile": "FROM eclipse-temurin:21.0.13_9-jre-alpine AS run\nRUN apk add --no-cache curl\n",
 		"svc/Dockerfile": "ARG JAVA=21.0.12.1_1-jdk\nFROM eclipse-temurin:${JAVA} AS build\nENV JAVA_TOOL_OPTIONS=\"-XX:-UseBASE64Intrinsics\"\n" +
-			"FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y openjdk-21-jre-headless\nRUN apt-get install -y openjdk-17-jre-headless=17.0.21+9-1~deb12u1\nRUN apk add openjdk24\n",
+			"FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y openjdk-21-jre-headless\nRUN apt-get install -y openjdk-17-jre-headless=17.0.21+9-1~deb12u1\nRUN apk add openjdk24\n" +
+			"FROM debian:12\nRUN apt-get install -y openjdk-25-jre-headless\nENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics\n",
 		"compose.yaml": "services:\n  app:\n    image: amazoncorretto:21.0.12-al2023\n    environment:\n      JAVA_TOOL_OPTIONS: -XX:UseAVX=2\n" +
 			"  jira:\n    image: atlassian/jira-software:9.12\n  web:\n    image: nginx:1.27\n  floating:\n    image: eclipse-temurin:21-jre\n  j9:\n    image: ibm-semeru-runtimes:open-21-jre\n",
 		"k8s/deploy.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      containers:\n        - name: a\n          image: sapmachine:21.0.12\n",
@@ -130,6 +131,7 @@ func TestScanTree(t *testing.T) {
 	}
 	check("svc/Dockerfile", 2, RuleImagePin, StatusMitigated)
 	check("svc/Dockerfile", 5, RulePackage, StatusVulnerable)
+	check("svc/Dockerfile", 9, RulePackage, StatusMitigated)
 	if f := check("svc/Dockerfile", 6, RulePackage, StatusVulnerable); f.Level != "error" {
 		t.Errorf("pinned package level %s", f.Level)
 	}

@@ -112,7 +112,7 @@ func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head
 // keep reports the package databases owners are read from.
 func keep(p string) bool {
 	switch p {
-	case "/lib/apk/db/installed", "/usr/lib/apk/db/installed", "/var/lib/dpkg/status", "/etc/os-release", "/usr/lib/os-release":
+	case "/lib/apk/db/installed", "/usr/lib/apk/db/installed", "/var/lib/dpkg/status":
 		return true
 	}
 	return assess.IsDpkgList(p)

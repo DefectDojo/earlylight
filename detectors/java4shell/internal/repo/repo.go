@@ -350,8 +350,12 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 		if l.Fixed == nil && tv.Nums[0] > 17 {
 			rule, level = RuleLine, "error"
 		}
+		msg := fmt.Sprintf("%s selects Java %s, without the Java4Shell fix", source, verText)
+		if rule == RuleLine {
+			msg = fmt.Sprintf("%s selects Java %s, a line that received no Java4Shell fix", source, verText)
+		}
 		s.add(Finding{Rule: rule, File: rel, Line: line, Level: level, Status: StatusVulnerable, Reason: why,
-			Message: fmt.Sprintf("%s selects Java %s, without the Java4Shell fix", source, verText),
+			Message: msg,
 			Fix:     pinFix(tv.Nums[0], source), Props: props})
 	case knowledge.Unknown:
 		l, ok := knowledge.LineOf(tv.Nums[0])
@@ -700,6 +704,25 @@ var (
 func (s *scanner) dockerfile(rel, text string) {
 	ls := lines(text)
 	from := 0
+	stageStart := len(s.findings)
+	// endStage marks the packages a stage installs as mitigated when the
+	// stage sets the mitigation (before or after the install: ENV applies
+	// to the image the stage makes).
+	endStage := func() {
+		how, ok := s.mitigated[fmt.Sprintf("%s:%d", rel, from)]
+		if !ok {
+			return
+		}
+		for k := stageStart; k < len(s.findings); k++ {
+			f := &s.findings[k]
+			if f.File == rel && f.Rule == RulePackage && f.Status == StatusVulnerable {
+				f.Status, f.Level = StatusMitigated, "note"
+				f.Reason += "; " + how
+				f.Message += ", mitigated by the stage's JVM options until it is updated"
+			}
+		}
+	}
+	defer endStage()
 	for i := 0; i < len(ls); i++ {
 		l := ls[i]
 		// Join continuation lines for matching; report the first line.
@@ -712,7 +735,8 @@ func (s *scanner) dockerfile(rel, text string) {
 		trim := strings.TrimSpace(full)
 		switch {
 		case fromLine.MatchString(trim):
-			from = i + 1
+			endStage()
+			from, stageStart = i+1, len(s.findings)
 		case envJTO.MatchString(trim):
 			var o jvm.Options
 			body := envJTO.ReplaceAllString(trim, "")
