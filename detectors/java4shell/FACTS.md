@@ -1,0 +1,69 @@
+# Java4Shell (CVE-2026-114938): what is known, and from where
+
+Checked 2026-11-17. Every row names its source. "Not fixed yet" means the
+source was read on that date and had no fixed release; it is not a guess
+about the future. Rows marked **inferred** are reasoning from the sources,
+not something a source states.
+
+## The flaw
+
+| Fact | Source |
+| --- | --- |
+| The fix is JDK-8393212 "Base64 optimization improvements", 4 added lines in `generate_base64_decodeBlock()` in `src/hotspot/cpu/x86/stubGenerator_x86_64.cpp`: before the final 1 to 63 byte fragment of the AVX-512 VBMI path, `cmpl(length, 4); jcc(less, L_bruteForce)` ("A padded Base64 tail shorter than one complete block is handled by Java"). Authored 2026-10-13 by Tobias Hartmann, reviewed by rhalade, mschoene (the OpenJDK vulnerability group's reviewers), chagedorn, rcastanedalo | openjdk/jdk commit [`5177a70b385c16f26ede191fdac7aaba0bed0f8b`](https://github.com/openjdk/jdk/commit/5177a70b385c16f26ede191fdac7aaba0bed0f8b), pushed 2026-11-16 |
+| What the unfixed code does with a 1 to 3 byte tail that ends in `=`: `output_size` is 0, `L_padding` decrements it to -1, `bzhiq(output_mask, -1, output_size)` with an index of 255 keeps all 64 mask bits, and the masked `evmovdqub` stores 64 bytes at `dest + dp`: a write of up to 64 bytes past the output the caller sized. **Inferred** from reading the stub; no source states the impact in words | same file, lines around `L_finalBit` and `L_padding` |
+| CVE-2026-114938 is listed with CVSS 8.1, component hotspot/compiler, in Amazon Corretto's changelogs of 2026-11-17 | [corretto-17 CHANGELOG 17.0.21.1.2](https://github.com/corretto/corretto-17/blob/17.0.21.1.2/CHANGELOG.md), [corretto-21 21.0.13.1.2](https://github.com/corretto/corretto-21/blob/21.0.13.1.2/CHANGELOG.md), [corretto-25 25.0.5.1.2](https://github.com/corretto/corretto-25/blob/25.0.5.1.2/CHANGELOG.md), [corretto-27 27.0.1.1.4](https://github.com/corretto/corretto-27/blob/27.0.1.1.4/CHANGELOG.md) |
+| CVE-2026-114938 is JDK-8393212. **Inferred**: the Corretto changelogs list CVEs by component, not by JDK bug. Each fixed release carries two hotspot/compiler fixes (8393212 and 8390694 "Enhance vector masks"; 21u, 25u and 27u also 8390852 "Improve integer compression") and lists two or three hotspot/compiler CVEs. The brief's description (AVX-512 VBMI Base64 decode, mitigated by `-XX:-UseBASE64Intrinsics`) matches only 8393212. The OpenJDK advisory page that would state the mapping could not be reached from the research host | as above; openjdk.org unreachable |
+| The vulnerable path runs only when the CPU reports AVX-512 VBMI, AVX-512BW and BMI2 and HotSpot keeps them enabled: `if (VM_Version::supports_avx512_vbmi() && VM_Version::supports_avx512bw() && VM_Version::supports_bmi2())`. AVX-512 features need AVX-512F, so the four CPU flags are `avx512f avx512bw avx512vbmi bmi2` | stubGenerator_x86_64.cpp at the fix commit |
+| MIME decoding (`isMIME`) skips the AVX-512 path; standard and URL-safe decoding use it | same function, `cmpl(isMIME, 0)` |
+| `-XX:UseAVX=0/1/2` clears every AVX-512 feature, VBMI included, so the path is not generated | `src/hotspot/cpu/x86/vm_version_x86.cpp`, `if (UseAVX < 3)` block (jdk17u-dev and jdk HEAD) |
+| `-XX:-UseBASE64Intrinsics` stops the stub being generated at all: `if (UseBASE64Intrinsics) { ... StubRoutines::_base64_decodeBlock = generate_base64_decodeBlock(); }` | stubGenerator_x86_64.cpp |
+| Only x86-64 HotSpot has this stub. AArch64, PPC and RISC-V have their own decode intrinsics (8256245, 8248188, 8314124) with different code. 32-bit x86 (`stubGenerator_x86_32.cpp`) has no decode intrinsic | jdk17u-dev and jdk21u-dev trees; `git log --grep` in openjdk/jdk |
+| OpenJ9 (IBM Semeru) does not contain HotSpot: its `lib/server/libjvm.so` is a 97 KB redirector and the VM is `libj9vm29.so`. Whether OpenJ9 has a comparable bug of its own is **not known** | `ibm-semeru-runtimes:open-21-jre` image, release file `JVM_VARIANT="Openj9"` |
+
+## Where the vulnerable path came from
+
+| Line | First release with the AVX-512 VBMI decode path | Source |
+| --- | --- | --- |
+| mainline | JDK 18 (8268276 "Base64 Decoding optimization for x86 using AVX-512", Scott Gibbons, 2021-06-25, after JDK 17 forked) | openjdk/jdk [`c37988d0793`](https://github.com/openjdk/jdk/commit/c37988d0793b24d98d285530dfda69999a227937); `jdk-18+36` contains it, `jdk-17+35` does not |
+| 17 | 17.0.6 (backport 2022-11-09, first tag `jdk-17.0.6+3`, first GA `jdk-17.0.6-ga`). 17.0.0 to 17.0.5 have no x86 decode intrinsic | openjdk/jdk17u-dev `07050b000c` ("Backport-of: c37988d0793b") |
+| 11 | never: jdk11u-dev has no Base64 decode intrinsic (only 8205528, AVX-512 encode) | openjdk/jdk11u-dev `git log --grep base64` |
+| 8 | never: jdk8u-dev has no Base64 intrinsics | openjdk/jdk8u-dev `git log --grep base64` |
+| vendor builds of 8, 11 or 17.0.0-17.0.5 | **not known** whether any vendor backported 8268276 into them. The detector checks the libjvm for the VBMI decode stubs' names and reports unknown when an "unaffected" version carries them | n/a |
+
+## Fixed releases
+
+| Line | Fixed in | Source |
+| --- | --- | --- |
+| OpenJDK 17 | **17.0.21.1** (`jdk-17.0.21.1+2`, `jdk-17.0.21.1-ga`, 2026-11-15) | openjdk/jdk17u branch `jdk17.0.21.1`, commit `8ea73158af` |
+| OpenJDK 21 | **21.0.13.1** (`jdk-21.0.13.1+2`, `-ga`, 2026-11-15) | openjdk/jdk21u branch `jdk21.0.13.1`, commit `8e115fb5c7` |
+| OpenJDK 25 | **25.0.5.1** (`jdk-25.0.5.1+2`, `-ga`, 2026-11-15) | openjdk/jdk25u branch `jdk25.0.5.1`, commit `25bb7d35dc` |
+| OpenJDK 27 | **27.0.1.1** (`jdk-27.0.1.1+4`, `-ga`) | openjdk/jdk27u branch `jdk27.0.1.1`, commit `564fc7de7e`; master also has it. The `jdk27.0.2` branch does **not** have it yet |
+| OpenJDK 26 | **no fix**: last release 26.0.2.1 (2026-07), `jdk26u` master unchanged since 2026-08-18 and without the fix | openjdk/jdk26u |
+| 18, 19, 20, 22, 23, 24 | **no fix** (end of life) | n/a |
+| JDK 28 (early access) | fix pushed to mainline 2026-11-16; `jdk-28+24` does **not** have it; no later build tagged yet | openjdk/jdk tags |
+| 17.0.22, 21.0.14, 25.0.6 (January 2027 updates) | **not known**: the -dev repositories (HEAD of 2026-11-17, tags up to `+2`) do not have the fix yet. Embargoed fixes usually reach -dev at the next release; that is an expectation, not a fact, so these versions are reported as unknown | openjdk/jdk17u-dev, jdk21u-dev, jdk25u-dev HEAD |
+| 17.0.21.0.2 / .0.3, 21.0.13.0.2 / .0.3, 25.0.5.0.2 / .0.3, 27.0.1.0.2 / .0.3 | **not fixed**: these October 2026 out-of-band releases carry CA changes only (8395142, 8395690) | -dev repo tags `jdk-*.0.3+*` |
+
+## Vendors and distributions (2026-11-17)
+
+| Vendor | Status | Source |
+| --- | --- | --- |
+| Amazon Corretto | fixed: 17.0.21.1.2, 21.0.13.1.2, 25.0.5.1.2, 27.0.1.1.4 (all 2026-11-17, each "Import jdk-…1+2/+4", CVE-2026-114938 listed). Corretto 8 and 11: no release after October (not affected) | GitHub releases API, CHANGELOG.md of each tag |
+| SapMachine | releases 17.0.21.1, 21.0.13.1, 25.0.5.1, 27.0.1.1 published 2026-11-17 (the release page names no CVE) | GitHub releases API, SAP/SapMachine |
+| Eclipse Temurin | **not fixed yet**: no `jdk-17.0.21.1+2`, `jdk-21.0.13.1+2`, `jdk-25.0.5.1+2` or `jdk-27.0.1.1+4` release in adoptium/temurinNN-binaries; Docker Hub `eclipse-temurin` newest tags are 17.0.21_9, 21.0.13_9, 25.0.5_8, 27.0.1.0 | GitHub API, registry-1.docker.io tag list |
+| Azul Zulu, BellSoft Liberica, Microsoft, Oracle | **not checked**: their sites could not be reached from the research host. Docker Hub `azul/zulu-openjdk` and `bellsoft/liberica-openjdk-debian` newest tags are 27.0.1.0.3 / 21.0.13.0.3 (not fixed) | registry-1.docker.io tag list |
+| IBM Semeru | OpenJ9, not HotSpot (see above) | image inspection |
+| Debian | **not fixed yet**: newest sources openjdk-17 17.0.21.0.3+1-1, openjdk-21 21.0.13.0.3+1-1, openjdk-25 25.0.5.0.3+1-3; security.debian.org 17.0.21+9-1~deb12u1, 21.0.13+9-1~deb13u2, 25.0.5+8-1~deb13u1. The security tracker has no page for CVE-2026-114938 | deb.debian.org and security.debian.org pools, security-tracker.debian.org |
+| Ubuntu | **not fixed yet**: newest sources openjdk-17 17.0.21.0.3+1-1~XX.04.1, openjdk-25 25.0.5.0.3+1-3~XX.04.1 (openjdk-21 listing timed out) | archive.ubuntu.com pool |
+| Alpine | **not fixed yet**: community openjdk17 17.0.21.0.3_p1-r0, openjdk21 21.0.13.0.3_p1-r0, openjdk25 25.0.5.0.3_p1-r0/-r1 (3.23, 3.24, edge); 3.21 and 3.22 carry older 17/21 | dl-cdn.alpinelinux.org APKINDEX |
+| Red Hat (RHEL, UBI) | **not checked**: access.redhat.com and registry.access.redhat.com unreachable | n/a |
+
+## How the detector uses this
+
+- The version that decides is the one inside the libjvm (`<VM name> (<version>) for <os>-<cpu> JRE (<version>)`), read from the binary, with the
+  `release` file as a second witness; the CPU architecture comes from the ELF, PE or Mach-O header.
+- A packaged JDK (apk, dpkg, rpm) is judged by the same upstream version: no distribution has published a fixed package or a backport
+  statement yet. When one does, its fixed package version goes into the knowledge table.
+- No marker in the binary separates fixed from unfixed code: the stub is generated at run time by C++ code, and the fix only adds a compare
+  and a branch to that generator. The stubs' names (`lookup_lo_base64`, `pack_vec_base64`, `join_0_1_base64`) do show that the AVX-512
+  decode path is present, which is how a vendor backport into an older line is caught.
