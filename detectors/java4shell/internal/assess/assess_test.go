@@ -228,6 +228,23 @@ func TestMitigations(t *testing.T) {
 		}
 	}
 
+	// Tomcat's setenv.sh covers the JVM catalina.sh starts (JAVA_HOME), when
+	// the container runs it.
+	tset, _ := jvm.ReadSetting("/usr/local/tomcat/bin/setenv.sh", []byte(`CATALINA_OPTS="$CATALINA_OPTS -XX:-UseBASE64Intrinsics"`))
+	in = Input{Libraries: []*jvm.Library{vulnLib(t, temurin)}, Settings: []jvm.Setting{tset},
+		Env: []string{"CATALINA_HOME=/usr/local/tomcat", "JAVA_HOME=/opt/java/openjdk"}, Command: []string{"catalina.sh", "run"}}
+	if f := one(t, in); f.Status != Mitigated || !strings.Contains(f.Reason, "setenv.sh") {
+		t.Errorf("tomcat setenv.sh: %+v", f)
+	}
+	in.Command = []string{"java", "-jar", "/app.jar"}
+	if f := one(t, in); f.Status != Vulnerable {
+		t.Errorf("tomcat setenv.sh without catalina.sh: %+v", f)
+	}
+	in.Command, in.Env = []string{"catalina.sh", "run"}, []string{"CATALINA_HOME=/usr/local/tomcat", "JAVA_HOME=/usr/lib/jvm/other"}
+	if f := one(t, in); f.Status != Vulnerable {
+		t.Errorf("tomcat setenv.sh for another JAVA_HOME: %+v", f)
+	}
+
 	// A systemd unit covers a bundled runtime of the product it starts;
 	// for a shared runtime it is recorded, not counted.
 	unit, _ := jvm.ReadSetting("/etc/systemd/system/jira.service", []byte("Environment=JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics\nExecStart=/opt/atlassian/jira/bin/start-jira.sh -fg\n"))

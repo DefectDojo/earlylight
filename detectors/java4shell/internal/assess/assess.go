@@ -321,10 +321,12 @@ func mitigation(in Input, env map[string]string, root string, feature int, f *Fi
 		}
 	}
 	for _, s := range in.Settings {
-		if s.Kind == "systemd" || s.Scope == "" || !within(root, s.Scope) {
+		if s.Kind == "systemd" || s.Scope == "" {
 			continue
 		}
-		s.ApplyTo(&o, feature)
+		if within(root, s.Scope) || in.Env != nil && launches(in, env, s) && javaHomeIs(in, env, root) {
+			s.ApplyTo(&o, feature)
+		}
 	}
 	if in.Env != nil {
 		if v, ok := env["_JAVA_OPTIONS"]; ok {
@@ -381,6 +383,50 @@ func commandRuns(in Input, env map[string]string, root string) bool {
 			p = in.Resolve(p)
 		}
 		return within(p, root)
+	}
+	return false
+}
+
+// launches reports whether the container's command starts the product a
+// settings file configures: its own start script, or catalina.sh of the
+// CATALINA_HOME or CATALINA_BASE it sits in.
+func launches(in Input, env map[string]string, s jvm.Setting) bool {
+	for _, w := range in.Command {
+		if !strings.Contains(w, "/") {
+			if path.Base(w) == "catalina.sh" && (env["CATALINA_HOME"] == s.Scope || env["CATALINA_BASE"] == s.Scope) {
+				return true
+			}
+			continue
+		}
+		p := w
+		if in.Resolve != nil {
+			p = in.Resolve(w)
+		}
+		if within(p, s.Scope) {
+			return true
+		}
+	}
+	return false
+}
+
+// javaHomeIs reports whether a start script would run this runtime: the
+// one JAVA_HOME or JRE_HOME names, or without them the java on PATH.
+func javaHomeIs(in Input, env map[string]string, root string) bool {
+	res := func(p string) string {
+		if in.Resolve != nil {
+			return in.Resolve(p)
+		}
+		return p
+	}
+	for _, k := range []string{"JRE_HOME", "JAVA_HOME"} {
+		if h := strings.TrimSuffix(env[k], "/"); h != "" {
+			return h == root || res(h) == res(root)
+		}
+	}
+	for _, d := range strings.Split(env["PATH"], ":") {
+		if d != "" && res(d+"/java") == res(root+"/bin/java") {
+			return true
+		}
 	}
 	return false
 }

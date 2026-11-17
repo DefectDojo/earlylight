@@ -494,6 +494,21 @@
   ]
  },
  {
+  "name": "tomcat-setenv",
+  "what": "Tomcat 10.1 on Temurin 21 with -XX:-UseBASE64Intrinsics in bin/setenv.sh (catalina.sh starts JAVA_HOME's JVM)",
+  "mode": "build",
+  "dockerfile": "tomcat-setenv.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/opt/java/openjdk",
+    "runtime",
+    "inactive",
+    "mitigated"
+   ]
+  ]
+ },
+ {
   "name": "hostile",
   "what": "Forged and 200 KiB release files over an unfixed VM library, a text file named libjvm.so, symlink loops",
   "mode": "build",
