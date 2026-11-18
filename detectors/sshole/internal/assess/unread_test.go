@@ -149,3 +149,42 @@ func TestStartScriptBehindWrapper(t *testing.T) {
 		}
 	}
 }
+
+// Final review finding 2: start scripts that start sshd in different ways
+// are each judged, and the worst kept: one that turns PAM off is never
+// voided by another that does not.
+func TestStartScriptsDisagree(t *testing.T) {
+	pamOff := "#!/bin/sh\n/usr/sbin/sshd -o UsePAM=no\nexec \"$@\"\n"
+	plain := "#!/bin/sh\npgrep sshd || /usr/sbin/sshd -D\n"
+	for _, c := range []struct {
+		name    string
+		cmd     []string
+		scripts map[string]string
+		cleared bool
+	}{
+		{"entrypoint then a CMD script", []string{"/entry.sh", "/cmd.sh"}, map[string]string{"/entry.sh": pamOff, "/cmd.sh": plain}, false},
+		{"two scripts", []string{"/a.sh", "/b.sh"}, map[string]string{"/a.sh": plain, "/b.sh": pamOff}, false},
+		{"a shell and two scripts", []string{"/bin/sh", "/a.sh", "/b.sh"}, map[string]string{"/a.sh": pamOff, "/b.sh": plain}, false},
+		{"a CMD found on PATH", []string{"/entry.sh", "start"}, map[string]string{"/entry.sh": pamOff, "/usr/local/bin/start": plain}, false},
+		{"two init scripts", nil, map[string]string{"/etc/cont-init.d/10-a": pamOff, "/etc/cont-init.d/20-b": plain}, false},
+		{"two scripts that agree", []string{"/a.sh", "/b.sh"}, map[string]string{"/a.sh": plain, "/b.sh": plain}, true},
+	} {
+		w := newWorld("10.0p2", true, map[string]string{"/etc/ssh/sshd_config": "UsePAM yes\n"})
+		scripts := map[string][]byte{}
+		for p, b := range c.scripts {
+			scripts[p] = []byte(b)
+		}
+		in := Input{
+			Binaries: w.binaries, Files: w.files,
+			Accounts: ParseAccounts(w.files.Read("/etc/passwd"), w.files.Read("/etc/shadow"), w.files.Read("/etc/group"), nil),
+			Resolve:  func(p string) (string, bool) { _, ok := w.files[p]; return p, ok },
+			Now:      w.now(),
+			Image:    true,
+			Startup:  Startup{Command: c.cmd, Scripts: scripts},
+		}
+		f := one(t, Run(in))
+		if (f.Status == Inactive) != c.cleared || !c.cleared && (f.Status != Vulnerable || f.Severity != "critical") {
+			t.Errorf("%s: %s %s (%s)", c.name, f.Status, f.Severity, f.Reason)
+		}
+	}
+}

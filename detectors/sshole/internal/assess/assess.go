@@ -207,12 +207,62 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 		return f, true
 	}
 
+	scripts := in.Startup.startScripts(in.Resolve)
+	cands, conflict := pickInvocation(invocations(in.Startup, scripts), u)
+	if !conflict {
+		var inv invocation
+		if len(cands) == 1 {
+			inv = cands[0]
+		}
+		return assessStart(in, main, f, why, scripts, inv, len(cands) == 1)
+	}
+	// The start scripts start sshd in more than one way, and which one runs
+	// is not known: judge each, and sshd_config alone, and keep the worst.
+	// A server is cleared only when every way it can start clears it.
+	var worst Finding
+	var where []string
+	have := false
+	for _, c := range append(cands, invocation{}) {
+		if c.where != "" {
+			where = append(where, c.where)
+		}
+		r, ok := assessStart(in, main, f, why, scripts, c, c.binary != "")
+		if ok && (!have || rank(r) > rank(worst)) {
+			worst, have = r, true
+		}
+	}
+	if have {
+		worst.Reason += fmt.Sprintf("; sshd is started in more than one way (%s), and this is the worst of them", strings.Join(where, ", "))
+	}
+	return worst, have
+}
+
+// rank orders verdicts from the least to the most to act on.
+func rank(f Finding) int {
+	switch f.Status {
+	case Vulnerable:
+		switch f.Severity {
+		case "critical":
+			return 6
+		case "high":
+			return 5
+		}
+		return 4
+	case Undecided:
+		return 3
+	case Inactive:
+		return 2
+	}
+	return 1
+}
+
+// assessStart judges an unfixed server on musl as one invocation starts it
+// (invoked), or as sshd_config alone sets it.
+func assessStart(in Input, main *Binary, f Finding, why string, scripts []script, inv invocation, invoked bool) (Finding, bool) {
 	cfgPath := main.Config
 	if cfgPath == "" {
 		cfgPath = "/etc/ssh/sshd_config"
 	}
-	scripts := in.Startup.startScripts(in.Resolve)
-	inv, invoked := pickInvocation(invocations(in.Startup, scripts), u)
 	if invoked && inv.config != "" {
 		cfgPath = inv.config
 	}
@@ -351,11 +401,11 @@ func targetNames(ts []Target) string {
 	return strings.Join(n, ", ")
 }
 
-// pickInvocation finds the command line that starts this server: the
-// container command's when it runs sshd, else the startup scripts' when they
-// all agree. Command lines that disagree are not applied: options must not
-// lower a verdict on a guess.
-func pickInvocation(invs []invocation, u []*Binary) (invocation, bool) {
+// pickInvocation finds the command lines that start this server: the
+// container command's when it runs sshd, else the startup scripts' distinct
+// ones. More than one (true) means which runs is not known: each is judged
+// and the worst kept, so options never lower a verdict on a guess.
+func pickInvocation(invs []invocation, u []*Binary) ([]invocation, bool) {
 	var mine []invocation
 	for _, inv := range invs {
 		for _, b := range u {
@@ -366,19 +416,24 @@ func pickInvocation(invs []invocation, u []*Binary) (invocation, bool) {
 		}
 	}
 	if len(mine) == 0 {
-		return invocation{}, false
+		return nil, false
 	}
 	for _, inv := range mine {
 		if inv.where == "the container command" {
-			return inv, true
+			return []invocation{inv}, false
 		}
 	}
-	for _, inv := range mine[1:] {
-		if inv.config != mine[0].config || !sameOpts(inv.opts, mine[0].opts) {
-			return invocation{}, false
+	var out []invocation
+	for _, inv := range mine {
+		dup := false
+		for _, o := range out {
+			dup = dup || inv.config == o.config && sameOpts(inv.opts, o.opts)
+		}
+		if !dup {
+			out = append(out, inv)
 		}
 	}
-	return mine[0], true
+	return out, len(out) > 1
 }
 
 func sameOpts(a, b []Directive) bool {
