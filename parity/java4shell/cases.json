@@ -10,7 +10,8 @@
     "/opt/java/openjdk",
     "runtime",
     "fixed",
-    "not-affected"
+    "not-affected",
+    "vm-library"
    ]
   ]
  },
@@ -25,7 +26,8 @@
     "/opt/java/openjdk",
     "runtime",
     "fixed",
-    "not-affected"
+    "not-affected",
+    "vm-library"
    ]
   ]
  },
@@ -40,7 +42,8 @@
     "/opt/java/openjdk",
     "runtime",
     "fixed",
-    "not-affected"
+    "not-affected",
+    "vm-library"
    ]
   ]
  },
@@ -55,7 +58,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -70,7 +74,24 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
+   ]
+  ]
+ },
+ {
+  "name": "temurin-21-alpine",
+  "what": "Temurin 21.0.13 on Alpine: a musl VM library (linux-amd64-musl)",
+  "mode": "registry",
+  "ref": "eclipse-temurin:21.0.13_9-jre-alpine",
+  "expected": [
+   [
+    "linux/amd64",
+    "/opt/java/openjdk",
+    "runtime",
+    "vulnerable",
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -85,7 +106,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -100,7 +122,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -115,7 +138,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -130,7 +154,8 @@
     "/opt/java/openjdk",
     "runtime",
     "fixed",
-    "not-affected"
+    "not-affected",
+    "vm-library"
    ]
   ],
   "platform": "linux/arm64"
@@ -146,42 +171,48 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ],
    [
     "linux/arm64/v8",
     "/opt/java/openjdk",
     "runtime",
     "fixed",
-    "not-affected"
+    "not-affected",
+    "vm-library"
    ],
    [
     "linux/ppc64le",
     "/opt/java/openjdk",
     "runtime",
     "fixed",
-    "not-affected"
+    "not-affected",
+    "vm-library"
    ],
    [
     "linux/s390x",
     "/opt/java/openjdk",
     "runtime",
     "fixed",
-    "not-affected"
+    "not-affected",
+    "vm-library"
    ],
    [
     "windows/amd64",
     "/Files/openjdk-21",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ],
    [
     "windows/amd64",
     "/Files/openjdk-21",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ],
   "platform": "all"
@@ -197,7 +228,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -212,7 +244,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -227,7 +260,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -242,7 +276,8 @@
     "/usr/lib/jvm/java-21-amazon-corretto.x86_64",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -257,7 +292,8 @@
     "/usr/lib/jvm/java-21-amazon-corretto.x86_64",
     "runtime",
     "fixed",
-    "fixed"
+    "fixed",
+    "vm-library"
    ]
   ]
  },
@@ -272,7 +308,8 @@
     "/usr/lib/jvm/java-17-amazon-corretto",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -287,7 +324,8 @@
     "/usr/lib/jvm/java-17-amazon-corretto",
     "runtime",
     "fixed",
-    "fixed"
+    "fixed",
+    "vm-library"
    ]
   ]
  },
@@ -302,7 +340,8 @@
     "/usr/lib/jvm/zulu21-ca-amd64",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -317,7 +356,8 @@
     "/usr/lib/jvm/jre-21.0.13.0.3-bellsoft-x86_64",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -332,7 +372,8 @@
     "/usr/lib/jvm/sapmachine-21",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -347,7 +388,8 @@
     "/opt/java/openjdk",
     "runtime",
     "fixed",
-    "not-affected"
+    "not-affected",
+    "release-file"
    ]
   ]
  },
@@ -362,7 +404,8 @@
     "/usr/share/elasticsearch/jdk",
     "bundled-runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -377,7 +420,24 @@
     "/opt/sapmachine",
     "runtime",
     "fixed",
-    "fixed"
+    "fixed",
+    "vm-library"
+   ]
+  ]
+ },
+ {
+  "name": "build1-boundary",
+  "what": "SYNTHETIC: SapMachine 21.0.13.1 rewritten to build +1, below the fixed build +2",
+  "mode": "build",
+  "dockerfile": "build1-boundary.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/opt/sapmachine",
+    "runtime",
+    "vulnerable",
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -392,7 +452,8 @@
     "/app/runtime",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -407,14 +468,16 @@
     "/opt/atlassian/jira/jre",
     "bundled-runtime",
     "vulnerable",
-    "mitigated"
+    "mitigated",
+    "vm-library"
    ],
    [
     "linux/amd64",
     "/opt/atlassian/confluence/jre",
     "bundled-runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -429,7 +492,8 @@
     "/usr/lib/jvm/java-21-openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -444,7 +508,8 @@
     "/usr/lib/jvm/java-17-openjdk-amd64",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -459,7 +524,8 @@
     "/usr/lib/jvm/java-25-openjdk-amd64",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -474,7 +540,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "mitigated"
+    "mitigated",
+    "vm-library"
    ]
   ]
  },
@@ -489,7 +556,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "mitigated"
+    "mitigated",
+    "vm-library"
    ]
   ]
  },
@@ -504,7 +572,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -519,7 +588,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "mitigated"
+    "mitigated",
+    "vm-library"
    ]
   ]
  },
@@ -534,7 +604,8 @@
     "/opt/java/openjdk",
     "runtime",
     "vulnerable",
-    "mitigated"
+    "mitigated",
+    "vm-library"
    ]
   ]
  },
@@ -549,14 +620,32 @@
     "/opt/forged",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ],
    [
     "linux/amd64",
     "/opt/huge",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
+   ]
+  ]
+ },
+ {
+  "name": "musl-forged",
+  "what": "Temurin 21.0.13 on Alpine (musl) under a release file forged to say 21.0.13.1+2",
+  "mode": "build",
+  "dockerfile": "musl-forged.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/opt/java/openjdk",
+    "runtime",
+    "vulnerable",
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
@@ -571,7 +660,8 @@
     "/usr/lib/jvm/java-17-openjdk-amd64",
     "runtime",
     "vulnerable",
-    "vulnerable"
+    "vulnerable",
+    "vm-library"
    ]
   ]
  },
