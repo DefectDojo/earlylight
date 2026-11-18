@@ -14,6 +14,11 @@ type Config struct {
 	// Missing lists Include patterns that matched no file, and files that
 	// could not be read.
 	Missing []string `json:"missing,omitempty"`
+	// Unread lists what is in the configuration but was not read: an
+	// included file that could not be read (larger than the scan reads),
+	// or the rest of a file past a parser limit. A setting in it is
+	// unknown, so it can never clear a server.
+	Unread []string `json:"unread,omitempty"`
 }
 
 // Directive is one keyword line.
@@ -73,6 +78,7 @@ func ParseConfig(files Files, p string) Config {
 			case "include":
 				if depth >= 16 {
 					c.Missing = append(c.Missing, file+": Include nested too deeply")
+					c.Unread = append(c.Unread, file+": Include nested too deeply")
 					continue
 				}
 				for _, pat := range args[1:] {
@@ -90,6 +96,7 @@ func ParseConfig(files Files, p string) Config {
 						}
 						if filesRead >= maxIncludes {
 							c.Missing = append(c.Missing, g+": more than 256 included files; the rest are not read")
+							c.Unread = append(c.Unread, g+": more than 256 included files")
 							break
 						}
 						filesRead++
@@ -97,6 +104,7 @@ func ParseConfig(files Files, p string) Config {
 							walk(g, b, cur, depth+1)
 						} else {
 							c.Missing = append(c.Missing, g)
+							c.Unread = append(c.Unread, g)
 						}
 					}
 				}
@@ -104,6 +112,7 @@ func ParseConfig(files Files, p string) Config {
 			}
 			if len(c.Directives) >= maxDirectives {
 				c.Missing = append(c.Missing, file+": more than 100000 directives; the rest are not read")
+				c.Unread = append(c.Unread, file+": more than 100000 directives")
 				return
 			}
 			c.Directives = append(c.Directives, Directive{Key: key, Args: args[1:], File: file, Line: i + 1, Match: cur, Block: curBlock})

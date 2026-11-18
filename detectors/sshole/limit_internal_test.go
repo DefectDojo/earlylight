@@ -11,7 +11,8 @@ import (
 )
 
 // A hostile account file as large as --max-file-size is not read into
-// memory: the detector keeps one only up to 4 MiB.
+// memory: the detector keeps one only up to 4 MiB, and one over that is a
+// coverage gap.
 func TestKeptFileBounded(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o755); err != nil {
@@ -34,7 +35,8 @@ func TestKeptFileBounded(t *testing.T) {
 	if a := after.TotalAlloc - before.TotalAlloc; a > 8<<20 {
 		t.Errorf("a 128 MiB /etc/shadow cost %d bytes", a)
 	}
-	if len(tg.Skipped) != 1 || !tg.Skipped[0].Excluded || !strings.Contains(tg.Skipped[0].Reason, "limit of sshole") || tg.Gaps() != 0 {
+	// The verdict reads it: a coverage gap, not an exclusion.
+	if len(tg.Skipped) != 1 || tg.Skipped[0].Excluded || !strings.Contains(tg.Skipped[0].Reason, "sshole reads") || tg.Gaps() != 1 {
 		t.Errorf("skipped %+v", tg.Skipped)
 	}
 }

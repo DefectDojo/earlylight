@@ -235,6 +235,14 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 		return f, true
 	}
 	f.UsePAM = strings.ToLower(cfg.Global("usepam", "no"))
+	if f.PAM && f.UsePAM == "yes" && len(cfg.Unread) > 0 {
+		// A part of the configuration that was not read can turn PAM off:
+		// never clear on what was not read.
+		f.Status = Undecided
+		f.Reason = fmt.Sprintf("this build uses PAM and UsePAM is yes in what was read, but %s was not read and can set UsePAM no", strings.Join(cfg.Unread, ", "))
+		f.Message = fmt.Sprintf("OpenSSH %s server on musl without the *sshole fix; whether PAM checks passwords is unknown", main.Release)
+		return f, true
+	}
 	if f.PAM && f.UsePAM == "yes" {
 		f.Status = Inactive
 		f.Reason = "this build uses PAM (UsePAM yes), and PAM checks passwords without crypt's failure result"

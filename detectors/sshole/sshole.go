@@ -15,6 +15,7 @@
 package sshole
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -134,7 +135,7 @@ const maxKept = 4 << 20
 
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
-	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}}
+	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}, over: map[string]bool{}}
 }
 
 type scan struct {
@@ -143,6 +144,22 @@ type scan struct {
 	files       map[string][]byte
 	scripts     map[string][]byte
 	scriptBytes int
+	// over holds the files a verdict reads that were over the limit:
+	// present, but their content is unknown.
+	over map[string]bool
+}
+
+// VisitOverLimit records a file the verdict reads (an account file, the
+// package database, an sshd_config or a file one includes) that is over
+// the limit: it is a coverage gap, and a configuration that includes it is
+// never taken as turning PAM on. A start script over the limit is only an
+// exclusion: the startup analysis never clears a server.
+func (s *scan) VisitOverLimit(p string, size int64) []engine.Skip {
+	if !keep(p) {
+		return nil
+	}
+	s.over[p] = true
+	return []engine.Skip{{Path: p, Reason: fmt.Sprintf("larger than the %d bytes sshole reads of a file its verdict depends on; not checked", maxKept)}}
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
@@ -167,7 +184,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	if len(s.binaries) == 0 {
 		return nil
 	}
-	fs := &files{kept: s.files, root: ctx.SystemRoot()}
+	fs := &files{kept: s.files, over: s.over, root: ctx.SystemRoot()}
 	links, _ := ctx.Links()
 	res := resolver{links: links, exists: func(p string) bool {
 		if ctx.Exists(p) {
@@ -278,6 +295,7 @@ func yes(b bool) string {
 // root's own files from disk.
 type files struct {
 	kept map[string][]byte
+	over map[string]bool // present but larger than maxKept: Read is nil
 	root string
 }
 
@@ -285,7 +303,7 @@ func (f *files) Read(p string) []byte {
 	if b, ok := f.kept[p]; ok {
 		return b
 	}
-	if f.root == "" {
+	if f.root == "" || f.over[p] {
 		return nil
 	}
 	return f.disk(p)
@@ -324,12 +342,13 @@ func (f *files) diskRegular(p string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-// disk reads a regular file below the system root, never through a
-// symbolic link in any component of its path.
-func (f *files) disk(p string) []byte {
+// diskFile returns the OS path of a regular file below the system root,
+// reached through no symbolic link in any component of its path. A file
+// too large to read is still found: Glob lists it, Read gives nil.
+func (f *files) diskFile(p string) (string, bool) {
 	full, ok := f.diskPath(p)
 	if !ok {
-		return nil
+		return "", false
 	}
 	rel, _ := filepath.Rel(f.root, full)
 	cur := f.root
@@ -337,11 +356,22 @@ func (f *files) disk(p string) []byte {
 		cur = filepath.Join(cur, part)
 		fi, err := os.Lstat(cur)
 		if err != nil || fi.Mode()&os.ModeSymlink != 0 {
-			return nil
+			return "", false
 		}
 	}
 	fi, err := os.Lstat(full)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxKept {
+	return full, err == nil && fi.Mode().IsRegular()
+}
+
+// disk reads a regular file below the system root, never through a
+// symbolic link in any component of its path.
+func (f *files) disk(p string) []byte {
+	full, ok := f.diskFile(p)
+	if !ok {
+		return nil
+	}
+	fi, err := os.Lstat(full)
+	if err != nil || fi.Size() > maxKept {
 		return nil
 	}
 	b, err := os.ReadFile(full)
@@ -354,11 +384,17 @@ func (f *files) disk(p string) []byte {
 func (f *files) Glob(pattern string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for p := range f.kept {
+	match := func(p string) {
 		if ok, _ := path.Match(pattern, p); ok && !seen[p] {
 			seen[p] = true
 			out = append(out, p)
 		}
+	}
+	for p := range f.kept {
+		match(p)
+	}
+	for p := range f.over {
+		match(p)
 	}
 	if f.root != "" {
 		if full, ok := f.diskPath(pattern); ok {
@@ -369,7 +405,7 @@ func (f *files) Glob(pattern string) []string {
 					continue
 				}
 				p := "/" + filepath.ToSlash(rel)
-				if !seen[p] && f.disk(p) != nil {
+				if _, ok := f.diskFile(p); !seen[p] && ok {
 					seen[p] = true
 					out = append(out, p)
 				}
