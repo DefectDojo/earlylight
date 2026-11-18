@@ -302,3 +302,51 @@ func TestGraalVMRepoStrict(t *testing.T) {
 		}
 	}
 }
+
+// Review F6: Microsoft ships no Java 27, so its status for 27 is not known.
+func TestMicrosoftLines(t *testing.T) {
+	res := scan(t, tree(t, map[string]string{
+		"Dockerfile":               "FROM ubuntu:24.04\nRUN apt-get install -y msopenjdk-27\nRUN apt-get install -y msopenjdk-25\n",
+		".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - uses: actions/setup-java@v5\n        with:\n          distribution: microsoft\n          java-version: '27'\n",
+	}))
+	checkAll(t, res, []want{
+		{"Dockerfile", 2, RulePackage, StatusUnknown},
+		{"Dockerfile", 3, RulePackage, StatusVulnerable},
+		{".github/workflows/ci.yml", 7, RuleNotChecked, StatusUnknown},
+	})
+}
+
+// Review F7: rpm installs the scan dropped or cleared.
+func TestRPMGaps(t *testing.T) {
+	res := scan(t, tree(t, map[string]string{
+		"Dockerfile": strings.Join([]string{
+			"FROM registry.access.redhat.com/ubi9/ubi",
+			"RUN dnf install -y java-latest-openjdk",
+			"RUN dnf install -y 'java-17-openjdk-17.0.21*'",
+			"RUN rpm -ivh https://example.com/java-17-openjdk-headless-17.0.21.0.9-1.el9.x86_64.rpm",
+			"RUN dnf install -y java-17-openjdk-17.0.22.0.7-1.el9",
+			"RUN dnf install -y java-17-openjdk-17.0.21.9-1.oe2403",
+			"RUN dnf install -y java-17-openjdk-17.0.21.2-1.oe2403",
+			"RUN dnf install -y ./java-21-openjdk-headless-21.0.13.0.9-1.el9.x86_64.rpm",
+			"RUN apt-get install -y openjdk-21-jre-headless=21.0.14+1-1",
+			"RUN rpm -Uvh --nodeps /tmp/java-21-openjdk-headless-21.0.13.1.2-1.el9.x86_64.rpm",
+			"RUN rpm -qip /tmp/java-17-openjdk-headless-17.0.21.0.9-1.el9.x86_64.rpm",
+		}, "\n") + "\n",
+	}))
+	checkAll(t, res, []want{
+		{"Dockerfile", 2, RulePackage, StatusUnknown},
+		{"Dockerfile", 3, RulePackage, StatusUnknown},
+		{"Dockerfile", 4, RulePackage, StatusVulnerable},
+		{"Dockerfile", 5, RulePackage, StatusUnknown},
+		{"Dockerfile", 6, RulePackage, StatusUnknown},
+		{"Dockerfile", 7, RulePackage, StatusUnknown}, // 17.0.21.2: a fourth number may be a build
+		{"Dockerfile", 8, RulePackage, StatusVulnerable},
+		{"Dockerfile", 9, RulePackage, StatusUnknown},
+	})
+	if f, ok := find(res, "Dockerfile", 10); ok {
+		t.Errorf("21.0.13.1+2 (fixed upstream) reported: %+v", f)
+	}
+	if f, ok := find(res, "Dockerfile", 11); ok {
+		t.Errorf("an rpm query reported as an install: %+v", f)
+	}
+}
