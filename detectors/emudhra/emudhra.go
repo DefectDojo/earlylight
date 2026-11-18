@@ -71,7 +71,7 @@ func (d *Detector) Load() error {
 
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(engine.TargetKind) engine.Scan {
-	return &scan{det: d.det, files: map[string][]byte{}, dedupe: map[string]bool{}}
+	return &scan{det: d.det, files: map[string][]byte{}, dedupe: map[string]bool{}, scanned: map[string]bool{}}
 }
 
 // Probe checks the certificate chain a TLS server presents.
@@ -92,6 +92,7 @@ type scan struct {
 	findings []detect.Finding
 	files    map[string][]byte
 	dedupe   map[string]bool
+	scanned  map[string]bool // certifi bundles visited
 }
 
 // keep reports whether the assessment rules need this file's content: the
@@ -104,6 +105,9 @@ func keep(p string) bool {
 func (s *scan) Visit(f engine.File) []engine.Skip {
 	if keep(f.Path) {
 		s.files[f.Path] = f.Data // raw path: lookups must never alias another file
+	}
+	if !f.Member && strings.HasSuffix(f.Path, "/certifi/cacert.pem") {
+		s.scanned[f.Path] = true // checked here, not only known to exist
 	}
 	found, skips := s.det.ScanAll(f.Path, f.Data)
 	for _, x := range found {
@@ -125,9 +129,9 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 
 func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	rs := assess.Assess(s.findings, assess.Context{
-		Read:   func(p string) []byte { return s.files[p] },
-		Exists: ctx.Exists,
-		Env:    ctx.Env(),
+		Read:    func(p string) []byte { return s.files[p] },
+		Scanned: func(p string) bool { return s.scanned[p] },
+		Env:     ctx.Env(),
 	})
 	out := make([]engine.Finding, 0, len(rs))
 	for _, r := range rs {

@@ -14,7 +14,7 @@ func ctx(files map[string]string) Context {
 			}
 			return nil
 		},
-		Exists: func(p string) bool { _, ok := files[p]; return ok },
+		Scanned: func(p string) bool { _, ok := files[p]; return ok },
 	}
 }
 
