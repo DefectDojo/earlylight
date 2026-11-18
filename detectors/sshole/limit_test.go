@@ -522,3 +522,57 @@ func TestUpperLayerSpelledDifferently(t *testing.T) {
 		t.Errorf("an upper sshd_config turning PAM off: %+v", fs)
 	}
 }
+
+// Final review finding 4: what a directory that cannot be listed hides is
+// unknown: an include under it (by path or glob, walked or read from disk
+// under --root) keeps a PAM server from being cleared, a login shell in it
+// still exists, and an unreadable /etc/shadow makes no claim about hashes.
+func TestUnlistableDirectories(t *testing.T) {
+	for _, c := range []struct {
+		name, include, rel, lock string
+		root                     bool
+	}{
+		{"sshd_config.d under --root", "/etc/ssh/sshd_config.d/*.conf", "etc/ssh/sshd_config.d/50.conf", "etc/ssh/sshd_config.d", true},
+		{"a glob directory, walked", "/etc/ssh/conf.d*/x.conf", "etc/ssh/conf.d1/x.conf", "etc/ssh/conf.d1", false},
+		{"a glob directory under --root", "/etc/ssh/conf.d*/x.conf", "etc/ssh/conf.d1/x.conf", "etc/ssh/conf.d1", true},
+		{"a file under --root", "/etc/ssh/site.conf", "etc/ssh/site.conf", "etc/ssh/site.conf", true},
+	} {
+		root := pamRoot(t)
+		write(t, root, "etc/ssh/sshd_config", []byte("Include "+c.include+"\nUsePAM yes\n"), 0o644)
+		write(t, root, c.rel, []byte("UsePAM no\n"), 0o644)
+		args := []string{"--as-root", root}
+		if c.root {
+			args = []string{"--root", root, filepath.Join(root, "usr")}
+		}
+		if v, _ := sshVerdict(t, args...); v != engine.Vulnerable {
+			t.Fatalf("%s, readable: %s", c.name, v)
+		}
+		unreadable(t, filepath.Join(root, c.lock))
+		if v, code := sshVerdict(t, args...); v.Cleared() || code == 0 {
+			t.Errorf("%s, not readable: %s exit %d", c.name, v, code)
+		}
+	}
+
+	verdict := func(lock bool) string {
+		root := alpineRoot(t, "10.0_p1-r10")
+		write(t, root, "etc/passwd", []byte("root:x:0:0:root:/root:/bin/sh\nalice:x:1000:1000::/home/alice:/bin/sh\nbob:x:1001:1001::/home/bob:/opt/shells/menu\n"), 0o644)
+		write(t, root, "opt/shells/menu", []byte("#!/bin/sh\nexec /bin/sh\n"), 0o755)
+		if lock {
+			unreadable(t, filepath.Join(root, "opt/shells"))
+		}
+		v, _ := sshVerdict(t, "--as-root", root)
+		fs, _, _ := scanExit(t, "--detector", "sshole", "--as-root", root)
+		return string(v) + "/" + fs[0].Severity
+	}
+	if a, b := verdict(false), verdict(true); a != b {
+		t.Errorf("a login shell in a directory that cannot be listed: %s, readable: %s", b, a)
+	}
+
+	root := alpineRoot(t, "10.0_p1-r10")
+	unreadable(t, filepath.Join(root, "etc/shadow"))
+	fs, _, _ := scanExit(t, "--detector", "sshole", "--as-root", root)
+	if len(fs) != 1 || fs[0].Verdict.Cleared() || strings.Contains(fs[0].Message, "$-style") || strings.Contains(fs[0].Message, "no account has") ||
+		!strings.Contains(fs[0].Message, "/etc/shadow could not be read") {
+		t.Errorf("unreadable /etc/shadow: %+v", fs)
+	}
+}

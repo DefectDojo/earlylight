@@ -15,6 +15,8 @@
 package sshole
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -282,7 +284,9 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		if ctx.Exists(p) {
 			return true
 		}
-		return fs.root != "" && fs.diskRegular(p)
+		// A path that may be in a directory that was not listed is taken
+		// to exist: its absence is not known.
+		return fs.root != "" && fs.diskRegular(p) || fs.mayHide(p)
 	}}
 	acc := assess.ParseAccounts(fs.Read("/etc/passwd"), fs.Read("/etc/shadow"), fs.Read("/etc/group"), fs.tcb())
 	owners := map[string]assess.Package{}
@@ -307,6 +311,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		ctx.Annotate("alpine_branch", branch)
 	}
 	found := assess.Run(assess.Input{
+		NotRead:  fs.notRead,
 		Binaries: s.binaries,
 		Owners:   owners,
 		Files:    fs,
@@ -397,6 +402,83 @@ type files struct {
 	// that cannot be read.
 	unreadDirs []string
 	root       string
+}
+
+// mayHide reports whether a file matching pattern (a path or a glob) can
+// be in a directory that was not listed, in the walk or on disk under the
+// system root: then what it matches is unknown.
+func (f *files) mayHide(pattern string) bool {
+	pc := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	for _, d := range f.unreadDirs {
+		dc := strings.Split(strings.TrimPrefix(d, "/"), "/")
+		if len(dc) >= len(pc) {
+			continue
+		}
+		in := true
+		for i, c := range dc {
+			if ok, _ := path.Match(pc[i], c); !ok {
+				in = false
+				break
+			}
+		}
+		if in {
+			return true
+		}
+	}
+	return f.root != "" && f.diskHidden(f.root, pc)
+}
+
+// diskHidden reports whether the files under dir matching comps cannot be
+// all listed: a directory on the way that exists and cannot be read. It
+// never follows a symbolic link.
+func (f *files) diskHidden(dir string, comps []string) bool {
+	unknown := func(err error) bool { return err != nil && !errors.Is(err, fs.ErrNotExist) }
+	c := comps[0]
+	if len(comps) == 1 {
+		if hasMeta(c) {
+			_, err := os.ReadDir(dir)
+			return unknown(err)
+		}
+		_, err := os.Lstat(filepath.Join(dir, c))
+		return unknown(err)
+	}
+	if !hasMeta(c) {
+		next := filepath.Join(dir, c)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return unknown(err)
+		}
+		return fi.IsDir() && f.diskHidden(next, comps[1:])
+	}
+	es, err := os.ReadDir(dir)
+	if err != nil {
+		return unknown(err)
+	}
+	for _, e := range es {
+		if ok, _ := path.Match(c, e.Name()); ok && e.IsDir() && f.diskHidden(filepath.Join(dir, e.Name()), comps[1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMeta(s string) bool { return strings.ContainsAny(s, "*?[\\") }
+
+// notRead reports whether a file the verdict reads may be in the target
+// but was not read: over a size limit, unreadable, or in a directory that
+// could not be listed.
+func (f *files) notRead(p string) bool {
+	if _, ok := f.kept[p]; ok {
+		return false
+	}
+	if f.over[p] || f.mayHide(p) {
+		return true
+	}
+	if f.root == "" {
+		return false
+	}
+	_, ok := f.diskFile(p)
+	return ok && f.disk(p) == nil
 }
 
 // inUnreadDir reports whether p lies in a directory that was not listed.
@@ -506,7 +588,7 @@ func (f *files) Glob(pattern string) []string {
 	for p := range f.over {
 		match(p)
 	}
-	if f.inUnreadDir(path.Dir(pattern)) && !seen[pattern] {
+	if f.mayHide(pattern) && !seen[pattern] {
 		// What it matches there is unknown: stand for it with the pattern,
 		// which Read cannot give.
 		seen[pattern] = true

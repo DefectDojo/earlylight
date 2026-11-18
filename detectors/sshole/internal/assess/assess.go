@@ -82,6 +82,10 @@ type Finding struct {
 
 // Input is a target's evidence.
 type Input struct {
+	// NotRead reports whether a file may be in the target but was not read
+	// (over a size limit, unreadable, in a directory not listed): its
+	// absence is not a fact to state.
+	NotRead  func(p string) bool
 	Binaries []*Binary
 	Owners   map[string]Package // apk database: file -> package
 	Files    Files
@@ -308,9 +312,16 @@ func assessStart(in Input, main *Binary, f Finding, why string, scripts []script
 	donor := PickSalt(in.Accounts)
 	f.Donor = &donor
 	var missing []string
-	if !in.Accounts.Read {
+	notRead := func(p string) bool { return in.NotRead != nil && in.NotRead(p) }
+	switch {
+	case !in.Accounts.Read && notRead("/etc/passwd"):
+		missing = append(missing, "/etc/passwd could not be read, so the accounts are unknown")
+	case !in.Accounts.Read:
 		missing = append(missing, "/etc/passwd is not in the target")
-	} else if donor.Fails == "none" {
+	case notRead("/etc/shadow"):
+		// Never a claim about hashes that were not read.
+		missing = append(missing, "/etc/shadow could not be read, so the accounts' password fields and hashes are unknown")
+	case donor.Fails == "none":
 		if donor.Account == "" {
 			missing = append(missing, "no account has a $-style password hash, so sshd falls back to the DES salt \"xx\", which never fails")
 		} else {
@@ -343,7 +354,7 @@ func assessStart(in Input, main *Binary, f Finding, why string, scripts []script
 	default:
 		f.Password = "maybe"
 	}
-	if in.Accounts.Read && stars == 0 {
+	if in.Accounts.Read && stars == 0 && !notRead("/etc/shadow") {
 		missing = append(missing, "no account has the password field \"*\"")
 	}
 	f.Missing = missing
