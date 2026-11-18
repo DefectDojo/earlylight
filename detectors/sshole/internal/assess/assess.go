@@ -414,8 +414,10 @@ func targetNames(ts []Target) string {
 
 // pickInvocation finds the command lines that start this server: the
 // container command's when it runs sshd, else the startup scripts' distinct
-// ones. More than one (true) means which runs is not known: each is judged
-// and the worst kept, so options never lower a verdict on a guess.
+// ones. More than one, or one in a script the command only passes as an
+// argument (true), means which runs is not known: each, and sshd_config
+// alone, is judged and the worst kept, so options never lower a verdict on
+// a guess.
 func pickInvocation(invs []invocation, u []*Binary) ([]invocation, bool) {
 	var mine []invocation
 	for _, inv := range invs {
@@ -435,7 +437,9 @@ func pickInvocation(invs []invocation, u []*Binary) ([]invocation, bool) {
 		}
 	}
 	var out []invocation
+	arg := false
 	for _, inv := range mine {
+		arg = arg || inv.arg
 		dup := false
 		for _, o := range out {
 			dup = dup || inv.config == o.config && sameOpts(inv.opts, o.opts)
@@ -444,7 +448,9 @@ func pickInvocation(invs []invocation, u []*Binary) ([]invocation, bool) {
 			out = append(out, inv)
 		}
 	}
-	return out, len(out) > 1
+	// A command line in a script passed as an argument may not run: then
+	// sshd_config alone is judged too.
+	return out, len(out) > 1 || arg
 }
 
 func sameOpts(a, b []Directive) bool {

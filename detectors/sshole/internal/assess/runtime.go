@@ -144,8 +144,12 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 		// Every word of the command that names a script: wrappers take
 		// arguments of their own ("tini --", "gosu USER", "su-exec USER"),
 		// so the script is not always the first word after them.
+		// The first is the program the command runs; a later one is an
+		// argument to it, which may or may not run (arg).
 		c := s.Command
+		program := false
 		for i, w := range c {
+			n := len(out)
 			if isShell(path.Base(w)) {
 				for j := i + 1; j < len(c); j++ {
 					if c[j] == "-c" && j+1 < len(c) {
@@ -155,6 +159,10 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 				}
 			}
 			add(w)
+			for k := n; k < len(out); k++ {
+				out[k].arg = program
+				program = true
+			}
 		}
 		// One level of scripts the command's scripts name.
 		for _, sc := range append([]script(nil), out...) {
@@ -178,7 +186,12 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 	return out
 }
 
-type script struct{ where, text string }
+type script struct {
+	where, text string
+	// arg is set for a script the command names after its program: an
+	// argument, which may not run.
+	arg bool
+}
 
 var absPathRE = regexp.MustCompile(`/[A-Za-z0-9_./-]+`)
 
@@ -196,6 +209,9 @@ type invocation struct {
 	config string
 	opts   []Directive
 	where  string
+	// arg: found in a script the command passes as an argument, which may
+	// not run.
+	arg bool
 }
 
 // invocations finds sshd command lines in the container command and the
@@ -209,6 +225,7 @@ func invocations(s Startup, scripts []script) []invocation {
 		for _, line := range strings.Split(sc.text, "\n") {
 			for _, part := range splitCommands(line) {
 				if inv, ok := parseSSHD(fieldsQuoted(part), sc.where); ok {
+					inv.arg = sc.arg
 					out = append(out, inv)
 				}
 			}

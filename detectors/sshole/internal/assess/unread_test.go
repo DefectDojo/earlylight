@@ -188,3 +188,34 @@ func TestStartScriptsDisagree(t *testing.T) {
 		}
 	}
 }
+
+// Round-5 review finding 3: a script the command passes as an argument
+// may not run: its sshd options never clear a server that sshd_config
+// alone leaves exposed.
+func TestArgumentScript(t *testing.T) {
+	sup := "#!/bin/sh\nexec supervisord\n"
+	debug := "#!/bin/sh\n/usr/sbin/sshd -D -o UsePAM=yes\n"
+	for _, c := range []struct {
+		name    string
+		cmd     []string
+		cleared bool
+	}{
+		{"ENTRYPOINT with an argument", []string{"/entry.sh", "/opt/tools/debug.sh"}, false},
+		{"tini, then the argument", []string{"tini", "--", "/entry.sh", "/opt/tools/debug.sh"}, false},
+		{"the script as the program", []string{"/opt/tools/debug.sh"}, true},
+	} {
+		w := newWorld("10.0p2", true, map[string]string{"/etc/ssh/sshd_config": "UsePAM no\n"})
+		in := Input{
+			Binaries: w.binaries, Files: w.files,
+			Accounts: ParseAccounts(w.files.Read("/etc/passwd"), w.files.Read("/etc/shadow"), w.files.Read("/etc/group"), nil),
+			Resolve:  func(p string) (string, bool) { _, ok := w.files[p]; return p, ok },
+			Now:      w.now(),
+			Image:    true,
+			Startup:  Startup{Command: c.cmd, Scripts: map[string][]byte{"/entry.sh": []byte(sup), "/opt/tools/debug.sh": []byte(debug)}},
+		}
+		f := one(t, Run(in))
+		if (f.Status == Inactive) != c.cleared || !c.cleared && (f.Status != Vulnerable || f.Severity != "critical") {
+			t.Errorf("%s: %s %s (%s)", c.name, f.Status, f.Severity, f.Reason)
+		}
+	}
+}
