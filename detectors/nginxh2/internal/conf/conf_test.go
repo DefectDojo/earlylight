@@ -128,6 +128,10 @@ func TestExposure(t *testing.T) {
 		{"R12 njs", `http { server { listen 443 ssl http2; location / { js_content main.handler; } } }`, Exposed, Exposed},
 		{"R12 redis2", `http { server { listen 443 ssl http2; location / { redis2_pass r:6379; } } }`, Exposed, Exposed},
 		{"R12 auth_request", `http { server { listen 443 ssl http2; location / { auth_request /auth; root /srv; } } }`, Exposed, Exposed},
+		{"V4 a map key ending in $", `http { map $http_user_agent $bot { default 0; ~*(bot|crawler)$ 1; } server { listen 443 ssl; } }`, NotExposed, NotExposed},
+		{"V4 geo and split_clients", `http { geo $a { default 0; 10.0.0.0/8 $x; } split_clients $remote_addr $v { 50% $one; * $two; } types { text/$x foo; } server { listen 443 ssl; } }`, NotExposed, NotExposed},
+		{"V4 a variable glued to text is not a placeholder", `http { server { listen 443 ssl; } } stream { foo$bar; }`, NotExposed, NotExposed},
+		{"V4 a whole-token placeholder still counts", `http { $EXTRA; server { listen 443 ssl; } }`, Unknown, Unknown},
 		{"nested if", `http { server { listen 443 ssl http2; location / { if ($x) { fastcgi_pass unix:/s; } } } }`, Exposed, Exposed},
 	}
 	for _, c := range cases {

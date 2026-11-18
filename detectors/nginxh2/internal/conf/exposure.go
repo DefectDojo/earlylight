@@ -2,6 +2,7 @@ package conf
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -246,14 +247,22 @@ func placeholders(ds []Directive, unsettled func(string), depth int) {
 		return
 	}
 	for _, d := range ds {
-		if strings.Contains(d.Name, "$") {
+		if placeholder.MatchString(d.Name) {
 			unsettled(fmt.Sprintf("%s at %s stands for directives decided where it runs", d.Name, loc(d)))
 		}
-		if d.HasBlock {
+		if d.HasBlock && !valueBlocks[d.Name] {
 			placeholders(d.Block, unsettled, depth+1)
 		}
 	}
 }
+
+// placeholder is a directive name that is one variable and nothing else
+// (${EXTRA_DIRECTIVES}, $EXTRA): what a template leaves unset.
+var placeholder = regexp.MustCompile(`^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)$`)
+
+// valueBlocks hold keys and values, not directives: a key there may be
+// anything ("~*(bot|crawler)$" in a map).
+var valueBlocks = map[string]bool{"map": true, "geo": true, "split_clients": true, "types": true, "charset_map": true}
 
 func proxies(ds []Directive, out *[]string, depth int) {
 	if depth > maxDepth {
