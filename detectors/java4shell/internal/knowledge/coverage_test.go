@@ -155,6 +155,23 @@ func TestGraalVMRow(t *testing.T) {
 	}
 }
 
+// A row whose first fixed GraalVM build comes after OpenJDK's: the builds
+// in between are OpenJDK-fixed but not GraalVM-fixed.
+func TestGraalVMRowLaterBuild(t *testing.T) {
+	saved := GraalVMFixed
+	t.Cleanup(func() { GraalVMFixed = saved })
+	GraalVMFixed = map[int]Build{21: {Version: []int{21, 0, 13, 1}, Build: 5}}
+	for v, want := range map[string]Status{
+		"21.0.13.1+3-jvmci-23.1-b99": Vulnerable,
+		"21.0.13.1+5-jvmci-23.1-b99": Fixed,
+	} {
+		p, _ := Parse(v)
+		if st, why := JudgeGraalVM(p); st != want {
+			t.Errorf("row 21.0.13.1+5: JudgeGraalVM(%s) = %s (%s), want %s", v, st, why, want)
+		}
+	}
+}
+
 // GraalVM Community's own release numbers (graal-25.5.5.0.3 is JDK
 // 25.0.5.0.3, graal-25.1.3 is JDK 25.0.3) are never Java versions.
 func TestGraalVMOwnNumbersNotJava(t *testing.T) {
