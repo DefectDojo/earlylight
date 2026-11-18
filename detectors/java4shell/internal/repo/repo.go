@@ -854,6 +854,10 @@ func (s *scanner) packages(rel string, line int, run string) {
 			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[3]), op: opOf(m[4]), ver: m[5], mgr: "package", vendor: m[2]})
 		case defaultArg.MatchString(arg):
 			hits = append(hits, pkgHit{name: arg, mgr: "apt", vendor: "distribution"})
+		case varJavaArg.MatchString(arg):
+			// openjdk-${V}-jre-headless, java-${V}-openjdk: the Java
+			// release comes from a variable.
+			hits = append(hits, pkgHit{name: arg, mgr: "package", vendor: "distribution", varName: true})
 		}
 	}
 	for _, h := range hits {
@@ -865,6 +869,10 @@ func (s *scanner) packages(rel string, line int, run string) {
 func anchored(re *regexp.Regexp) *regexp.Regexp {
 	return regexp.MustCompile(`^(?:` + strings.TrimPrefix(re.String(), `\b`) + `)$`)
 }
+
+// varJavaArg is a Java package name with a variable where the release
+// is: openjdk-${V}-jre-headless, openjdk$V, java-${V}-openjdk, temurin-${V}-jdk.
+var varJavaArg = regexp.MustCompile(`^(?:openjdk-?|java-|temurin-|zulu|msopenjdk-|sapmachine-)\$\{?[A-Za-z_][A-Za-z0-9_]*\}?(?:-[\w.-]*)?$`)
 
 var (
 	aptArg     = anchored(aptJava)
@@ -893,6 +901,10 @@ var (
 // package argument (a path).
 func packageName(w string) string {
 	name, ver, pinned := strings.Cut(w, "=")
+	// An apk repository tag: openjdk21-jre-headless@edge.
+	if i := strings.IndexByte(name, '@'); i > 0 {
+		name = name[:i]
+	}
 	if i := strings.IndexByte(name, '/'); i >= 0 {
 		if strings.Count(name, "/") > 1 || i == 0 {
 			return "" // a path
@@ -952,6 +964,7 @@ type pkgHit struct {
 	name, op, ver, mgr string
 	vendor             string // distribution, corretto, temurin, zulu, msopenjdk, sapmachine
 	feature            int    // 0: the distribution's default (default-jre)
+	varName            bool   // the name holds a variable where the release is
 }
 
 func opOf(v string) string {
@@ -992,6 +1005,14 @@ func pinnedVersion(h pkgHit) string {
 }
 
 func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
+	if h.varName {
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown,
+			Props:   map[string]string{"package": h.name, "manager": h.mgr},
+			Reason:  "the Java release in the package name comes from a variable set outside this line",
+			Message: fmt.Sprintf("installs %s, a package whose Java release this scan cannot read: not checked for the Java4Shell fix", refs.CleanText(h.name, 80)),
+			Fix:     "Check which Java release the variable selects: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update have the fix."})
+		return
+	}
 	if h.feature > 0 && h.feature < 17 {
 		return // Java 8 and 11 packages are not affected
 	}

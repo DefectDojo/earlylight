@@ -1,6 +1,9 @@
 package repo
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 type want struct {
 	file   string
@@ -100,6 +103,26 @@ func TestInstallFormsRound3(t *testing.T) {
 		f, ok := find(scan(t, root), "Dockerfile", 2)
 		if !ok || f.Rule != RulePackage {
 			t.Errorf("%d %q: %+v (found %v)", i, run, f, ok)
+		}
+	}
+}
+
+// Round-4 follow-ups: an apk @repo tag, and a variable in place of the
+// version in a package name.
+func TestInstallFormsRound4(t *testing.T) {
+	root := tree(t, map[string]string{
+		"a/Dockerfile": "FROM alpine:3.23\nRUN apk add --no-cache openjdk21-jre-headless@edge\n",
+		"b/Dockerfile": "FROM debian:12\nRUN apt-get install -y openjdk-${V}-jre-headless\n",
+		"c/Dockerfile": "FROM rockylinux:9\nRUN dnf install -y java-${V}-openjdk\n",
+	})
+	res := scan(t, root)
+	if f, ok := find(res, "a/Dockerfile", 2); !ok || f.Rule != RulePackage || f.Props["package"] != "openjdk21-jre-headless" {
+		t.Errorf("apk @tag: %+v (found %v)", f, ok)
+	}
+	for _, file := range []string{"b/Dockerfile", "c/Dockerfile"} {
+		f, ok := find(res, file, 2)
+		if !ok || f.Rule != RulePackage || f.Status != StatusUnknown || !strings.Contains(f.Message, "cannot read") {
+			t.Errorf("%s: %+v (found %v)", file, f, ok)
 		}
 	}
 }
