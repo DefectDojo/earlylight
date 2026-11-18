@@ -73,6 +73,13 @@ type Finding struct {
 	Interim string `json:"interim,omitempty"`
 	ref     *refs.Ref
 	edit    *tagEdit
+	pin     *pinEdit
+}
+
+// pinEdit is a package pin to move to the fixed package.
+type pinEdit struct {
+	old, repl string // "nginx=1.30.6-r0" -> "nginx=1.30.7-r0"
+	branch    string
 }
 
 // tagEdit is a tag to move.

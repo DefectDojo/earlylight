@@ -178,8 +178,15 @@ func TestDistroFixText(t *testing.T) {
 		Owner: func(string) *pkgdb.Package {
 			return &pkgdb.Package{Manager: "apk", Name: "nginx", Version: "1.30.6-r0", Maintainer: "Jakub Jirutka"}
 		}}))
-	if f := fs[knowledge.Flow]; !strings.Contains(f.Fix, "Alpine had published no fixed nginx package") || f.Facts["package"] != "nginx 1.30.6-r0" {
+	if f := fs[knowledge.Flow]; !strings.Contains(f.Fix, "apk upgrade nginx (1.30.7-r0 on Alpine 3.24") || f.Facts["package"] != "nginx 1.30.6-r0" {
 		t.Errorf("%+v", f)
+	}
+	fs = byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.28.3"))}, Source: mem{}, Distro: "alpine", Release: "3.23",
+		Owner: func(string) *pkgdb.Package {
+			return &pkgdb.Package{Manager: "apk", Name: "nginx", Version: "1.28.3-r7", Maintainer: "Jakub Jirutka"}
+		}}))
+	if f := fs[knowledge.Flow]; !strings.Contains(f.Fix, "Alpine 3.23 had no fixed nginx package") {
+		t.Errorf("3.23: %s", f.Fix)
 	}
 }
 

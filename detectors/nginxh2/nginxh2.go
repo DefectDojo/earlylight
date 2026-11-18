@@ -219,6 +219,7 @@ type scan struct {
 	tooLarge  map[string]bool // configuration files over maxConf, not kept
 	db        map[string][]byte
 	ingress   bool
+	f5ingress bool
 	dropped   int
 }
 
@@ -227,8 +228,11 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		return nil // installed servers only
 	}
 	if archive.IsExecutable(f.Data) {
-		if path.Base(f.Path) == "nginx-ingress-controller" {
+		switch path.Base(f.Path) {
+		case "nginx-ingress-controller":
 			s.ingress = true
+		case "nginx-ingress":
+			s.f5ingress = true
 		}
 		if b, ok := ngx.Inspect(f.Path, f.Data); ok {
 			if len(s.binaries) >= maxBinaries {
@@ -297,16 +301,25 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 			}
 			return nil
 		},
-		Distro:  distro,
-		Release: release,
-		Command: ctx.Command(),
-		Ingress: s.ingress,
+		Distro:    distro,
+		Release:   release,
+		Command:   ctx.Command(),
+		Ingress:   s.ingress,
+		Generated: s.generated(),
 	})
 	out := make([]engine.Finding, 0, len(found))
 	for _, x := range found {
 		out = append(out, finding(x))
 	}
 	return out
+}
+
+// generated says why the configuration on disk is not what runs.
+func (s *scan) generated() string {
+	if s.f5ingress && !s.ingress {
+		return "the F5 NGINX Ingress Controller writes nginx.conf at start; HTTP/2 follows its ConfigMap key http2 (off by default) and the VirtualServer and Ingress resources, which the image does not hold"
+	}
+	return ""
 }
 
 func (s *scan) read(src *confSource, ps ...string) []byte {

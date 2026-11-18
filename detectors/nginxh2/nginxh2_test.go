@@ -146,7 +146,7 @@ func TestScanBelowRoot(t *testing.T) {
 	if f == nil || f.Facts["exposure"] != "exposed" || f.Facts["package"] != "nginx 1.30.6-r0" || f.Facts["distro"] != "alpine 3.24" {
 		t.Errorf("%+v", f)
 	}
-	if !strings.Contains(f.Fix, "Alpine had published no fixed") {
+	if !strings.Contains(f.Fix, "apk upgrade nginx") {
 		t.Errorf("fix: %s", f.Fix)
 	}
 }

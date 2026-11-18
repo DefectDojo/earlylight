@@ -22,8 +22,25 @@ var Backports []Backport
 var DistroStatus = map[string]string{
 	"debian": "Debian had published no fixed nginx package on " + Checked + " (security tracker: unfixed in bookworm, trixie, forky and sid)",
 	"ubuntu": "Ubuntu had published no fixed nginx package on " + Checked + " (newest: jammy 1.18.0-6ubuntu14.22, noble 1.24.0-2ubuntu7.19, questing 1.28.0-6ubuntu1.8, resolute 1.28.3-2ubuntu1.12)",
-	"alpine": "Alpine had published no fixed nginx package on " + Checked + " (3.24 1.30.6-r0, edge 1.30.6-r1, 3.22 and 3.23 1.28.3-r7, 3.21 1.26.3-r3)",
+	"alpine": "Alpine published nginx 1.30.7-r0 for 3.24 and edge on " + Checked + " (17:06 UTC); 3.21 (1.26.3-r3), 3.22 and 3.23 (1.28.3-r7) had no fixed package at 17:47 UTC",
 	"rhel":   "Red Hat's status could not be read on " + Checked + "; a Red Hat build is judged by its version until a fixed build is known",
+}
+
+// AlpineFixed is the first fixed nginx package on each Alpine branch that
+// has one: an upgrade to the fixed upstream release, so the binary's own
+// version shows it (dl-cdn.alpinelinux.org APKINDEX, 2026-11-18 17:06 UTC
+// for v3.24, 17:11 UTC for edge).
+var AlpineFixed = map[string]string{"3.24": "1.30.7-r0", "edge": "1.30.7-r0"}
+
+// AlpineText says what an Alpine branch had published.
+func AlpineText(branch string) string {
+	if v, ok := AlpineFixed[branch]; ok {
+		return "Alpine " + branch + " has the fixed nginx " + v + " (published " + Checked + ")"
+	}
+	if branch == "" {
+		return DistroStatus["alpine"]
+	}
+	return "Alpine " + branch + " had no fixed nginx package on " + Checked + " (17:47 UTC); Alpine 3.24 and edge have 1.30.7-r0"
 }
 
 // DistroOf maps an os-release ID (and ID_LIKE) to the family whose status

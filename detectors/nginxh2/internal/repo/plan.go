@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/knowledge"
 	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
@@ -48,6 +49,9 @@ type Registry struct {
 // Plan finds the edit that fixes a finding, checks it by rescanning the
 // edited file in memory, and returns it without writing anything.
 func Plan(ctx context.Context, root string, f Finding, reg Registry, opts Options) (*Change, error) {
+	if f.Fixable && f.pin != nil {
+		return planPin(ctx, root, f, opts)
+	}
 	if !f.Fixable || f.edit == nil {
 		return nil, declined("%s", f.Fix)
 	}
@@ -119,6 +123,45 @@ func Plan(ctx context.Context, root string, f Finding, reg Registry, opts Option
 	return planLine(ctx, root, f, file, part.Line, col, tag, e.target, opts,
 		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: the first release of the same line and variant with the fix for CVE-2026-123007 and CVE-2026-123633, read and judged on linux/amd64 and linux/arm64 (or the --platform list), published for every platform it must have, on the same base OS (index digest %s). Rebuild and redeploy.",
 			e.image, newImage, part.Line, file, where, digest))
+}
+
+// planPin moves a package pin to the fixed package: the pin must be
+// written once in the RUN instruction (its first line and the lines it
+// continues onto).
+func planPin(ctx context.Context, root string, f Finding, opts Options) (*Change, error) {
+	b, ok := opts.Overlay[f.File]
+	if !ok {
+		var err error
+		if b, err = readFile(root, f.File); err != nil {
+			return nil, declined("%s could not be read: %v", f.File, err)
+		}
+	}
+	ls := strings.Split(string(b), "\n")
+	type hit struct{ line, col int }
+	var hits []hit
+	for i := f.Line - 1; i >= 0 && i < len(ls) && i < f.Line-1+200; i++ {
+		l := strings.TrimSuffix(ls[i], "\r")
+		for off := 0; ; {
+			j := strings.Index(l[off:], f.pin.old)
+			if j < 0 {
+				break
+			}
+			c := off + j
+			end := c + len(f.pin.old)
+			if (c == 0 || strings.ContainsRune(" \t'\"", rune(l[c-1]))) && (end == len(l) || strings.ContainsRune(" \t'\";&|\\", rune(l[end]))) {
+				hits = append(hits, hit{i + 1, c})
+			}
+			off = end
+		}
+		if !strings.HasSuffix(strings.TrimRight(l, " \t"), "\\") {
+			break
+		}
+	}
+	if len(hits) != 1 {
+		return nil, declined("the pin %s is not written once in the instruction at line %d; change it to %s by hand", f.pin.old, f.Line, f.pin.repl)
+	}
+	return planLine(ctx, root, f, f.File, hits[0].line, hits[0].col, f.pin.old, f.pin.repl, opts,
+		fmt.Sprintf("Changes the package pin %s to %s on line %d of %s: the fixed nginx package on Alpine %s (APKINDEX, %s). Rebuild.", f.pin.old, f.pin.repl, hits[0].line, f.File, f.pin.branch, knowledge.Checked))
 }
 
 // planLine replaces old with repl at col on a line and rescans in memory:

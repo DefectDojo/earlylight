@@ -45,8 +45,11 @@ type Input struct {
 	// Command is what an image's container runs.
 	Command []string
 	// Ingress is set when the target holds the ingress-nginx controller,
-	// which writes nginx.conf at start.
+	// which writes nginx.conf at start with HTTP/2 on by default.
 	Ingress bool
+	// Generated says why the configuration on disk is not the one that
+	// runs (a controller writes it at start); exposure is then unknown.
+	Generated string
 }
 
 // Finding is one CVE's verdict on one binary.
@@ -84,7 +87,7 @@ func Run(in Input) []Finding {
 			f.State = stateFor(c.ID, exp)
 			f.Facts = facts(b, pkg, exp, f.State, main, how, cfgFiles, in)
 			f.Message = message(c, b, f)
-			f.Fix = fixText(f, pkg, in.Distro)
+			f.Fix = fixText(f, pkg, in.Distro, in.Release)
 			if st == knowledge.Vulnerable {
 				f.Severity = severity(f.State)
 			}
@@ -272,6 +275,9 @@ func exposure(in Input, main string, extra []conf.Directive, cache map[string]ca
 			Where: []string{"ingress-nginx writes nginx.conf at start: HTTP/2 is on by default (ConfigMap use-http2, default true) on its TLS listeners, and every Ingress is proxied"}}
 		return e, 0
 	}
+	if in.Generated != "" {
+		return &conf.Exposure{HTTP2: "unknown", Flow: conf.Unknown, Reuse: conf.Unknown, Unread: []string{in.Generated}}, 0
+	}
 	if in.Source == nil {
 		return nil, 0
 	}
@@ -406,7 +412,7 @@ func exposureText(cve string, f Finding) string {
 	return "Whether HTTP/2 is on is not known: " + why + "."
 }
 
-func fixText(f Finding, pkg *pkgdb.Package, distro string) string {
+func fixText(f Finding, pkg *pkgdb.Package, distro, release string) string {
 	switch f.Status {
 	case knowledge.Fixed, knowledge.NotAffected:
 		return ""
@@ -422,6 +428,12 @@ func fixText(f Finding, pkg *pkgdb.Package, distro string) string {
 		s = "Angie had published no fixed release on " + knowledge.Checked + "; update Angie when it does."
 	case b.Product == ngx.Plus:
 		s = "Update NGINX Plus to 37.0.8.1 or 37.3.0.1 (both CVEs on 37.0 and 37.3; 37.2.0.1 fixes CVE-2026-123633 only)."
+	case pkg != nil && !knowledge.NginxOrgMaintainer(pkg.Maintainer) && distro == "alpine":
+		if v, ok := knowledge.AlpineFixed[release]; ok {
+			s = "Upgrade the package: apk upgrade " + pkg.Name + " (" + v + " on Alpine " + release + ", published " + knowledge.Checked + "), or rebuild the image."
+		} else {
+			s = knowledge.AlpineText(release) + ". Move to Alpine 3.24 (nginx 1.30.7-r0), or to nginx.org's 1.31.9 / 1.30.7 packages."
+		}
 	case pkg != nil && !knowledge.NginxOrgMaintainer(pkg.Maintainer) && distro != "" && knowledge.DistroStatus[distro] != "":
 		s = knowledge.DistroStatus[distro] + ". Update the " + pkg.Name + " package when a fixed one is published, or move to nginx.org's 1.31.9 / 1.30.7 packages."
 	default:

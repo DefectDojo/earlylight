@@ -14,6 +14,7 @@ import (
 type stage struct {
 	base     string // the resolved FROM image, "" when not resolved
 	distro   string // debian, ubuntu, alpine, rhel, "" when not known
+	branch   string // the Alpine branch the base names ("3.24", "edge"), "" when it does not
 	nginxOrg bool   // the stage adds nginx.org's package repository
 	vars     map[string]string
 }
@@ -42,13 +43,16 @@ func (s *scanner) dockerfile(rel string, b []byte) {
 			if len(w) > 0 {
 				if prev, ok := stages[strings.ToLower(w[0])]; ok {
 					// FROM an earlier stage: its base, repositories and ENV.
-					cur.base, cur.distro, cur.nginxOrg = prev.base, prev.distro, prev.nginxOrg
+					cur.base, cur.distro, cur.branch, cur.nginxOrg = prev.base, prev.distro, prev.branch, prev.nginxOrg
 					for k, v := range prev.vars {
 						cur.vars[k] = v
 					}
 				} else if r, ok := s.fromImage[fmt.Sprintf("%s:%d", rel, in.Line)]; ok {
 					cur.base = r.Image
 					cur.distro = distroOfImage(r.Image)
+					if cur.distro == "alpine" {
+						cur.branch = alpineBranchOf(r.Image)
+					}
 				}
 			}
 			stages[fmt.Sprint(index)] = cur
@@ -152,6 +156,31 @@ func distroOfImage(image string) string {
 		return "debian"
 	case name == "nginx" || name == "nginx-unprivileged":
 		return "debian" // the official image's default variant is Debian
+	}
+	return ""
+}
+
+var alpineBranchRE = regexp.MustCompile(`(?:^|[^0-9])(3\.\d{1,2})(?:\.\d+)?(?:$|[^0-9.])`)
+
+// alpineBranchOf reads the Alpine branch an image names: alpine:3.24,
+// alpine:3.24.4, alpine:edge, python:3.12-alpine3.23, nginx:1.31.8-alpine3.24.
+// A moving name (alpine:3, alpine:latest, -alpine) names none.
+func alpineBranchOf(image string) string {
+	repoName, tag, _ := splitImage(strings.ToLower(image))
+	name := repoName[strings.LastIndexByte(repoName, '/')+1:]
+	if name == "alpine" {
+		if tag == "edge" {
+			return "edge"
+		}
+		if m := alpineBranchRE.FindStringSubmatch(tag); m != nil && strings.HasPrefix(tag, m[1]) {
+			return m[1]
+		}
+		return ""
+	}
+	if i := strings.Index(tag, "alpine"); i >= 0 {
+		if m := alpineBranchRE.FindStringSubmatch(tag[i+len("alpine"):]); m != nil && strings.HasPrefix(tag[i+len("alpine"):], m[1]) {
+			return m[1]
+		}
 	}
 	return ""
 }
@@ -338,6 +367,14 @@ func (s *scanner) pinned(f *Finding, p pkg, st *stage) {
 		f.Rule, f.Level = RuleNotChecked, "note"
 	}
 	switch {
+	case p.product == "nginx" && st.distro == "alpine" && f.Status == knowledge.Vulnerable:
+		if v, ok := knowledge.AlpineFixed[st.branch]; ok && p.op == "=" {
+			f.Fix = fmt.Sprintf("Pin %s=%s, the fixed package on Alpine %s, and rebuild.", p.name, v, st.branch)
+			f.Fixable = true
+			f.pin = &pinEdit{old: p.name + "=" + p.ver, repl: p.name + "=" + v, branch: st.branch}
+		} else {
+			f.Fix = knowledge.AlpineText(st.branch) + ". Build on Alpine 3.24 with nginx>=1.30.7-r0."
+		}
 	case p.product == "nginx" && nginxOrgVersion(p.ver):
 		f.Fix = fmt.Sprintf("Pin nginx.org's package of 1.31.9 or 1.30.7 (for example nginx=1.31.9-1~%s) after checking that nginx.org's repository lists it, then rebuild.", codename(p.ver))
 	case p.product == "nginx" && st.distro != "" && knowledge.DistroStatus[st.distro] != "":
@@ -369,7 +406,22 @@ func (s *scanner) unpinned(f *Finding, p pkg, st *stage) {
 		f.Reason = "the release is decided when the image is built"
 		f.Message = "installs nginx from nginx.org without a version: a build from 2026-11-18 on gets 1.31.9 or 1.30.7; an image built before, or from a cached layer, does not"
 		f.Fix = "Pin nginx=1.31.9-1~<codename> or 1.30.7-1~<codename> (or a floor) so a cached layer cannot keep the vulnerable release, and rebuild."
-	case st.distro == "debian" || st.distro == "ubuntu" || st.distro == "alpine":
+	case st.distro == "alpine" && knowledge.AlpineFixed[st.branch] != "":
+		v := knowledge.AlpineFixed[st.branch]
+		f.Rule, f.Level, f.Status = RuleNotChecked, "note", knowledge.Unknown
+		f.Reason = "the release is decided when the image is built"
+		f.Message = fmt.Sprintf("installs %s on Alpine %s (%s) without a version: a build from %s on gets the fixed %s; an image built before, or from a cached layer, does not", p.name, st.branch, st.base, knowledge.Checked, v)
+		f.Fix = fmt.Sprintf("Add a floor (apk add '%s>=%s') so a cached layer cannot keep the vulnerable release, and rebuild.", p.name, v)
+	case st.distro == "alpine" && st.branch == "":
+		f.Rule, f.Level, f.Status = RuleNotChecked, "note", knowledge.Unknown
+		f.Reason = "the base image does not name its Alpine branch"
+		f.Message = fmt.Sprintf("installs %s on %s, which does not name its Alpine branch: %s", p.name, st.base, knowledge.DistroStatus["alpine"])
+		f.Fix = "Build on alpine:3.24 (or an image that names it) and add a floor: apk add 'nginx>=1.30.7-r0'."
+	case st.distro == "alpine":
+		f.Status, f.Reason = knowledge.Vulnerable, knowledge.AlpineText(st.branch)
+		f.Message = fmt.Sprintf("installs %s from Alpine %s's repository (%s): %s", p.name, st.branch, st.base, knowledge.AlpineText(st.branch))
+		f.Fix = "Build on Alpine 3.24 (nginx 1.30.7-r0), or install nginx.org's 1.31.9 / 1.30.7."
+	case st.distro == "debian" || st.distro == "ubuntu":
 		f.Status, f.Reason = knowledge.Vulnerable, knowledge.DistroStatus[st.distro]
 		f.Message = fmt.Sprintf("installs %s from %s's repository (%s): %s", p.name, st.distro, st.base, knowledge.DistroStatus[st.distro])
 		f.Fix = "Rebuild when " + st.distro + " publishes a fixed nginx package, or install nginx.org's 1.31.9 / 1.30.7, or build on nginx:1.31.9 / nginx:1.30.7."

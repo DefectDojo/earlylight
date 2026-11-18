@@ -188,7 +188,9 @@ func TestPackages(t *testing.T) {
 	if fs := at(res, "Dockerfile", 6); len(fs) != 0 {
 		t.Errorf("a floor at the fix: %+v", fs)
 	}
-	one(t, res, "Dockerfile", 9, RulePackage, knowledge.Vulnerable) // ARG value, subshell, inherited Alpine base
+	// ARG value, subshell, inherited Alpine 3.24 base, which has the fixed
+	// package since 2026-11-18: decided at build time.
+	one(t, res, "Dockerfile", 9, RuleNotChecked, knowledge.Unknown)
 	if fs := at(res, "Dockerfile", 11); len(fs) != 2 {
 		t.Errorf("dnf name-version and module: %+v", fs)
 	}
@@ -376,5 +378,49 @@ func TestShell(t *testing.T) {
 	}
 	if v := lineVars("P=$(cat x); apt-get install $P", map[string]string{"P": "nginx"}); v["P"] != "" {
 		t.Errorf("lineVars from a command %v", v)
+	}
+}
+
+func TestAlpineBranches(t *testing.T) {
+	for img, want := range map[string]string{
+		"alpine:3.24": "3.24", "alpine:3.24.4": "3.24", "alpine:edge": "edge", "alpine:3": "", "alpine": "", "alpine:latest": "",
+		"python:3.12-alpine3.23": "3.23", "nginx:1.31.8-alpine3.24-perl": "3.24", "nginx:1.31.8-alpine": "", "node:22-alpine": "",
+	} {
+		if got := alpineBranchOf(img); got != want {
+			t.Errorf("alpineBranchOf(%s) = %q, want %q", img, got, want)
+		}
+	}
+	root := tree(t, map[string]string{"Dockerfile": strings.Join([]string{
+		"FROM alpine:3.23",                     // 1
+		"RUN apk add --no-cache nginx",         // 2
+		"FROM alpine:3.24",                     // 3
+		"RUN apk add --no-cache \\",          // 4
+		"    curl nginx=1.30.6-r0",             // 5
+		"FROM alpine:3",                        // 6
+		"RUN apk add nginx",                    // 7
+		"FROM alpine:3.22",                     // 8
+		"RUN apk add nginx=1.28.3-r7",          // 9
+		"FROM alpine:3.24",                     // 10
+		"RUN apk add nginx=1.30.7-r0",          // 11
+	}, "\n") + "\n"})
+	res, err := Scan(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	one(t, res, "Dockerfile", 2, RulePackage, knowledge.Vulnerable)
+	f := one(t, res, "Dockerfile", 4, RulePackage, knowledge.Vulnerable)
+	if !f.Fixable {
+		t.Fatalf("a 3.24 pin is fixable: %+v", f)
+	}
+	ch, err := Plan(context.Background(), root, f, Registry{}, Options{})
+	if err != nil || ch.Line != 5 || ch.New != "    curl nginx=1.30.7-r0" {
+		t.Fatalf("pin plan: %+v %v", ch, err)
+	}
+	one(t, res, "Dockerfile", 7, RuleNotChecked, knowledge.Unknown)
+	if f := one(t, res, "Dockerfile", 9, RulePackage, knowledge.Vulnerable); f.Fixable || !strings.Contains(f.Fix, "Alpine 3.22 had no fixed") {
+		t.Errorf("3.22 pin: %+v", f)
+	}
+	if fs := at(res, "Dockerfile", 11); len(fs) != 0 {
+		t.Errorf("the fixed pin: %+v", fs)
 	}
 }
