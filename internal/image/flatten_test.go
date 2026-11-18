@@ -223,8 +223,29 @@ func TestFlattenUnresolved(t *testing.T) {
 		{"whiteout then file", [][]ent{{f("a", "lower")}, {f(".wh.a", ""), f("a", "new")}}, "[/a]"},
 		{"file then whiteout", [][]ent{{f("a", "lower")}, {f("a", "new"), f(".wh.a", "")}}, "[/a]"},
 		{"a directory twice", [][]ent{{d("d"), d("d"), f("d/x", "1")}}, "[]"},
+		// Final review A4: what an upper layer wrote through a lower
+		// layer's link is in the container, at the path the link names:
+		// it stays read under the name it was written with, and only the
+		// path it landed on is unresolved (a lower file there was
+		// replaced).
 		{"a write through a symlinked directory", [][]ent{{sl("etc/ssh", "../opt/ssh"), f("opt/ssh/sshd_config", "old")}, {f("etc/ssh/sshd_config", "new")}},
-			"[/etc/ssh/sshd_config /opt/ssh/sshd_config]"},
+			"[/opt/ssh/sshd_config]"},
+		{"a write through a usr-merge link", [][]ent{{d("usr"), d("usr/lib"), sl("lib", "usr/lib"), f("usr/lib/other", "x")}, {f("lib/libx.so", "new")}},
+			"[/usr/lib/libx.so]"},
+		// A higher layer names the real path afterwards: that is the file.
+		{"a higher layer writes the real path too", [][]ent{{sl("lib", "usr/lib")}, {f("lib/x", "mid")}, {f("usr/lib/x", "top")}},
+			"[/lib/x]"},
+		{"a higher layer removes the real path", [][]ent{{sl("lib", "usr/lib")}, {f("lib/x", "mid")}, {f("usr/lib/.wh.x", "")}},
+			"[/lib/x]"},
+		// Which of the two the container has is not settled: both.
+		{"the same layer writes the real path too", [][]ent{{sl("lib", "usr/lib")}, {f("lib/x", "a"), f("usr/lib/x", "b")}},
+			"[/lib/x /usr/lib/x]"},
+		{"the link is of the same layer", [][]ent{{f("lib/x", "a"), sl("lib", "usr/lib")}},
+			"[/lib/x /usr/lib/x]"},
+		{"two links to one directory", [][]ent{{sl("a", "c"), sl("b", "c")}, {f("a/x", "1")}, {f("b/x", "2")}},
+			"[/a/x /b/x /c/x]"},
+		{"a link to a link", [][]ent{{sl("a", "b"), sl("b", "c")}, {f("a/x", "1")}},
+			"[/a/x /b/x]"},
 		{"a whiteout through a symlinked directory", [][]ent{{sl("etc/ssh", "/opt/ssh"), f("opt/ssh/sshd_config", "old")}, {f("etc/ssh/.wh.sshd_config", "")}},
 			"[/etc/ssh/sshd_config /opt/ssh/sshd_config]"},
 	} {

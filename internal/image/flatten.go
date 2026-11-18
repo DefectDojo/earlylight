@@ -20,7 +20,10 @@ package image
 // What the layers do not settle cheaply (two entries for one path in one
 // layer, a hard link to a file not in its layer, a write or whiteout
 // through a directory that is a symbolic link) is listed as unresolved:
-// the scan treats those paths as not read.
+// the scan treats those paths as not read. A file an upper layer wrote
+// through a lower layer's link is the exception when nothing else claims
+// the path it landed on: the container has that file, so it stays read
+// under the name it was written with (throughLinks).
 
 import (
 	"archive/tar"
@@ -44,8 +47,8 @@ const (
 // function returns the paths left unresolved, once the stream has ended.
 func flatten(img v1.Image) (io.ReadCloser, func() []string) {
 	pr, pw := io.Pipe()
-	f := &flattener{fileMap: map[string]bool{}, opaqueDirs: map[string]bool{}, written: map[string]bool{},
-		links: map[string]string{}, unresolved: map[string]bool{}}
+	f := &flattener{fileMap: map[string]bool{}, opaqueDirs: map[string]bool{}, written: map[string]int{},
+		tombs: map[string]bool{}, links: map[string]flatLink{}, unresolved: map[string]bool{}}
 	done := make(chan struct{})
 	var out []string
 	go func() {
@@ -70,9 +73,17 @@ type flattener struct {
 	tw         *tar.Writer
 	fileMap    map[string]bool // path -> hides what is below it (non-directory or whiteout)
 	opaqueDirs map[string]bool
-	written    map[string]bool   // non-directories written, and whiteouts
-	links      map[string]string // symbolic links written: path -> target
+	cur        int                 // the layer being read (0 is the lowest)
+	written    map[string]int      // non-directories written, and whiteouts: path -> layer
+	tombs      map[string]bool     // of those, the whiteouts
+	links      map[string]flatLink // symbolic links written
 	unresolved map[string]bool
+}
+
+// flatLink is a symbolic link written to the stream: its target and layer.
+type flatLink struct {
+	to    string
+	layer int
 }
 
 func (f *flattener) extract(img v1.Image, w io.Writer) error {
@@ -83,6 +94,7 @@ func (f *flattener) extract(img v1.Image, w io.Writer) error {
 		return fmt.Errorf("retrieving image layers: %w", err)
 	}
 	for i := len(layers) - 1; i >= 0; i-- {
+		f.cur = i
 		if err := f.layer(layers[i]); err != nil {
 			return err
 		}
@@ -172,7 +184,7 @@ func (f *flattener) layer(layer v1.Layer) error {
 		}
 		f.fileMap[name] = tombstone || !isDir
 		if tombstone {
-			f.written[name] = true
+			f.written[name], f.tombs[name] = f.cur, true
 			continue
 		}
 		if h.Typeflag == tar.TypeLink {
@@ -181,7 +193,7 @@ func (f *flattener) layer(layer v1.Layer) error {
 				// It names a file an upper layer hides: it keeps that file's
 				// content, written once the layer is read again.
 				pending[h.Linkname] = append(pending[h.Linkname], name)
-				f.written[name] = true
+				f.written[name] = f.cur
 				continue
 			case !here[h.Linkname]:
 				f.unresolved[name] = true // not a file of its own layer
@@ -199,10 +211,10 @@ func (f *flattener) layer(layer v1.Layer) error {
 			here[name] = true
 		}
 		if !isDir {
-			f.written[name] = true
+			f.written[name] = f.cur
 		}
 		if h.Typeflag == tar.TypeSymlink {
-			f.links[name] = h.Linkname
+			f.links[name] = flatLink{h.Linkname, f.cur}
 		}
 	}
 	for d := range layerOpaque {
@@ -266,29 +278,82 @@ func (f *flattener) fillLinks(layer v1.Layer, pending map[string][]string) error
 
 // throughLinks finds the entries an upper layer wrote, or whited out,
 // under a directory that is a symbolic link in the final filesystem: the
-// runtime wrote through the link, to the path it names. Both paths are
-// unresolved.
+// runtime wrote through the link, to the path it names.
+//
+// The path it names is unresolved: a lower layer's file there was replaced
+// or removed, and the stream names the new one elsewhere. The entry itself
+// is unresolved too. Two cases are certain, and keep what was read:
+//
+//   - The entry is the file: a file (not a whiteout) written by a layer
+//     above the link's, landing on a path that no link leads on from, that
+//     no other such write lands on, and that no layer at or above the
+//     write's names directly. It stays read under the name it was written
+//     with; dropping it would lose what an image built with paths written
+//     as they are (lib/libx.so under a lib -> usr/lib link) holds.
+//   - A layer above every such write names the path itself: that entry is
+//     the file, and only the writes through the link are unresolved.
 func (f *flattener) throughLinks() {
 	if len(f.links) == 0 {
 		return
 	}
-	for name := range f.written {
+	type write struct {
+		name  string
+		layer int
+		sure  bool // above the link's layer, and not a whiteout
+	}
+	lands := map[string][]write{}
+	for name, layer := range f.written {
 		for a := path.Dir(name); a != "." && a != "/" && a != ""; a = path.Dir(a) {
-			t, ok := f.links[a]
+			l, ok := f.links[a]
 			if !ok {
 				continue
 			}
-			to := t
-			if !path.IsAbs(t) {
-				to = path.Join(path.Dir(a), t)
+			to := l.to
+			if !path.IsAbs(to) {
+				to = path.Join(path.Dir(a), to)
 			}
-			f.unresolved[name] = true
+			at := ""
 			if r := rootName(to); r != "" {
-				f.unresolved[path.Join(r, strings.TrimPrefix(name, a+"/"))] = true
+				at = path.Join(r, strings.TrimPrefix(name, a+"/"))
 			}
+			lands[at] = append(lands[at], write{name, layer, l.layer < layer && !f.tombs[name]})
 			break
 		}
 	}
+	for at, ws := range lands {
+		// through: the one write through a link is the file. direct: a
+		// layer above every such write named the path itself afterwards,
+		// and that entry is the file.
+		through, direct := false, false
+		if at != "" && !f.linked(at) {
+			top := -1
+			for _, w := range ws {
+				top = max(top, w.layer)
+			}
+			d, ok := f.written[at]
+			through = len(ws) == 1 && ws[0].sure && (!ok || d < top)
+			direct = ok && d > top
+		}
+		if at != "" && !direct {
+			f.unresolved[at] = true
+		}
+		if !through {
+			for _, w := range ws {
+				f.unresolved[w.name] = true
+			}
+		}
+	}
+}
+
+// linked reports whether name, or a directory above it, is a symbolic
+// link in the stream.
+func (f *flattener) linked(name string) bool {
+	for a := name; a != "." && a != "/" && a != ""; a = path.Dir(a) {
+		if _, ok := f.links[a]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func inOpaqueDir(opaqueDirs map[string]bool, file string) bool {

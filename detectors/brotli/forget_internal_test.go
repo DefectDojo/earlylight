@@ -11,6 +11,10 @@ import (
 
 var vulnerable = testbin.ELF([]testbin.Symbol{{Name: "BrotliDecoderDecompressStream", Defined: true}}, testbin.Table("1.0.9"))
 
+func testbinFixed() []byte {
+	return testbin.ELF([]testbin.Symbol{{Name: "BrotliDecoderDecompressStream", Defined: true}}, testbin.Table("1.2.1"))
+}
+
 func paths(fs []engine.Finding) string {
 	var out []string
 	for _, f := range fs {
