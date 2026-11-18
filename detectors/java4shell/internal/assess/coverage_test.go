@@ -112,8 +112,8 @@ func TestRedHatRuntime(t *testing.T) {
 	const el96 = "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-1.el9_6.x86_64"
 	type rt struct {
 		root, lib, vendor string
-		noVersionLine   bool
-		env             []string
+		noVersionLine     bool
+		env               []string
 	}
 	run := func(c rt) Finding {
 		l := testlib.Lib{Version: c.lib, VBMI: true}
