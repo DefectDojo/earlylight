@@ -791,16 +791,17 @@ func (s *scanner) jibRef(rel string, line, col int, image string) {
 // ---- Dockerfiles: OS packages and the mitigation a stage sets
 
 var (
-	installRE = regexp.MustCompile(`\b(?:apt-get|apt|apk|dnf|yum|microdnf|tdnf|zypper)\b(?:\s+-{1,2}[\w=./:-]+)*\s+(?:install|add|in)\b`)
+	// installRE finds a package tool on a RUN line; installArgs decides
+	// whether it installs.
+	installRE = regexp.MustCompile(`\b(?:apt-get|apt|apk|dnf5?|yum|microdnf|tdnf|zypper|rpm)\b`)
 	aptJava   = regexp.MustCompile(`\b(openjdk-(\d{1,2})-(?:jre|jdk)(?:-headless)?)\b(=([^\s;&|]+))?`)
 	apkJava   = regexp.MustCompile(`\b(openjdk(\d{1,2})(?:-jre|-jdk|-jre-headless|-jmods)?)(?:([=~><]+)([^\s;&|]+))?`)
 	rpmJava   = regexp.MustCompile(`\b(java-(\d{1,2})-(openjdk|amazon-corretto)(?:-headless|-devel|-jdk)?)(?:-(\d[\w.:*?+~-]*))?`)
 	// rpmLatest is Fedora's and EPEL's java-latest-openjdk: the newest
 	// release the distribution carries, named by no release.
 	rpmLatest = regexp.MustCompile(`^java-latest-openjdk(?:-headless|-devel|-jmods)?(?:-\d[\w.:*?-]*)?$`)
-	// rpmInstall is an rpm command that installs or upgrades package files.
-	// A query (-qip) or an erase (-e) is not an install.
-	rpmInstall     = regexp.MustCompile(`\brpm\b(?:\s+-{1,2}[\w=./:-]+)*?\s+(?:-[a-dfh-pr-zA-UW-Z]*[iUF][a-dfh-pr-zA-UW-Z]*|--install|--upgrade|--freshen)(?:\s|$)`)
+	// rpmInstallFlag is an rpm option that installs or upgrades package
+	// files; a query (-qip) or an erase (-e) is not an install.
 	rpmInstallFlag = regexp.MustCompile(`^(?:-[a-dfh-pr-zA-UW-Z]*[iUF][a-dfh-pr-zA-UW-Z]*|--install|--upgrade|--freshen)$`)
 	vendorJava     = regexp.MustCompile(`\b((temurin|zulu|msopenjdk|sapmachine)-?(\d{1,2})(?:-ca)?(?:-(?:jdk|jre))?(?:-headless)?)\b(=([^\s;&|]+))?`)
 	defaultJava    = regexp.MustCompile(`\b(default-(?:jre|jdk)(?:-headless)?)\b`)
@@ -873,12 +874,25 @@ func (s *scanner) dockerfile(rel, text string) {
 // packages and the vendors' own (Temurin, Corretto, Zulu, Microsoft,
 // SapMachine), with or without a version.
 func (s *scanner) packages(rel string, line int, run string) {
-	if !installRE.MatchString(run) && !rpmInstall.MatchString(run) {
+	if !installRE.MatchString(run) {
 		return
 	}
 	var hits []pkgHit
 	for _, arg := range installArgs(run) {
 		switch {
+		case strings.HasPrefix(arg, unreadableArg):
+			hits = append(hits, pkgHit{name: strings.TrimPrefix(arg, unreadableArg), mgr: "rpm", vendor: "distribution", unreadable: true})
+		case zypperArg.MatchString(arg):
+			m := zypperArg.FindStringSubmatch(arg)
+			v := "distribution"
+			if m[3] == "amazon-corretto" {
+				v = "corretto"
+			}
+			op := m[4]
+			if op == "=" {
+				op = ""
+			}
+			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: op, ver: m[5], mgr: "rpm", vendor: v})
 		case aptArg.MatchString(arg):
 			m := aptArg.FindStringSubmatch(arg)
 			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: opOf(m[3]), ver: m[4], mgr: "apt", vendor: "distribution"})
@@ -928,11 +942,12 @@ var (
 )
 
 var (
-	pkgTools = map[string]bool{"apt-get": true, "apt": true, "apk": true, "dnf": true, "yum": true, "microdnf": true, "tdnf": true, "zypper": true, "rpm": true}
-	pkgVerbs = map[string]bool{"install": true, "add": true, "in": true, "reinstall": true}
+	pkgTools = map[string]bool{"apt-get": true, "apt": true, "apk": true, "dnf": true, "dnf5": true, "yum": true, "microdnf": true, "tdnf": true, "zypper": true, "rpm": true}
+	pkgVerbs = map[string]bool{"install": true, "add": true, "in": true, "reinstall": true, "localinstall": true}
 	// pkgValueFlags are package-manager options followed by a separate value.
 	pkgValueFlags = map[string]bool{"-t": true, "-o": true, "-X": true, "--repository": true, "--virtual": true, "-c": true, "--root": true,
-		"-p": true, "--target-release": true, "--option": true, "--repo": true, "--setopt": true, "--enablerepo": true, "--disablerepo": true}
+		"-p": true, "--target-release": true, "--option": true, "--repo": true, "--setopt": true, "--enablerepo": true, "--disablerepo": true,
+		"--installroot": true, "--releasever": true, "--dbpath": true, "--prefix": true}
 )
 
 var (
@@ -961,6 +976,49 @@ func packageName(w string) string {
 		return name + "=" + ver
 	}
 	return rpmArchRE.ReplaceAllString(name, "")
+}
+
+// unreadableArg marks a package file installArgs found but could not
+// name.
+const unreadableArg = "\x00unreadable:"
+
+// zypperArg is zypper's java-17-openjdk=17.0.21.0 (or >=, <...).
+var zypperArg = regexp.MustCompile(`^(java-(\d{1,2})-(openjdk|amazon-corretto)(?:-headless|-devel|-jdk)?)(=|>=|<=|>|<)(\S+)$`)
+
+// javaWord is a word a Java package file or URL carries.
+var javaWord = regexp.MustCompile(`(?i)java|jdk|jre|corretto|temurin|zulu`)
+
+// globCandidates are names a Java package file could have, for deciding
+// whether a pattern (*.rpm) could match one.
+var globCandidates = []string{"java-17-openjdk-headless-17.0.21.0.9-1.el9.x86_64.rpm", "java-21-amazon-corretto-devel-21.0.13.1.2-1.x86_64.rpm",
+	"java-latest-openjdk-25.0.1.0.8-1.rolling.fc41.x86_64.rpm"}
+
+// rpmFileArg reads a package file argument (local or a URL, with any
+// ?query or #fragment): name-version-release.arch.rpm gives the package
+// name and version; a pattern that could match a Java package, or a Java
+// URL whose file name is not given, is returned marked unreadable. ok is
+// false for an argument that is not a package file.
+func rpmFileArg(w string) (string, bool) {
+	u := w
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	base := path.Base(u)
+	if strings.HasSuffix(strings.ToLower(base), ".rpm") {
+		if strings.ContainsAny(base, "*?[") {
+			for _, c := range globCandidates {
+				if ok, _ := path.Match(base, c); ok {
+					return unreadableArg + w, true
+				}
+			}
+			return "", true
+		}
+		return rpmArchRE.ReplaceAllString(base[:len(base)-len(".rpm")], ""), true
+	}
+	if strings.Contains(w, "://") && javaWord.MatchString(w) {
+		return unreadableArg + w, true
+	}
+	return "", false
 }
 
 // installArgs returns the package arguments of the install commands on a
@@ -1001,12 +1059,19 @@ func installArgs(run string) []string {
 		}
 		for j := i + 1; j < len(words); j++ {
 			w := words[j]
+			if !strings.HasPrefix(w, "-") {
+				if a, ok := rpmFileArg(w); ok {
+					if a != "" {
+						out = append(out, a)
+					}
+					continue
+				}
+			}
 			switch {
-			case strings.HasSuffix(w, ".rpm"):
-				// A package file, local or a URL: its name is
-				// name-version-release.arch.rpm.
-				out = append(out, rpmArchRE.ReplaceAllString(strings.TrimSuffix(path.Base(w), ".rpm"), ""))
 			case tool == "rpm":
+				if pkgValueFlags[w] {
+					j++
+				}
 			case pkgValueFlags[w]:
 				j++
 			case strings.HasPrefix(w, "-"), strings.Contains(w, "://"), strings.HasPrefix(w, "/"), strings.HasPrefix(w, "$"):
@@ -1027,6 +1092,7 @@ type pkgHit struct {
 	feature            int    // 0: the distribution's default (default-jre)
 	varName            bool   // the name holds a variable where the release is
 	latest             bool   // java-latest-openjdk: no release in the name
+	unreadable         bool   // a package file whose name cannot be read
 }
 
 func opOf(v string) string {
@@ -1057,6 +1123,10 @@ var microsoftLines = map[int]bool{17: true, 21: true, 25: true}
 
 var vendorNames = map[string]string{"distribution": "the distribution", "corretto": "Amazon Corretto", "temurin": "Eclipse Temurin",
 	"zulu": "Azul Zulu", "msopenjdk": "Microsoft", "sapmachine": "SapMachine"}
+
+// preRelease reports a Debian or rpm pre-release version: 21.0.13.1~2ea-1
+// sorts before 21.0.13.1 and is not the release.
+func preRelease(ver string) bool { return strings.Contains(ver, "~") }
 
 // pinnedVersion is the Java version a package pin fixes, or "" for a pin
 // that matches several releases (17.*, ~17, 17).
@@ -1092,6 +1162,14 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 			Reason:  "the Java release in the package name comes from a variable set outside this line",
 			Message: fmt.Sprintf("installs %s, a package whose Java release this scan cannot read: not checked for the Java4Shell fix", refs.CleanText(h.name, 80)),
 			Fix:     "Check which Java release the variable selects: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update have the fix."})
+		return
+	}
+	if h.unreadable {
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown,
+			Props:   map[string]string{"package": refs.CleanText(h.name, 120), "manager": h.mgr},
+			Reason:  "a package file named by a pattern or a URL that does not give its file name: which Java package it is, this scan cannot read",
+			Message: fmt.Sprintf("installs %s, a package file whose name this scan cannot read: not checked for the Java4Shell fix", refs.CleanText(h.name, 120)),
+			Fix:     "Check which Java package the file is: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update, or the distribution's backport, have the fix."})
 		return
 	}
 	if h.latest {
@@ -1147,6 +1225,9 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 	if up := pinnedVersion(h); up != "" {
 		props["current"] = h.ver
 		v, _ := knowledge.Parse(up)
+		if preRelease(h.ver) {
+			v.EA = true
+		}
 		st, why := knowledge.Judge(v)
 		if st == knowledge.Fixed && h.mgr == "rpm" && h.vendor == "distribution" && rpmNumbers(h.ver) != 5 {
 			// Red Hat and Fedora write five numbers; another count

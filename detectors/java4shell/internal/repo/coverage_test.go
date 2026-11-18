@@ -395,3 +395,51 @@ func TestBuildOfFixedRelease(t *testing.T) {
 		}
 	}
 }
+
+// Round 2, item 2: rpm and dnf forms that gave nothing.
+func TestRPMForms(t *testing.T) {
+	const f17 = "java-17-openjdk-headless-17.0.21.0.9-1.el9.x86_64"
+	lines := []string{
+		"FROM registry.access.redhat.com/ubi9/ubi",
+		"RUN dnf install -y https://example.com/" + f17 + ".rpm?raw=true",   // 2
+		"RUN dnf install -y https://example.com/" + f17 + ".rpm#sha256=abc", // 3
+		"RUN dnf install -y /tmp/" + f17 + ".RPM",                           // 4
+		"RUN rpm --root /mnt -i /tmp/" + f17 + ".rpm",                       // 5
+		"RUN rpm -ivh *.rpm",              // 6
+		"RUN rpm -ivh /tmp/java-17-*.rpm", // 7
+		"RUN rpm -ivh 'https://example.com/download?file=" + f17 + ".rpm'",              // 8
+		"RUN dnf localinstall -y /tmp/" + f17 + ".rpm",                                  // 9
+		"RUN yum localinstall -y /tmp/" + f17 + ".rpm",                                  // 10
+		"RUN dnf5 install -y java-17-openjdk-headless",                                  // 11
+		"RUN dnf reinstall -y java-21-openjdk-headless",                                 // 12
+		"RUN zypper in -y java-17-openjdk=17.0.21.0",                                    // 13
+		"RUN apt-get install -y openjdk-21-jre-headless=21.0.13.1~2ea-1",                // 14
+		"RUN dnf install -y java-21-openjdk-headless-21.0.13.1.2~ea-1.el9",              // 15
+		"RUN dnf --installroot /mnt --releasever 9 install -y java-17-openjdk-headless", // 16
+		"RUN rpm -ivh /tmp/epel-release-*.rpm",                                          // 17
+		"RUN dnf install -y https://example.com/epel-release-latest-9.noarch.rpm",       // 18
+	}
+	res := scan(t, tree(t, map[string]string{"Dockerfile": strings.Join(lines, "\n") + "\n"}))
+	checkAll(t, res, []want{
+		{"Dockerfile", 2, RulePackage, StatusVulnerable},
+		{"Dockerfile", 3, RulePackage, StatusVulnerable},
+		{"Dockerfile", 4, RulePackage, StatusVulnerable},
+		{"Dockerfile", 5, RulePackage, StatusVulnerable},
+		{"Dockerfile", 6, RulePackage, StatusUnknown},
+		{"Dockerfile", 7, RulePackage, StatusUnknown},
+		{"Dockerfile", 8, RulePackage, StatusUnknown},
+		{"Dockerfile", 9, RulePackage, StatusVulnerable},
+		{"Dockerfile", 10, RulePackage, StatusVulnerable},
+		{"Dockerfile", 11, RulePackage, StatusVulnerable},
+		{"Dockerfile", 12, RulePackage, StatusVulnerable},
+		{"Dockerfile", 13, RulePackage, StatusVulnerable},
+		{"Dockerfile", 14, RulePackage, StatusUnknown},
+		{"Dockerfile", 15, RulePackage, StatusUnknown},
+		{"Dockerfile", 16, RulePackage, StatusVulnerable},
+	})
+	for _, l := range []int{17, 18} {
+		if f, ok := find(res, "Dockerfile", l); ok {
+			t.Errorf("Dockerfile:%d, not Java, reported: %+v", l, f)
+		}
+	}
+}
