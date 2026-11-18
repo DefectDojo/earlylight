@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
 	"github.com/DefectDojo/earlylight/internal/engine"
 )
@@ -93,5 +94,24 @@ func TestManifestScoreAndLinks(t *testing.T) {
 	}
 	if !strings.Contains(m.Kinds[0].Description, "GraalVM") {
 		t.Error("the runtime kind does not say GraalVM is affected")
+	}
+}
+
+// A Red Hat row clears an installed runtime only on RHEL: the os-release
+// is read from the target.
+func TestRedHatRowNeedsRHEL(t *testing.T) {
+	saved := knowledge.RedHatFixed
+	t.Cleanup(func() { knowledge.RedHatFixed = saved })
+	knowledge.RedHatFixed = []knowledge.RedHatFix{{Package: "java-17-openjdk", Dist: "el9_6", EVR: "1:17.0.21.0.9-2.el9_6", Advisory: "RHSA-2026:0000"}}
+	for id, want := range map[string]engine.Verdict{"rhel": engine.Fixed, "rocky": engine.Unknown} {
+		root := t.TempDir()
+		const dir = "usr/lib/jvm/java-17-openjdk-17.0.21.0.9-2.el9_6.x86_64"
+		write(t, root, dir+"/lib/server/libjvm.so", testlib.Build(testlib.Lib{Version: "17.0.21+9-LTS", VBMI: true}))
+		write(t, root, dir+"/release", testlib.Release("IMPLEMENTOR", "Red Hat, Inc.", "JAVA_RUNTIME_VERSION", "17.0.21+9-LTS", "JAVA_VERSION", "17.0.21"))
+		write(t, root, "etc/os-release", []byte("NAME=x\nID=\""+id+"\"\nVERSION_ID=\"9.6\"\n"))
+		r, _ := run(t, "scan", "fs", "--as-root", root)
+		if f := byPath(r)["/"+dir]; f.Verdict != want {
+			t.Errorf("ID=%s: %s, want %s (%s)", id, f.Verdict, want, f.Reason)
+		}
 	}
 }

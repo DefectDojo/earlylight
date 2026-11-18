@@ -114,9 +114,12 @@ func TestRedHatRuntime(t *testing.T) {
 		root, lib, vendor string
 		noVersionLine     bool
 		env               []string
+		os                string
+		noStubs           bool
 	}
+	const rh, rhel = "Red Hat, Inc.", "rhel"
 	run := func(c rt) Finding {
-		l := testlib.Lib{Version: c.lib, VBMI: true}
+		l := testlib.Lib{Version: c.lib, VBMI: !c.noStubs}
 		if c.noVersionLine {
 			l.Version = ""
 		}
@@ -128,11 +131,11 @@ func TestRedHatRuntime(t *testing.T) {
 			Libraries: []*jvm.Library{lib(t, c.root+"/lib/server/libjvm.so", l)},
 			Releases:  map[string]jvm.Release{c.root: rel(t, kv...)},
 			Env:       c.env,
+			OSID:      c.os,
 		}
 		return one(t, in)
 	}
-	const rh = "Red Hat, Inc."
-	f := run(rt{el96, "17.0.21+9-LTS", rh, false, nil})
+	f := run(rt{root: el96, lib: "17.0.21+9-LTS", vendor: rh, os: rhel})
 	if f.Status != Vulnerable || f.Package == nil || f.Package.Name != "java-17-openjdk-headless" || f.Package.Version != "17.0.21.0.9-1.el9_6" {
 		t.Fatalf("RHEL 9 rpm: %s %+v (%s)", f.Status, f.Package, f.Reason)
 	}
@@ -143,42 +146,52 @@ func TestRedHatRuntime(t *testing.T) {
 	saved := knowledge.RedHatFixed
 	t.Cleanup(func() { knowledge.RedHatFixed = saved })
 	knowledge.RedHatFixed = []knowledge.RedHatFix{{Package: "java-17-openjdk", Dist: "el9_6", EVR: "1:17.0.21.0.9-2.el9_6", Advisory: "RHSA-2026:0000"}}
-	if f := run(rt{el96, "17.0.21+9-LTS", rh, false, nil}); f.Status != Vulnerable || !strings.Contains(f.Fix, "17.0.21.0.9-2.el9_6") {
+	if f := run(rt{root: el96, lib: "17.0.21+9-LTS", vendor: rh, os: rhel}); f.Status != Vulnerable || !strings.Contains(f.Fix, "17.0.21.0.9-2.el9_6") {
 		t.Errorf("older than the listed build: %s (%s) fix %s", f.Status, f.Reason, f.Fix)
 	}
-	fixed := "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-2.el9_6.x86_64"
-	if f := run(rt{fixed, "17.0.21+9-LTS", rh, false, nil}); f.Status != Fixed || !strings.Contains(f.Reason, "Red Hat") || f.Fix != "" {
-		t.Errorf("listed build: %s (%s) fix %q", f.Status, f.Reason, f.Fix)
-	}
-	if f := run(rt{"/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-3.el9_6.x86_64", "17.0.21+9-LTS", rh, false, nil}); f.Status != Fixed {
-		t.Errorf("later build: %s (%s)", f.Status, f.Reason)
-	}
-	// A mitigated runtime of the fixed build is fixed too.
-	if f := run(rt{fixed, "17.0.21+9-LTS", rh, false, []string{"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics"}}); f.Status != Fixed || f.Mitigation != "" {
-		t.Errorf("mitigated fixed build: %s (%s)", f.Status, f.Reason)
-	}
-	// What the install path alone must not clear: the path names the fixed
-	// build, but the VM library or the release file does not confirm it.
+	const fixed = "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-2.el9_6.x86_64"
 	for _, c := range []struct {
 		name string
 		rt   rt
+		want Status
 	}{
-		{"another vendor's library under a later release", rt{"/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-99.el9_6.x86_64", "17.0.21+9", "Eclipse Adoptium", false, nil}},
-		{"no release-file vendor", rt{fixed, "17.0.21+9-LTS", "", false, nil}},
-		{"another build", rt{fixed, "17.0.21+5-LTS", rh, false, nil}},
-		{"another update", rt{fixed, "17.0.21.0.3+1-LTS", rh, false, nil}},
-		{"pre-release", rt{fixed, "17.0.21-ea+9", rh, false, nil}},
-		{"self-built", rt{fixed, "17.0.21-internal+0-adhoc.root.src", rh, false, nil}},
-		{"GraalVM", rt{fixed, "17.0.21+9-jvmci-23.0-b12", rh, false, nil}},
-		{"version from the release file only", rt{fixed, "17.0.21+9-LTS", rh, true, nil}},
-		{"a later update the row does not cover", rt{"/usr/lib/jvm/java-17-openjdk-17.0.21.1.1-1.el9_6.x86_64", "17.0.21.1+1-LTS", rh, false, nil}},
-		{"another stream", rt{"/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-9.el9_7.x86_64", "17.0.21+9-LTS", rh, false, nil}},
-		{"RHEL 8", rt{"/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-9.el8.x86_64", "17.0.21+9-LTS", rh, false, nil}},
-		{"Oracle Linux", rt{"/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-2.0.1.el9_6.x86_64", "17.0.21+9-LTS", "Oracle Corporation", false, nil}},
-		{"Fedora", rt{"/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-9.fc41.x86_64", "17.0.21+9", rh, false, nil}},
+		{"the listed build", rt{root: fixed, lib: "17.0.21+9-LTS", vendor: rh, os: rhel}, Fixed},
+		{"a later build", rt{root: "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-3.el9_6.x86_64", lib: "17.0.21+9-LTS", vendor: rh, os: rhel}, Fixed},
+		{"mitigated, of the fixed build", rt{root: fixed, lib: "17.0.21+9-LTS", vendor: rh, os: rhel, env: []string{"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics"}}, Fixed},
+		// Witnesses missing: the path says fixed, nothing confirms it.
+		{"another vendor's library", rt{root: "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-99.el9_6.x86_64", lib: "17.0.21+9", vendor: "Eclipse Adoptium", os: rhel}, Unknown},
+		{"no release-file vendor", rt{root: fixed, lib: "17.0.21+9-LTS", os: rhel}, Unknown},
+		{"a vendor that only starts with Red Hat's", rt{root: fixed, lib: "17.0.21+9-LTS", vendor: rh + "x", os: rhel}, Unknown},
+		{"version from the release file only", rt{root: fixed, lib: "17.0.21+9-LTS", vendor: rh, os: rhel, noVersionLine: true}, Unknown},
+		{"Rocky Linux", rt{root: fixed, lib: "17.0.21+9-LTS", vendor: rh, os: "rocky"}, Unknown},
+		{"CentOS Stream", rt{root: fixed, lib: "17.0.21+9-LTS", vendor: rh, os: "centos"}, Unknown},
+		{"no os-release", rt{root: fixed, lib: "17.0.21+9-LTS", vendor: rh}, Unknown},
+		// The library proves it is not the row's build: its own verdict.
+		{"another build", rt{root: fixed, lib: "17.0.21+5-LTS", vendor: rh, os: rhel}, Vulnerable},
+		{"another update, the same build number", rt{root: fixed, lib: "17.0.20+9-LTS", vendor: rh, os: rhel}, Vulnerable},
+		{"another update", rt{root: fixed, lib: "17.0.20+8-LTS", vendor: rh, os: rhel}, Vulnerable},
+		{"a five-number update", rt{root: fixed, lib: "17.0.21.0.3+1-LTS", vendor: rh, os: rhel}, Vulnerable},
+		{"pre-release", rt{root: fixed, lib: "17.0.21-ea+9", vendor: rh, os: rhel}, Vulnerable},
+		{"self-built", rt{root: fixed, lib: "17.0.21-internal+0-adhoc.root.src", vendor: rh, os: rhel}, Vulnerable},
+		{"GraalVM", rt{root: fixed, lib: "17.0.21+9-jvmci-23.0-b12", vendor: rh, os: rhel}, Vulnerable},
+		// Not the row's: judged by the library.
+		{"a later update the row does not cover", rt{root: "/usr/lib/jvm/java-17-openjdk-17.0.21.1.1-1.el9_6.x86_64", lib: "17.0.21.1+1-LTS", vendor: rh, os: rhel}, Vulnerable},
+		{"another stream", rt{root: "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-9.el9_7.x86_64", lib: "17.0.21+9-LTS", vendor: rh, os: rhel}, Vulnerable},
+		{"RHEL 8", rt{root: "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-9.el8.x86_64", lib: "17.0.21+9-LTS", vendor: rh, os: rhel}, Vulnerable},
+		{"Oracle Linux", rt{root: "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-2.0.1.el9_6.x86_64", lib: "17.0.21+9-LTS", vendor: "Oracle Corporation", os: "ol"}, Vulnerable},
+		{"Fedora", rt{root: "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-9.fc41.x86_64", lib: "17.0.21+9", vendor: rh, os: "fedora"}, Vulnerable},
+		// A verdict other than vulnerable is not the table's to change.
+		{"no decoder stubs", rt{root: fixed, lib: "17.0.21+9-LTS", vendor: rh, os: rhel, noStubs: true}, Unknown},
 	} {
-		if f := run(c.rt); f.Status == Fixed || f.Status == NotAffected {
-			t.Errorf("%s: cleared: %s (%s)", c.name, f.Status, f.Reason)
+		f := run(c.rt)
+		if f.Status != c.want {
+			t.Errorf("%s: %s, want %s (%s)", c.name, f.Status, c.want, f.Reason)
+		}
+		if c.want == Fixed && (!strings.Contains(f.Reason, "Red Hat") || f.Fix != "" || f.Mitigation != "") {
+			t.Errorf("%s: reason %q fix %q mitigation %q", c.name, f.Reason, f.Fix, f.Mitigation)
+		}
+		if c.want == Unknown && c.name != "no decoder stubs" && !strings.Contains(f.Reason, "install path") {
+			t.Errorf("%s: the reason does not say what the path claims: %s", c.name, f.Reason)
 		}
 	}
 }

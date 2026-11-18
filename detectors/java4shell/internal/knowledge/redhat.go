@@ -86,9 +86,33 @@ func RedHatFixFor(pkg, dist string) (RedHatFix, bool) {
 // sameUpstream reports whether two Red Hat rpm versions package the same
 // upstream update and build.
 func sameUpstream(a, b string) bool {
-	x, okx := Parse(RPMUpstream(a))
-	y, oky := Parse(RPMUpstream(b))
-	return okx && oky && x.Build >= 0 && x.Build == y.Build && Compare(x.Nums, y.Nums) == 0
+	xn, xb, okx := RedHatUpstream(a)
+	yn, yb, oky := RedHatUpstream(b)
+	return okx && oky && xb == yb && Compare(xn, yn) == 0
+}
+
+var redHatVersion = regexp.MustCompile(`^(?:\d+:)?(\d+)\.(\d+)\.(\d+)\.(\d+)\.(\d+)(?:-|$)`)
+
+// RedHatUpstream reads a Red Hat OpenJDK rpm version in Red Hat's scheme,
+// exactly five plain numbers (17.0.21.0.9-2.el9_6 is 17.0.21.0, build 9):
+// the update and the build. ok is false for anything else.
+func RedHatUpstream(evr string) (nums []int, build int, ok bool) {
+	m := redHatVersion.FindStringSubmatch(evr)
+	if m == nil {
+		return nil, 0, false
+	}
+	for _, p := range m[1:5] {
+		n, err := strconv.Atoi(p)
+		if err != nil || len(p) > 9 {
+			return nil, 0, false
+		}
+		nums = append(nums, n)
+	}
+	b, err := strconv.Atoi(m[5])
+	if err != nil || len(m[5]) > 9 {
+		return nil, 0, false
+	}
+	return nums, b, true
 }
 
 // JudgeRedHat judges an rpm of Red Hat's OpenJDK (name and

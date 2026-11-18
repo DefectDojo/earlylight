@@ -62,6 +62,12 @@ func TestRedHatTable(t *testing.T) {
 		{"java-17-openjdk-headless", "1:17.0.21.0.10-1.el9_6", "", false},
 		{"java-21-openjdk-headless", "1:21.0.13.0.9-1.el9_6", "", false},
 		{"java-17-openjdk-headless", "17.0.21.0.9-1.fc41", "", false}, // not Red Hat
+		// Not five plain numbers: not Red Hat's scheme, not the row's build.
+		{"java-17-openjdk-headless", "17.0.21.0.9a-2.el9_6", "", false},
+		{"java-17-openjdk-headless", "17.0.21.0.9_1-2.el9_6", "", false},
+		{"java-17-openjdk-headless", "17.0.21.0.9.1-2.el9_6", "", false},
+		// The same build number of another update.
+		{"java-17-openjdk-headless", "17.0.20.0.9-3.el9_6", "", false},
 		{"java-17-amazon-corretto-headless", "17.0.21.0.9-2.el9_6", "", false},
 	} {
 		st, why, known := JudgeRedHat(c.name, c.evr)

@@ -79,6 +79,9 @@ type Input struct {
 	Scripts map[string]map[string]bool
 	// Owners maps installed files to the OS package that installed them.
 	Owners map[string]Package
+	// OSID is the target's os-release ID (rhel, rocky, debian), "" when
+	// it has none.
+	OSID string
 	// Resolve follows symbolic links within the target.
 	Resolve func(string) string
 }
@@ -103,10 +106,10 @@ func Run(in Input) []Finding {
 	env := jvm.EnvMap(in.Env)
 	var out []Finding
 	for _, r := range roots {
-		out = append(out, withFix(redHat(judge(in, env, r, byRoot[r]))))
+		out = append(out, withFix(redHat(in, judge(in, env, r, byRoot[r]))))
 	}
 	for _, l := range loose {
-		out = append(out, withFix(redHat(judge(in, env, path.Dir(l.Path), []*jvm.Library{l}))))
+		out = append(out, withFix(redHat(in, judge(in, env, path.Dir(l.Path), []*jvm.Library{l}))))
 	}
 	return out
 }
@@ -284,12 +287,16 @@ const redHatVendor = "Red Hat, Inc."
 // a fixed Red Hat build keeps the upstream version in its VM library, so
 // only the rpm release shows the fix. The rpm is named by the install path
 // alone (the rpm database is not read), so the table clears a runtime only
-// when the runtime confirms it: its VM library is a released HotSpot (not
-// GraalVM, not a pre-release or self-built JDK) of exactly the upstream
-// update and build the rpm packages, and its release file names Red Hat as
-// the implementor. Otherwise the verdict is unknown: the path says fixed,
-// the runtime does not show it.
-func redHat(f Finding) Finding {
+// when the runtime confirms it:
+//   - its VM library is a released, non-GraalVM HotSpot of exactly the
+//     update and build the rpm packages; a library that is not keeps its own
+//     verdict (it proves it is not that build);
+//   - its release file names Red Hat as the implementor, and the target's
+//     os-release says RHEL (Rocky, AlmaLinux and CentOS Stream reuse Red
+//     Hat's releases and implementor); without these, or without a readable
+//     version line, the verdict is unknown: the path says fixed, the
+//     runtime does not show it.
+func redHat(in Input, f Finding) Finding {
 	if f.Package == nil || f.Package.Manager != "rpm" || f.Status != Vulnerable && f.Status != Mitigated {
 		return f
 	}
@@ -297,28 +304,40 @@ func redHat(f Finding) Finding {
 	if !known || st != knowledge.Fixed {
 		return f
 	}
-	up, uok := knowledge.Parse(knowledge.RPMUpstream(f.Package.Version))
+	why += ", by its install path"
 	v, vok := knowledge.Parse(f.Version)
+	if f.VersionFrom == "vm-library" && vok {
+		up, build, uok := knowledge.RedHatUpstream(f.Package.Version)
+		var not string
+		switch {
+		case f.GraalVM:
+			not = "a GraalVM build"
+		case v.EA || v.SelfBuilt:
+			not = "a pre-release or self-built JDK"
+		case !uok || v.Build != build || knowledge.Compare(v.Nums, up) != 0:
+			not = "another update or build"
+		}
+		if not != "" {
+			f.Reason += "; " + why + ", but its VM library (Java " + f.Version + ") is " + not + ", not that build"
+			return f
+		}
+	}
 	var doubt string
 	switch {
 	case f.VersionFrom != "vm-library" || !vok:
 		doubt = "its VM library's version line could not be read"
-	case f.GraalVM:
-		doubt = "its VM library is a GraalVM build, not Red Hat's"
-	case v.EA || v.SelfBuilt:
-		doubt = "its VM library is a pre-release or self-built JDK (" + f.Version + ")"
-	case !uok || up.Build < 0 || v.Build != up.Build || knowledge.Compare(v.Nums, up.Nums) != 0:
-		doubt = "its VM library is Java " + f.Version + ", not the update and build the rpm packages"
 	case f.Vendor != redHatVendor:
-		doubt = "its release file does not name Red Hat as the implementor"
+		doubt = "its release file does not name Red Hat, Inc. as the implementor"
+	case in.OSID != "rhel":
+		doubt = "the target's os-release does not say RHEL (ID=rhel); Rocky, AlmaLinux and CentOS Stream reuse Red Hat's releases"
 	}
 	if doubt != "" {
 		f.Release = knowledge.Unknown
-		return f.set(Unknown, why+", by its install path; but "+doubt+", so the runtime does not show that it is that build",
+		return f.set(Unknown, why+"; but "+doubt+", so the runtime does not show that it is that build",
 			describe(f, v, vok)+": the install path names Red Hat's fixed build, the runtime does not confirm it")
 	}
 	f.Release, f.Mitigation, f.MitigatedFor = knowledge.Fixed, "", nil
-	return f.set(Fixed, why+"; its VM library reads Java "+f.Version+", the update and build Red Hat backported the fix into, and its release file names Red Hat",
+	return f.set(Fixed, why+"; its VM library reads Java "+f.Version+", the update and build Red Hat backported the fix into, its release file names Red Hat and the target is RHEL",
 		describe(f, v, true)+" has Red Hat's backported Java4Shell fix (judged by its rpm release)")
 }
 

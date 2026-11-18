@@ -350,6 +350,9 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Resolve:     res.resolve,
 		Scripts:     s.scripts,
 	}
+	if osr := osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]); osr != "" {
+		in.OSID, _, _ = strings.Cut(osr, " ")
+	}
 	if s.kind == engine.Image {
 		in.Env = ctx.Env()
 		if in.Env == nil {
