@@ -335,7 +335,8 @@ func tagLister(o engine.Options) func(context.Context, string) ([]string, error)
 }
 
 // verifier reads the replacement image and requires: every platform the
-// current tag has is published for it; on each platform judged
+// tree builds (--platform), or else every platform the current tag has, is
+// published for it; on each platform judged
 // (linux/amd64 and linux/arm64, or --platform) it is read in full and
 // every nginx in it has the fix for both CVEs (at least one nginx found);
 // and it is on the same base OS as the current image.
@@ -349,9 +350,15 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 		if err != nil {
 			return "", err
 		}
-		for _, p := range cur {
+		// The platforms that must be there: those the tree builds
+		// (--platform), else every one the current tag has.
+		need, from := cur, current+" has"
+		if len(o.Platforms) > 0 {
+			need, from = o.Platforms, "the tree builds (--platform)"
+		}
+		for _, p := range need {
 			if tp != nil && !containsPlatform(tp, p) {
-				return "", &repo.Declined{Reason: fmt.Sprintf("%s is not published for %s, which %s has (it may still be being published); try again later or change it by hand", target, p, current)}
+				return "", &repo.Declined{Reason: fmt.Sprintf("%s is not published for %s, which %s (it may still be being published); try again later or change it by hand", target, p, from)}
 			}
 		}
 		judge := repoPlatforms(o, "")

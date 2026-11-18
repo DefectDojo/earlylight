@@ -117,7 +117,7 @@ func Plan(ctx context.Context, root string, f Finding, reg Registry, opts Option
 		where = fmt.Sprintf(" (in the value of %s)", part.Var)
 	}
 	return planLine(ctx, root, f, file, part.Line, col, tag, e.target, opts,
-		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: the first release of the same line and variant with the fix for CVE-2026-123007 and CVE-2026-123633, read and judged on its platforms, published for every platform the current tag has, on the same base OS (index digest %s). Rebuild and redeploy.",
+		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: the first release of the same line and variant with the fix for CVE-2026-123007 and CVE-2026-123633, read and judged on linux/amd64 and linux/arm64 (or the --platform list), published for every platform it must have, on the same base OS (index digest %s). Rebuild and redeploy.",
 			e.image, newImage, part.Line, file, where, digest))
 }
 
