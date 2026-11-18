@@ -207,6 +207,15 @@ func scanList(ctx context.Context, root string, list []string, opts Options, res
 		}
 	}
 	s.images(opts)
+	for _, u := range s.unparsed {
+		dup := false
+		for _, sk := range s.skips {
+			dup = dup || sk.File == u.File && sk.Line == 0
+		}
+		if !dup {
+			s.skips = append(s.skips, u)
+		}
+	}
 	res.Findings = append(res.Findings, s.findings...)
 	res.Skips = append(res.Skips, s.skips...)
 	sort.SliceStable(res.Findings, func(i, j int) bool {
@@ -295,6 +304,8 @@ type scanner struct {
 	// mitigated maps "file:line" of a Dockerfile FROM to the mitigation its
 	// stage sets (ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics).
 	mitigated map[string]string
+	// unparsed are Dockerfiles the instruction parser refused.
+	unparsed []Skip
 }
 
 func (s *scanner) add(f Finding) {
@@ -936,7 +947,7 @@ func (s *scanner) jibRef(rel string, line, col int, image string) {
 var (
 	// installRE finds a package tool on a RUN line; installArgs decides
 	// whether it installs.
-	installRE = regexp.MustCompile(`\b(?:apt-get|apt|apk|dnf5?|yum|microdnf|tdnf|zypper|rpm|dpkg)\b`)
+	installRE = regexp.MustCompile(`\b(?:apt-get|aptitude|apt|apk|dnf5?|yum|microdnf|tdnf|zypper|rpm|dpkg)\b`)
 	aptJava   = regexp.MustCompile(`\b(openjdk-(\d{1,2})-(?:jre|jdk)(?:-headless)?)\b(=([^\s;&|]+))?`)
 	apkJava   = regexp.MustCompile(`\b(openjdk(\d{1,2})(?:-jre|-jdk|-jre-headless|-jmods)?)(?:([=~><]+)([^\s;&|]+))?`)
 	rpmJava   = regexp.MustCompile(`\b(java-(\d{1,2})-(openjdk|amazon-corretto)(?:-headless|-devel|-jdk)?)(?:-(\d[\w.:*?+~-]*))?`)
@@ -956,7 +967,16 @@ var (
 )
 
 func (s *scanner) dockerfile(rel, text string) {
-	ls := lines(text)
+	// The instructions as the builder reads them: continuation lines joined
+	// (comment and blank lines inside one dropped), the escape directive,
+	// JSON arguments, heredoc bodies, ONBUILD.
+	ins, err := refs.Instructions([]byte(text))
+	if err != nil {
+		// The image reference scan records the same file when it cannot
+		// parse it: one record (scanList).
+		s.unparsed = append(s.unparsed, Skip{File: rel, Reason: "the Dockerfile could not be parsed (" + refs.CleanText(err.Error(), 120) + "): the packages it installs are not checked"})
+		return
+	}
 	from := 0
 	stageStart := len(s.findings)
 	// endStage marks the packages a stage installs as mitigated when the
@@ -983,47 +1003,80 @@ func (s *scanner) dockerfile(rel, text string) {
 		}
 	}
 	defer endStage()
-	for i := 0; i < len(ls); i++ {
-		l := ls[i]
-		// Join continuation lines for matching; report the first line.
-		full := l
-		j := i
-		for strings.HasSuffix(strings.TrimRight(ls[j], " \t"), "\\") && j+1 < len(ls) {
-			j++
-			full = strings.TrimSuffix(strings.TrimRight(full, " \t"), "\\") + " " + ls[j]
-		}
-		trim := strings.TrimSpace(full)
-		switch {
-		case fromLine.MatchString(trim):
+	// vars are the ARG defaults and ENV values the file sets, for package
+	// names a RUN takes from a variable.
+	vars := map[string]string{}
+	for _, in := range ins {
+		switch in.Cmd {
+		case "from":
 			endStage()
-			from, stageStart, stageEnv, stageCmd = i+1, len(s.findings), map[string]string{}, nil
-		case cmdLine.MatchString(trim):
-			stageCmd = append(stageCmd, commandWords(cmdLine.ReplaceAllString(trim, ""))...)
-		case envJTO.MatchString(trim):
-			// The last ENV of each variable in the stage is what the
-			// image keeps; the mitigation is decided when the stage ends.
-			body := envJTO.ReplaceAllString(trim, "")
-			for _, kv := range jvm.Words(body) {
+			from, stageStart, stageEnv, stageCmd = in.Line, len(s.findings), map[string]string{}, nil
+		case "cmd", "entrypoint":
+			stageCmd = append(stageCmd, commandWords(in.Args)...)
+		case "arg":
+			for _, kv := range jvm.Words(in.Args) {
 				if k, v, ok := strings.Cut(kv, "="); ok {
-					stageEnv[k] = v
+					vars[k] = v
 				}
 			}
-		case strings.HasPrefix(strings.ToUpper(trim), "RUN "):
-			s.packages(rel, i+1, trim)
+		case "env":
+			// The last ENV of each variable in the stage is what the
+			// image keeps; the mitigation is decided when the stage ends.
+			for _, kv := range jvm.Words(in.Args) {
+				if k, v, ok := strings.Cut(kv, "="); ok {
+					stageEnv[k], vars[k] = v, v
+				}
+			}
+		case "run":
+			run := in.Args
+			if in.JSON != nil {
+				run = strings.Join(jvm.CommandWords(in.JSON), " ")
+			}
+			s.packages(rel, in.Line, run, vars)
+			for _, body := range in.Heredocs {
+				s.packages(rel, in.Line, heredocCommands(body), vars)
+			}
 		}
-		i = j
 	}
+}
+
+// heredocCommands turns a heredoc's script into one command line: comment
+// lines dropped, continuation lines joined, lines separated by ";".
+func heredocCommands(body string) string {
+	var out []string
+	cur := ""
+	for _, l := range lines(body) {
+		t := strings.TrimSpace(l)
+		if cur == "" && (t == "" || strings.HasPrefix(t, "#")) {
+			continue
+		}
+		if strings.HasSuffix(t, "\\") {
+			cur += strings.TrimSuffix(t, "\\") + " "
+			continue
+		}
+		out = append(out, cur+t)
+		cur = ""
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return strings.Join(out, " ; ")
 }
 
 // packages finds the OpenJDK packages a RUN line installs: distribution
 // packages and the vendors' own (Temurin, Corretto, Zulu, Microsoft,
 // SapMachine), with or without a version.
-func (s *scanner) packages(rel string, line int, run string) {
+func (s *scanner) packages(rel string, line int, run string, vars map[string]string) {
 	if !installRE.MatchString(run) {
 		return
 	}
 	var hits []pkgHit
-	for _, arg := range installArgs(run) {
+	var opaque []string
+	for _, arg := range installArgs(expandVars(run, vars), 0) {
+		if strings.HasPrefix(arg, opaqueArg) {
+			opaque = append(opaque, strings.TrimPrefix(arg, opaqueArg))
+			continue
+		}
 		fromFile := strings.HasPrefix(arg, fileArg)
 		arg = strings.TrimPrefix(arg, fileArg)
 		before := len(hits)
@@ -1087,6 +1140,38 @@ func (s *scanner) packages(rel string, line int, run string) {
 	for _, h := range hits {
 		s.judgePackage(rel, line, h)
 	}
+	if len(opaque) > 0 {
+		// The package list is not in this file: a gap, not a finding
+		// about Java.
+		s.skips = append(s.skips, Skip{File: rel, Line: line, Reason: fmt.Sprintf("installs packages named by %s, which this file does not set (a variable without a value here, or a command's output): not checked for Java packages",
+			refs.CleanText(strings.Join(opaque, " "), 120))})
+	}
+}
+
+// opaqueArg marks an install argument whose package names this scan
+// cannot read: a variable the file does not set, or a command's output.
+const opaqueArg = "\x00opaque:"
+
+var varRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
+
+// expandVars puts in the values the Dockerfile's ARG and ENV lines give
+// (${NAME}, $NAME, ${NAME:-default}); a variable the file does not set
+// stays as written.
+func expandVars(run string, vars map[string]string) string {
+	if !strings.Contains(run, "$") {
+		return run
+	}
+	return varRef.ReplaceAllStringFunc(run, func(m string) string {
+		g := varRef.FindStringSubmatch(m)
+		name := g[1] + g[3]
+		if v, ok := vars[name]; ok && v != "" {
+			return v
+		}
+		if g[2] != "" {
+			return g[2]
+		}
+		return m
+	})
 }
 
 // anchored matches the whole of one argument.
@@ -1107,7 +1192,7 @@ var (
 )
 
 var (
-	pkgTools = map[string]bool{"apt-get": true, "apt": true, "apk": true, "dnf": true, "dnf5": true, "yum": true, "microdnf": true, "tdnf": true, "zypper": true, "rpm": true, "dpkg": true}
+	pkgTools = map[string]bool{"apt-get": true, "aptitude": true, "apt": true, "apk": true, "dnf": true, "dnf5": true, "yum": true, "microdnf": true, "tdnf": true, "zypper": true, "rpm": true, "dpkg": true}
 	pkgVerbs = map[string]bool{"install": true, "add": true, "in": true, "reinstall": true, "localinstall": true}
 	// pkgValueFlags are package-manager options followed by a separate value.
 	pkgValueFlags = map[string]bool{"-t": true, "-o": true, "-X": true, "--repository": true, "--virtual": true, "-c": true, "--root": true,
@@ -1246,10 +1331,27 @@ func vendorFileVersion(name string) string {
 // installArgs returns the package arguments of the install commands on a
 // RUN line: the words after "<tool> [flags] install|add", without flags,
 // their values, paths and URLs.
-func installArgs(run string) []string {
+func installArgs(run string, depth int) []string {
 	var out []string
 	for _, cmd := range jvm.SplitCommands(run) {
 		words := jvm.Words(cmd)
+		// A group or subshell: ( apt-get install x ), { ...; }.
+		for k, w := range words {
+			if t := strings.TrimLeft(w, "({"); t != "" {
+				w = t
+			}
+			if !strings.Contains(w, "(") {
+				if t := strings.TrimRight(w, ")"); t != "" {
+					w = t
+				}
+			}
+			words[k] = w
+		}
+		// sh -c "apt-get install ...": the text is a script of its own.
+		if text, ok := shellText(words); ok && depth < 4 {
+			out = append(out, installArgs(text, depth+1)...)
+			continue
+		}
 		// The tool: not a flag's value (RUN --mount=...,target=/var/cache/apt).
 		i := 0
 		for i < len(words) && (strings.HasPrefix(words[i], "-") || !pkgTools[path.Base(words[i])]) {
@@ -1281,7 +1383,15 @@ func installArgs(run string) []string {
 			continue
 		}
 		for j := i + 1; j < len(words); j++ {
-			w := words[j]
+			w := redirect.ReplaceAllString(words[j], "")
+			if w == "" {
+				continue
+			}
+			if strings.HasPrefix(w, "$") || strings.HasPrefix(w, "`") {
+				// A package name this file does not give.
+				out = append(out, opaqueArg+w)
+				continue
+			}
 			if !strings.HasPrefix(w, "-") {
 				if a, ok := rpmFileArg(w); ok {
 					if a != "" {
@@ -1306,6 +1416,35 @@ func installArgs(run string) []string {
 		}
 	}
 	return out
+}
+
+// redirect is a redirection written onto a word: openjdk-17-jdk>/dev/null,
+// x 2>&1. (apk and zypper write version ranges with > and <, followed by
+// a version, not by a path or a descriptor.)
+var redirect = regexp.MustCompile(`(?:>>?|<)[/&].*$|(?:>>?|<)$`)
+
+// shellText returns the script of a "sh -c TEXT" command (also -ec, -lc
+// and the like, behind env or a path).
+func shellText(words []string) (string, bool) {
+	for i := 0; i < len(words) && i < 4; i++ {
+		switch path.Base(words[i]) {
+		case "sh", "bash", "ash", "dash", "zsh", "ksh":
+			for j := i + 1; j < len(words); j++ {
+				w := words[j]
+				if !strings.HasPrefix(w, "-") || strings.HasPrefix(w, "--") {
+					return "", false
+				}
+				if strings.HasSuffix(w, "c") && j+1 < len(words) {
+					return words[j+1], true
+				}
+			}
+			return "", false
+		}
+		if !strings.Contains(words[i], "=") && path.Base(words[i]) != "env" && path.Base(words[i]) != "exec" {
+			return "", false
+		}
+	}
+	return "", false
 }
 
 // pkgHit is one Java package an install names.
