@@ -237,15 +237,19 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 		Symlink:      func(p, t string) { w.ctx.symlinks[w.abs(p)] = t },
 		Hardlink:     func(p, t string) { w.ctx.hardlinks[w.abs(p)] = w.abs(t) },
 	}
-	var heads []HeadVisitor
-	for _, s := range w.scans {
+	type headScan struct {
+		id string
+		h  HeadVisitor
+	}
+	var heads []headScan
+	for i, s := range w.scans {
 		if h, ok := s.(HeadVisitor); ok {
-			heads = append(heads, h)
+			heads = append(heads, headScan{w.dets[i].Manifest().ID, h})
 		}
 	}
 	visitHead := func(p string, head []byte) {
 		for _, h := range heads {
-			h.VisitHead(w.abs(p), head)
+			w.visitHeadSafely(h.id, h.h, w.abs(p), head)
 		}
 	}
 	var readers []Reader
@@ -320,6 +324,18 @@ func (w *walker) visitSafely(i int, s Scan, f File) (skips []Skip) {
 		}
 	}()
 	return s.Visit(f)
+}
+
+// visitHeadSafely runs one detector's VisitHead on one file. A detector
+// that panics on a hostile file loses that file, reported as not scanned,
+// and the scan goes on, as with Visit.
+func (w *walker) visitHeadSafely(id string, h HeadVisitor, p string, head []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.t.Skipped = append(w.t.Skipped, source.Skip{Path: p, Reason: fmt.Sprintf("detector %s failed on this file (%v); not checked", id, r), DetectorFailed: true})
+		}
+	}()
+	h.VisitHead(p, head)
 }
 
 func (w *walker) finish() {
