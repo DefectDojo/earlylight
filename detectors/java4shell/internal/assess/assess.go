@@ -84,6 +84,13 @@ type Input struct {
 	// files than were recorded.
 	UnreadDirs []string
 	UnreadAll  bool
+	// ScriptWords holds, for each script that was read, the words in it:
+	// what it may run. UndoScripts are those that pass an option turning
+	// the decoder back on (the option is the value). ScriptsOver is set
+	// when there were more scripts than were recorded.
+	ScriptWords map[string]WordSet
+	UndoScripts map[string]string
+	ScriptsOver bool
 	// Owners maps installed files to the OS package that installed them.
 	Owners map[string]Package
 	// Linked are VM library names that are links to a file the scan did
@@ -355,7 +362,7 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 			bs, bwhy := judgeBackport(v)
 			f.Release = bs
 			if bs == knowledge.Vulnerable {
-				if ok, how := mitigation(in, env, root, v.Feature(), &f); ok && unreadCommandScript(in) == "" {
+				if ok, how := mitigation(in, env, root, v.Feature(), &f); ok && mitigationVoid(in) == "" {
 					f.Mitigation = how
 					return f.set(Mitigated, bwhy+"; "+how, what+" carries a backported AVX-512 VBMI Base64 decoder without the fix, mitigated by its JVM options until it is updated")
 				}
@@ -381,9 +388,8 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		kwhy += " (judged by the release file: no HotSpot version line was found in the VM library)"
 	}
 	if ok, how := mitigation(in, env, root, v.Feature(), &f); ok {
-		if u := unreadCommandScript(in); u != "" {
-			return f.set(Vulnerable, kwhy+"; "+how+", but the container's start script "+u+" was not read (larger than the scan reads) and can pass an option that undoes it",
-				what+" is vulnerable to Java4Shell")
+		if void := mitigationVoid(in); void != "" {
+			return f.set(Vulnerable, kwhy+"; "+how+", but "+void, what+" is vulnerable to Java4Shell")
 		}
 		f.Mitigation = how
 		return f.set(Mitigated, kwhy+"; "+how, what+" is vulnerable to Java4Shell, mitigated by its JVM options until it is updated")

@@ -211,6 +211,8 @@ func (s *scan) Forget(p string) {
 		s.osUnread = false
 	}
 	delete(s.scripts, p)
+	delete(s.scriptWords, p)
+	delete(s.undoScripts, p)
 	delete(s.unreadScripts, p)
 	delete(s.overSettings, p)
 	if path.Base(p) == "release" {
@@ -251,6 +253,10 @@ func (s *scan) VisitHead(p string, head []byte) {
 		s.archives.add(p, p)
 	}
 }
+
+// undoOption is an option in a script's text that turns the decoder back
+// on for the java it starts: the intrinsic on, or AVX-512 allowed.
+var undoOption = regexp.MustCompile(`-XX:\+UseBASE64Intrinsics\b|-XX:UseBASE64Intrinsics=true\b|-XX:UseAVX=(?:[3-9]|[1-9][0-9]+)\b`)
 
 func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head[1] == '!' }
 
@@ -294,7 +300,8 @@ const (
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
 	return &scan{kind: kind, releases: map[string]jvm.Release{}, badReleases: map[string]string{},
-		kept: map[string][]byte{}, lists: map[string][]byte{}, scripts: map[string]map[string]bool{}, unreadScripts: map[string]bool{}, overSettings: map[string]bool{}}
+		kept: map[string][]byte{}, lists: map[string][]byte{}, scripts: map[string]map[string]bool{}, unreadScripts: map[string]bool{}, overSettings: map[string]bool{},
+		scriptWords: map[string]assess.WordSet{}, undoScripts: map[string]string{}}
 }
 
 type scan struct {
@@ -315,6 +322,12 @@ type scan struct {
 	unreadScripts map[string]bool
 	unreadDirs    []string
 	unreadAll     bool
+	// scriptWords holds the words of each script read (what it may run),
+	// undoScripts the option a script passes that turns the decoder back
+	// on; scriptsOver stands for more scripts than were recorded.
+	scriptWords map[string]assess.WordSet
+	undoScripts map[string]string
+	scriptsOver bool
 	// overSettings are JVM settings files not read.
 	overSettings map[string]bool
 	// osUnread is set when /etc/os-release was met and not read.
@@ -433,6 +446,16 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		}
 	}
 	if isScript(f.Data) && len(f.Data) <= maxScript {
+		// What the script may run, and whether it turns the decoder back
+		// on: a mitigation is not reported past either (assess).
+		if len(s.scriptWords) >= maxScripts {
+			s.scriptsOver = true
+		} else {
+			s.scriptWords[f.Path] = assess.WordsOf(f.Data)
+			if m := undoOption.Find(f.Data); m != nil {
+				s.undoScripts[f.Path] = string(m)
+			}
+		}
 		vars := map[string]bool{}
 		for _, n := range jvm.ScriptVars {
 			if bytes.Contains(f.Data, []byte("$"+n)) || bytes.Contains(f.Data, []byte("${"+n)) {
@@ -498,6 +521,9 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		UnreadScripts: s.unreadScripts,
 		UnreadDirs:    s.unreadDirs,
 		UnreadAll:     s.unreadAll,
+		ScriptWords:   s.scriptWords,
+		UndoScripts:   s.undoScripts,
+		ScriptsOver:   s.scriptsOver,
 		Linked:        linked,
 	}
 	in.OSID = s.osID(ctx.Exists, res, hardlinks)
