@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -158,6 +159,13 @@ func planTag(ctx context.Context, root string, f Finding, reg Registry, opts Opt
 		// Editing the variable changes every place that uses it.
 		if n, err := varUses(root, r.File, part.Var, opts); err != nil || n > 1 {
 			return nil, declined("%s gets its tag from %s, which %s uses in more than one place; change it by hand", e.image, part.Var, r.File)
+		}
+		// A variable set in another file (.env) is read by every Compose
+		// file next to it.
+		if file != r.File {
+			if other, err := varUsedBeside(root, file, r.File, part.Var, opts); err != nil || other != "" {
+				return nil, declined("%s gets its tag from %s in %s, which %s uses too; change it by hand", e.image, part.Var, file, other)
+			}
 		}
 	}
 	digest, err := reg.Verify(ctx, e.image, newImage)
@@ -324,6 +332,34 @@ func varUses(root, file, name string, opts Options) (int, error) {
 	}
 	re := regexp.MustCompile(`\$\{?` + regexp.QuoteMeta(name) + `\b`)
 	return len(re.FindAllIndex(b, -1)), nil
+}
+
+// varUsedBeside names another file in the directory of def (the file that
+// sets a variable) that uses the variable too, "" when only user does.
+func varUsedBeside(root, def, user, name string, opts Options) (string, error) {
+	dir, p := path.Dir(def), root
+	if dir != "." {
+		var err error
+		if p, err = refs.SafePath(root, dir); err != nil {
+			return "", err
+		}
+	}
+	entries, err := os.ReadDir(p)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		rel := path.Join(dir, e.Name())
+		if !e.Type().IsRegular() || rel == def || rel == user || kindOf(rel) != "yaml" && kindOf(rel) != "dockerfile" {
+			continue
+		}
+		if n, err := varUses(root, rel, name, opts); err != nil {
+			return rel, err
+		} else if n > 0 {
+			return rel, nil
+		}
+	}
+	return "", nil
 }
 
 // baseOSWords name a base OS in a tag's variant.

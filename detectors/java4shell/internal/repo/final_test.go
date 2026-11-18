@@ -271,3 +271,37 @@ func TestComposeBuildArgs(t *testing.T) {
 		}
 	}
 }
+
+// Final review B7: a .env value that another Compose file of the directory
+// uses too is shared: fix does not change it.
+func TestEnvSharedAcrossComposeFiles(t *testing.T) {
+	reg := Registry{
+		Tags: func(context.Context, string) ([]string, error) {
+			return []string{"21.0.13_9-jre", "21.0.13.1_2-jre"}, nil
+		},
+		Verify: func(context.Context, string, string) (string, error) { return "sha256:abc", nil },
+	}
+	plan := func(files map[string]string) (*Change, error) {
+		root := tree(t, files)
+		res, err := Scan(context.Background(), root, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range res.Findings {
+			if f.Fixable {
+				return Plan(context.Background(), root, f, reg, Options{})
+			}
+		}
+		t.Fatalf("nothing to fix: %+v", res.Findings)
+		return nil, nil
+	}
+	own := map[string]string{".env": "JAVA_TAG=21.0.13_9-jre\n", "docker-compose.yml": "services:\n  a:\n    image: eclipse-temurin:${JAVA_TAG}\n"}
+	if ch, err := plan(own); err != nil || ch.File != ".env" {
+		t.Errorf("a variable one file uses: %v %+v", err, ch)
+	}
+	shared := map[string]string{".env": own[".env"], "docker-compose.yml": own["docker-compose.yml"],
+		"docker-compose.prod.yml": "services:\n  b:\n    image: registry.example.com/base/runtime:${JAVA_TAG}\n"}
+	if ch, err := plan(shared); err == nil {
+		t.Errorf("a variable two Compose files use was changed: %+v", ch)
+	}
+}

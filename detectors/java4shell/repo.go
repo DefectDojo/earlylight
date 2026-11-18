@@ -255,10 +255,13 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 				continue
 			}
 			// A mitigated pin still needs the update, so fix moves it too.
-			if f.Level == "note" && f.Rule != repo.RuleNotChecked && f.Status != repo.StatusMitigated {
+			// What the scan could not check is said, whatever its rule (a
+			// package it cannot read, an Enforcer floor): fix never
+			// reports success over it.
+			if f.Level == "note" && f.Rule != repo.RuleNotChecked && f.Status != repo.StatusMitigated && f.Status != repo.StatusUnknown {
 				continue
 			}
-			if f.Rule == repo.RuleNotChecked {
+			if f.Rule == repo.RuleNotChecked || f.Status == repo.StatusUnknown {
 				fmt.Fprintf(stdout, "not checked %s  %s\n", where, repo.Printable(f.Message))
 				code = max(code, 1)
 				continue

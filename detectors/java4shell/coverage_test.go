@@ -1,6 +1,7 @@
 package java4shell_test
 
 import (
+	"bytes"
 	"github.com/DefectDojo/earlylight/detectors/java4shell"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
+	"github.com/DefectDojo/earlylight/internal/cli"
 	"github.com/DefectDojo/earlylight/internal/engine"
 )
 
@@ -112,6 +114,25 @@ func TestRedHatRowNeedsRHEL(t *testing.T) {
 		r, _ := run(t, "scan", "fs", "--as-root", root)
 		if f := byPath(r)["/"+dir]; f.Verdict != want {
 			t.Errorf("ID=%s: %s, want %s (%s)", id, f.Verdict, want, f.Reason)
+		}
+	}
+}
+
+// Final review B7: fix says what it could not check and does not exit 0
+// over it: findings the scan reports as unknown are printed as not checked.
+func TestFixPrintsUnknowns(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"packages it cannot read": {"Dockerfile": "FROM debian\nRUN apt-get install -y zulu21-jdk\nRUN rpm -i https://example.com/dl/jdk.rpm\n"},
+		"an Enforcer floor":       {"pom.xml": "<project><build><plugins><plugin><configuration><rules>\n<requireJavaVersion><version>[17.0.6,)</version></requireJavaVersion>\n</rules></configuration></plugin></plugins></build></project>\n"},
+	} {
+		root := t.TempDir()
+		for rel, body := range files {
+			write(t, root, rel, []byte(body))
+		}
+		var out, errb bytes.Buffer
+		code := cli.Run(cfg, []string{"fix", "--detector", "java4shell", "--dry-run", "--offline", root}, &out, &errb)
+		if code != 1 || !strings.Contains(out.String(), "not checked") {
+			t.Errorf("%s: exit %d, output %q %q", name, code, out.String(), errb.String())
 		}
 	}
 }
