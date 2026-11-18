@@ -348,7 +348,7 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 		props["vendor"] = vendor
 	}
 	if isGraal(vendor) {
-		s.graalVersion(rel, line, tv, st, why, source, props)
+		s.graalVersion(rel, line, tv, st, why, source, graalDist(vendor), props)
 		return
 	}
 	if fx := knowledge.FixedVersion(tv.Nums[0]); fx != "" {
@@ -436,7 +436,7 @@ func (s *scanner) sdkmanrc(rel, text string) {
 		}
 		if isGraal(m[2]) {
 			if g, java, ok := graalNamed(m[1]); ok {
-				s.graalOwn(rel, i+1, g, java, m[2] == "grl" || m[2] == "graalce", strings.TrimSpace(strings.SplitN(l, "=", 2)[1]), ".sdkmanrc")
+				s.graalOwn(rel, i+1, g, java, m[2] == "grl", strings.TrimSpace(strings.SplitN(l, "=", 2)[1]), ".sdkmanrc")
 				continue
 			}
 		}

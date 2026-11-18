@@ -22,9 +22,34 @@ type Build struct {
 	Build   int // -1: every build of Version
 }
 
-// GraalVMFixed is, per Java line, the first GraalVM build with the fix.
-// Empty: no fixed GraalVM build had been published as of Checked.
-var GraalVMFixed = map[int]Build{}
+// GraalVM distributions, whose fixed builds are published separately.
+const (
+	GraalVMOracle    = "oracle"    // Oracle GraalVM (and GraalVM Enterprise)
+	GraalVMCommunity = "community" // GraalVM Community Edition
+)
+
+// GraalVMKey is a distribution's Java line.
+type GraalVMKey struct {
+	Dist    string
+	Feature int
+}
+
+// GraalVMFixed is, per distribution and Java line, the first GraalVM build
+// with the fix. Empty: no fixed GraalVM build had been published as of
+// Checked.
+var GraalVMFixed = map[GraalVMKey]Build{}
+
+// GraalVMDist names the distribution a release file's IMPLEMENTOR names,
+// "" when it names neither.
+func GraalVMDist(implementor string) string {
+	switch implementor {
+	case "GraalVM Community":
+		return GraalVMCommunity
+	case "Oracle Corporation":
+		return GraalVMOracle
+	}
+	return ""
+}
 
 // graalVMAffected names what Oracle lists, for reasons.
 const graalVMAffected = "Oracle names GraalVM for JDK 17.0.21.0.3 and 21.0.13.0.3 and GraalVM Enterprise Edition 21.3.20.0.3 as affected"
@@ -33,10 +58,11 @@ const graalVMAffected = "Oracle names GraalVM for JDK 17.0.21.0.3 and 21.0.13.0.
 // ("17.0.6+10-jvmci-22.3-b13", "21.0.5+9-LTS-jvmci-23.1-b48").
 func IsGraalVM(version string) bool { return strings.Contains(version, "-jvmci-") }
 
-// JudgeGraalVM judges a GraalVM build by its JDK version. It is vulnerable
-// wherever the OpenJDK release would be; it is fixed only at or past a
-// fixed GraalVM build listed in GraalVMFixed.
-func JudgeGraalVM(v Version) (Status, string) {
+// JudgeGraalVM judges a GraalVM build of a distribution (GraalVMOracle,
+// GraalVMCommunity, "" when not known) by its JDK version. It is
+// vulnerable wherever the OpenJDK release would be; it is fixed only at or
+// past a fixed build of the same distribution listed in GraalVMFixed.
+func JudgeGraalVM(v Version, dist string) (Status, string) {
 	st, why := Judge(v)
 	switch st {
 	case NotAffected:
@@ -46,7 +72,7 @@ func JudgeGraalVM(v Version) (Status, string) {
 	}
 	// A row clears only what OpenJDK's data also judges fixed: a vendor
 	// build number in the fourth place or a later update stays unknown.
-	if fx, ok := GraalVMFixed[v.Feature()]; ok && st == Fixed {
+	if fx, ok := GraalVMFixed[GraalVMKey{dist, v.Feature()}]; ok && dist != "" && st == Fixed {
 		c := Compare(v.Nums, fx.Version)
 		// A version without its build is taken as the GA build, as for OpenJDK.
 		if c < 0 || c == 0 && fx.Build >= 0 && v.Build >= 0 && v.Build < fx.Build {
@@ -112,10 +138,13 @@ func JudgeGraalVMRelease(graal string, java int, community bool) (Status, string
 		nums = append(nums, n)
 	}
 	is213 := Compare(nums[:2], []int{21, 3}) == 0
+	// The GraalVM releases looked at are 19.x to 22.3 (minor versions 0
+	// to 3); later ones are numbered by the JDK.
+	looked := nums[0] >= 19 && nums[0] <= 22 && nums[1] <= 3
 	switch {
 	case java < 8:
 		return Unknown, fmt.Sprintf("%s: not a Java line GraalVM is built for", name)
-	case java < firstVBMIDecode && community && !is213:
+	case java < firstVBMIDecode && community && looked && !is213:
 		return NotAffected, fmt.Sprintf("%s is built on OpenJDK %d, which has no x86-64 Base64 decode intrinsic (the Java 11 build of GraalVM Community 22.3.1 carries no decoder stubs)", name, java)
 	case java < firstVBMIDecode:
 		return Unknown, fmt.Sprintf("%s: OpenJDK %d has no decoder, but whether this build carries one is not known (GraalVM Enterprise Edition 21.3.20.0.3 is listed as affected without its Java line, and other vendors' GraalVM builds were not checked)", name, java)

@@ -48,17 +48,17 @@ func TestGraalVM(t *testing.T) {
 		{"11.0.33+8-LTS-jvmci-21.3-b99", NotAffected},
 	} {
 		v, _ := Parse(c.v)
-		if st, why := JudgeGraalVM(v); st != c.want || why == "" {
+		if st, why := JudgeGraalVM(v, GraalVMOracle); st != c.want || why == "" {
 			t.Errorf("JudgeGraalVM(%s) = %s (%s), want %s", c.v, st, why, c.want)
 		}
 	}
 	// A published fixed GraalVM build, once listed, clears later builds.
 	saved := GraalVMFixed
 	t.Cleanup(func() { GraalVMFixed = saved })
-	GraalVMFixed = map[int]Build{21: {Version: []int{21, 0, 13, 1}, Build: 2}}
+	GraalVMFixed = map[GraalVMKey]Build{{GraalVMOracle, 21}: {Version: []int{21, 0, 13, 1}, Build: 2}}
 	for v, want := range map[string]Status{"21.0.13.1+2-LTS-jvmci-23.1-b99": Fixed, "21.0.13.1+1-LTS-jvmci-23.1-b99": Vulnerable, "21.0.13.0.3+1-LTS-jvmci-23.1-b99": Vulnerable} {
 		p, _ := Parse(v)
-		if st, why := JudgeGraalVM(p); st != want {
+		if st, why := JudgeGraalVM(p, GraalVMOracle); st != want {
 			t.Errorf("with a fixed build listed, JudgeGraalVM(%s) = %s (%s), want %s", v, st, why, want)
 		}
 	}
@@ -134,7 +134,7 @@ func TestGraalVMReleaseStrict(t *testing.T) {
 func TestGraalVMRow(t *testing.T) {
 	saved := GraalVMFixed
 	t.Cleanup(func() { GraalVMFixed = saved })
-	GraalVMFixed = map[int]Build{17: {Version: []int{17, 0, 21, 1}, Build: 2}}
+	GraalVMFixed = map[GraalVMKey]Build{{GraalVMOracle, 17}: {Version: []int{17, 0, 21, 1}, Build: 2}}
 	for v, want := range map[string]Status{
 		"17.0.21.1+2-jvmci-23.0-b99":       Fixed,
 		"17.0.21.1+3-jvmci-23.0-b99":       Fixed,
@@ -149,7 +149,7 @@ func TestGraalVMRow(t *testing.T) {
 		if !ok {
 			t.Fatalf("Parse(%s)", v)
 		}
-		if st, why := JudgeGraalVM(p); st != want {
+		if st, why := JudgeGraalVM(p, GraalVMOracle); st != want {
 			t.Errorf("row 17.0.21.1+2: JudgeGraalVM(%s) = %s (%s), want %s", v, st, why, want)
 		}
 	}
@@ -160,13 +160,13 @@ func TestGraalVMRow(t *testing.T) {
 func TestGraalVMRowLaterBuild(t *testing.T) {
 	saved := GraalVMFixed
 	t.Cleanup(func() { GraalVMFixed = saved })
-	GraalVMFixed = map[int]Build{21: {Version: []int{21, 0, 13, 1}, Build: 5}}
+	GraalVMFixed = map[GraalVMKey]Build{{GraalVMOracle, 21}: {Version: []int{21, 0, 13, 1}, Build: 5}}
 	for v, want := range map[string]Status{
 		"21.0.13.1+3-jvmci-23.1-b99": Vulnerable,
 		"21.0.13.1+5-jvmci-23.1-b99": Fixed,
 	} {
 		p, _ := Parse(v)
-		if st, why := JudgeGraalVM(p); st != want {
+		if st, why := JudgeGraalVM(p, GraalVMOracle); st != want {
 			t.Errorf("row 21.0.13.1+5: JudgeGraalVM(%s) = %s (%s), want %s", v, st, why, want)
 		}
 	}
@@ -183,6 +183,44 @@ func TestGraalVMOwnNumbersNotJava(t *testing.T) {
 	for _, s := range []string{"25.0.3", "25.0.5.0.3", "17.0.21.1", "21"} {
 		if GraalVMOwnNumber(s) {
 			t.Errorf("%s taken as GraalVM's own number", s)
+		}
+	}
+}
+
+// Round 2, item 5: a GraalVM row is one distribution's; Community clears
+// stop at the GraalVM releases looked at (19 to 22.3).
+func TestGraalVMRound2(t *testing.T) {
+	saved := GraalVMFixed
+	t.Cleanup(func() { GraalVMFixed = saved })
+	GraalVMFixed = map[GraalVMKey]Build{{GraalVMOracle, 17}: {Version: []int{17, 0, 21, 2}, Build: 1}}
+	for _, c := range []struct {
+		v, dist string
+		want    Status
+	}{
+		{"17.0.21.2+1-jvmci-23.0-b99", GraalVMOracle, Fixed},
+		{"17.0.21.2+1-jvmci-23.0-b99", GraalVMCommunity, Unknown}, // another distribution's row
+		{"17.0.21.2+1-jvmci-23.0-b99", "", Unknown},
+		{"17.0.21.1+2-jvmci-23.0-b99", GraalVMOracle, Vulnerable}, // OpenJDK-fixed, older than the row
+	} {
+		p, _ := Parse(c.v)
+		if st, why := JudgeGraalVM(p, c.dist); st != c.want {
+			t.Errorf("JudgeGraalVM(%s, %q) = %s (%s), want %s", c.v, c.dist, st, why, c.want)
+		}
+	}
+	for _, c := range []struct {
+		graal string
+		java  int
+		want  Status
+	}{
+		{"99.9.9", 11, Unknown},
+		{"21.30.0", 11, Unknown},
+		{"23.0.1", 11, Unknown},
+		{"19.3.0", 8, NotAffected},
+		{"22.3.0", 11, NotAffected},
+		{"22.4.0", 11, Unknown},
+	} {
+		if st, why := JudgeGraalVMRelease(c.graal, c.java, true); st != c.want {
+			t.Errorf("JudgeGraalVMRelease(%s, %d) = %s (%s), want %s", c.graal, c.java, st, why, c.want)
 		}
 	}
 }

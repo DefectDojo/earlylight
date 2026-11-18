@@ -228,7 +228,9 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	}
 	judgeVersion, judgeBackport := knowledge.Judge, knowledge.JudgeBackport
 	if f.GraalVM {
-		judgeVersion, judgeBackport = knowledge.JudgeGraalVM, knowledge.JudgeBackportGraalVM
+		dist := knowledge.GraalVMDist(f.Vendor)
+		judgeVersion = func(v knowledge.Version) (knowledge.Status, string) { return knowledge.JudgeGraalVM(v, dist) }
+		judgeBackport = knowledge.JudgeBackportGraalVM
 	}
 	ks, kwhy := judgeVersion(v)
 	f.Release = ks

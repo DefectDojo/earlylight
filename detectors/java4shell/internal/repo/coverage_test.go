@@ -443,3 +443,25 @@ func TestRPMForms(t *testing.T) {
 		}
 	}
 }
+
+// Round 2, items 5 and 7: GraalVM names the data cannot settle.
+func TestGraalVMRound2Repo(t *testing.T) {
+	res := scan(t, tree(t, map[string]string{
+		"a/.sdkmanrc":      "java=99.9.9.r11-grl\n",
+		"b/.sdkmanrc":      "java=21.30.0.r11-grl\n",
+		"c/.sdkmanrc":      "java=22.3.0.r17-graalce\n",
+		"d/.sdkmanrc":      "java=22.3.0.r017-grl\n",
+		"a/.tool-versions": "java graalvm-22.3.0+java17.0.9\n",
+		"b/.tool-versions": "java graalvm-22.3.0+java11+java17\n",
+		"c/.tool-versions": "java mandrel-22.3.1.0-Final+java11\n",
+	}))
+	checkAll(t, res, []want{
+		{"a/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"b/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"c/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"d/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"a/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"b/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"c/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+	})
+}

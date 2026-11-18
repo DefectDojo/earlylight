@@ -82,7 +82,7 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 	props["current"] = tv.Text
 	st, why := JudgeTag(tv)
 	if fam.GraalVM {
-		st, why = graalTag(tv, st, why)
+		st, why = graalTag(tv, st, why, graalDist(fam.Vendor))
 	}
 	switch st {
 	case knowledge.Unknown:
