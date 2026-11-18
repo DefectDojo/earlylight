@@ -119,6 +119,11 @@ func TestExposure(t *testing.T) {
 		{"template variable in listen", `http { server { listen 443 ssl ${H2}; location / { proxy_pass http://u; } } }`, Unknown, Unknown},
 		{"template variable in http2", `http { server { listen 443 ssl; http2 ${H2}; } }`, Unknown, Unknown},
 		{"no listen, not root", `http { server { http2 on; location / { proxy_pass http://u; } } }`, Cleartext, Exposed},
+		{"R4 variable listen address", `http { server { listen ${NGINX_LISTEN}; location / { proxy_pass http://u; } } }`, Unknown, Unknown},
+		{"R4 variable glued to the port", `http { server { listen 443${H2OPTS}; location / { proxy_pass http://u; } } }`, Unknown, Unknown},
+		{"R4 placeholder directive", `http { server { listen 443 ssl; ${EXTRA_SERVER_DIRECTIVES} } }`, Unknown, Unknown},
+		{"R4 placeholder in http", `http { ${EXTRA_HTTP}; server { listen 443 ssl; } }`, Unknown, Unknown},
+		{"R4 nginx variables elsewhere are fine", `http { server { listen 443 ssl; location / { proxy_pass http://$host; } } }`, NotExposed, NotExposed},
 		{"nested if", `http { server { listen 443 ssl http2; location / { if ($x) { fastcgi_pass unix:/s; } } } }`, Exposed, Exposed},
 	}
 	for _, c := range cases {

@@ -67,6 +67,7 @@ func Analyze(c *Config) Exposure {
 			e.Unread = append(e.Unread, msg)
 		}
 	}
+	placeholders(c.Root, unsettled, 0)
 	for _, d := range c.Root {
 		switch d.Name {
 		case "events":
@@ -203,7 +204,7 @@ func httpServers(h Directive, unsettled func(string)) []server {
 			switch {
 			case x.Name == "listen" && len(x.Args) > 0:
 				l := parseListen(x)
-				for _, a := range x.Args[1:] {
+				for _, a := range x.Args {
 					if strings.Contains(a, "$") {
 						unsettled(fmt.Sprintf("listen at %s has %q, which is decided where it runs", loc(x), a))
 					}
@@ -223,6 +224,23 @@ func httpServers(h Directive, unsettled func(string)) []server {
 		out = append(out, s)
 	}
 	return out
+}
+
+// placeholders reports a directive whose name is a variable (a template's
+// ${EXTRA_DIRECTIVES} left unset): what it stands for is decided where
+// the configuration runs.
+func placeholders(ds []Directive, unsettled func(string), depth int) {
+	if depth > maxDepth {
+		return
+	}
+	for _, d := range ds {
+		if strings.Contains(d.Name, "$") {
+			unsettled(fmt.Sprintf("%s at %s stands for directives decided where it runs", d.Name, loc(d)))
+		}
+		if d.HasBlock {
+			placeholders(d.Block, unsettled, depth+1)
+		}
+	}
 }
 
 func proxies(ds []Directive, out *[]string, depth int) {
