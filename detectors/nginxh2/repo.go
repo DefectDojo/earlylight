@@ -530,7 +530,11 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 				code = max(code, 1)
 				continue
 			}
-			ch, err := repo.Plan(ctx, dir, f, reg, repo.Options{})
+			freg := reg
+			if !o.Offline {
+				freg.Verify = d.verifier(verifyOptions(o, f))
+			}
+			ch, err := repo.Plan(ctx, dir, f, freg, repo.Options{})
 			if err != nil {
 				fmt.Fprintf(stdout, "not fixed  %s  %s\n           %s\n", where, repo.Printable(f.Message), repo.Printable(err.Error()))
 				code = max(code, 1)
@@ -547,6 +551,16 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 		}
 	}
 	return code
+}
+
+// verifyOptions are the options a tag move is verified with: a FROM
+// line's own --platform is the platform it builds, whatever the run's
+// --platform says.
+func verifyOptions(o engine.Options, f repo.Finding) engine.Options {
+	if f.Platform != "" && !strings.Contains(f.Platform, "$") {
+		o.Platforms = []string{f.Platform}
+	}
+	return o
 }
 
 func indent(s string) string {

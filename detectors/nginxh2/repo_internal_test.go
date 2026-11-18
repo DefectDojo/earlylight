@@ -95,3 +95,18 @@ func TestR3PulledDeployment(t *testing.T) {
 		t.Errorf("%+v", out)
 	}
 }
+
+// R8: a FROM line's own --platform is what fix verifies, whatever the
+// run's --platform says.
+func TestR8FromPlatform(t *testing.T) {
+	o := engine.Options{Platforms: []string{"linux/amd64", "linux/arm64"}}
+	if got := verifyOptions(o, repo.Finding{Platform: "linux/riscv64"}).Platforms; len(got) != 1 || got[0] != "linux/riscv64" {
+		t.Errorf("FROM --platform: %v", got)
+	}
+	if got := verifyOptions(o, repo.Finding{}).Platforms; len(got) != 2 {
+		t.Errorf("no FROM --platform: %v", got)
+	}
+	if got := verifyOptions(o, repo.Finding{Platform: "$BUILDPLATFORM"}).Platforms; len(got) != 2 {
+		t.Errorf("a variable platform: %v", got)
+	}
+}
