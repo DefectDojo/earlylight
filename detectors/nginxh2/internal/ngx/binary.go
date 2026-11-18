@@ -145,10 +145,10 @@ func (b *Binary) versionLines(data []byte) bool {
 		if parts := strings.Split(b.Version, "."); len(parts) == 4 {
 			b.Core = strings.Join(parts[:3], ".")
 		}
-	case b.Name == "nginx" && strings.Contains(strings.ToLower(b.Build), "nginx-plus"):
+	case b.Name == "nginx" && strings.Contains(asciiLower(b.Build), "nginx-plus"):
 		b.Product = Plus
 		b.Core = b.Version
-		low := strings.ToLower(b.Build)
+		low := asciiLower(b.Build) // same length as Build, so its indexes hold
 		i := strings.Index(low, "nginx-plus-")
 		if i >= 0 {
 			rel := b.Build[i+len("nginx-plus-"):]
@@ -164,6 +164,17 @@ func (b *Binary) versionLines(data []byte) bool {
 		b.Product = Other
 	}
 	return true
+}
+
+// asciiLower lowers ASCII letters only, keeping every byte where it is.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // lines returns each line that follows mark, in order.
