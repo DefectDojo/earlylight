@@ -349,92 +349,49 @@ func launcherVar(name string) bool {
 var shellControl = map[string]bool{"if": true, "then": true, "else": true, "elif": true, "fi": true, "case": true, "esac": true,
 	"for": true, "while": true, "until": true, "do": true, "done": true, "&&": true, "||": true, "{": true, "}": true, "function": true}
 
-// readSetenv reads a start script's settings file the way the script
-// uses it: only the variables the launcher passes to java count, the last
-// assignment wins ("$VAR ..." appends), and a file that sets one of them
-// under a condition, in a loop or in a function counts for nothing, since
-// which value java gets cannot be known without running it. Batch files
-// (setenv.bat) are read the same way with "set NAME=value" and %NAME%.
-func readSetenv(s *Setting, text string) {
-	vals := map[string]string{}
-	var order []string
-	depth := 0
-	uncertain := false
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
-		var name, value string
-		if s.WindowsOnly {
-			low := strings.ToLower(line)
-			if line == "" || strings.HasPrefix(low, "rem") && (len(low) == 3 || low[3] == ' ') || strings.HasPrefix(line, "::") || strings.HasPrefix(line, "@rem") {
-				continue
-			}
-			if strings.HasPrefix(low, "if ") || strings.HasPrefix(low, "for ") || strings.HasPrefix(low, "goto") || strings.HasPrefix(line, ":") || strings.Contains(line, "(") || strings.Contains(line, ")") {
-				for _, n := range append(append([]string{}, EnvVars...), ScriptVars...) {
-					if strings.Contains(line, n) {
-						uncertain = true
-					}
-				}
-				continue
-			}
-			m := batSetRE.FindStringSubmatch(line)
-			if m == nil {
-				continue
-			}
-			name = m[1]
-			value = batVarRE.ReplaceAllStringFunc(m[2], func(v string) string { return vals[strings.Trim(v, "%")] })
-		} else {
-			line = strings.TrimSpace(stripComment(line))
-			if line == "" {
-				continue
-			}
-			words := Words(line)
-			cond := depth > 0
-			for _, w := range words {
-				w = strings.TrimSuffix(w, ";")
-				if shellControl[w] {
-					cond = true
-				}
-				switch w {
-				case "if", "case", "for", "while", "until":
-					depth++
-				case "fi", "esac", "done":
-					if depth > 0 {
-						depth--
-					}
-				}
-			}
-			m := assignRE.FindStringSubmatch(line)
-			if m == nil {
-				if cond {
-					for _, n := range append(append([]string{}, EnvVars...), ScriptVars...) {
-						if strings.Contains(line, n+"=") {
-							uncertain = true
-						}
-					}
-				}
-				continue
-			}
-			if cond {
-				if launcherVar(m[1]) {
-					uncertain = true
-				}
-				continue
-			}
-			name = m[1]
-			value = strings.Join(Words(m[2]), " ")
-			value = shVarRE.ReplaceAllStringFunc(value, func(v string) string {
-				return vals[strings.Trim(v, "${}")]
-			})
-		}
-		if !launcherVar(name) {
-			continue
-		}
-		if _, seen := vals[name]; !seen {
-			order = append(order, name)
-		}
-		vals[name] = value
+// setenvVars are the variables a setenv file's launcher passes to java,
+// in the order the JVM sees them: the JVM's own JAVA_TOOL_OPTIONS and
+// JDK_JAVA_OPTIONS first, then catalina.sh's command line ($JAVA_OPTS then
+// $CATALINA_OPTS; Atlassian's setenv.sh puts JVM_SUPPORT_RECOMMENDED_ARGS
+// into CATALINA_OPTS), then _JAVA_OPTIONS, which overrides everything.
+func setenvVars(scope string) []string {
+	vars := []string{"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "JAVA_OPTS"}
+	if strings.Contains(scope, "/atlassian/") {
+		vars = append(vars, "JVM_SUPPORT_RECOMMENDED_ARGS")
 	}
-	if uncertain {
+	return append(vars, "CATALINA_OPTS", "_JAVA_OPTIONS")
+}
+
+// jvmEnvVar reports the variables the JVM reads itself: a shell script
+// must export them for java to see them.
+func jvmEnvVar(name string) bool {
+	return name == "JAVA_TOOL_OPTIONS" || name == "JDK_JAVA_OPTIONS" || name == "_JAVA_OPTIONS"
+}
+
+// readSetenv reads a start script's settings file the way the launcher
+// uses it: only the variables that launcher passes to java count (the
+// JVM's own variables only when exported), the last assignment wins
+// ("$VAR ..." appends, unset clears), and a file that sets, unsets or
+// exports one of them under a condition, in a loop, in a function or a
+// { } group counts for nothing, since which value java gets cannot be
+// known without running it. Heredoc text is skipped. What it does not
+// model (multi-line values, helper variables, sourced files) is not
+// counted, which leaves the runtime vulnerable. Batch files
+// (setenv.bat) are read with "set NAME=value" and %NAME%.
+func readSetenv(s *Setting, text string) {
+	wanted := map[string]bool{}
+	order := setenvVars(s.Scope)
+	for _, n := range order {
+		wanted[n] = true
+	}
+	var vals map[string]string
+	var ok bool
+	if s.WindowsOnly {
+		vals, ok = readBatch(text, wanted)
+	} else {
+		vals, ok = readShell(text, wanted)
+	}
+	if !ok {
 		return
 	}
 	for _, n := range order {
@@ -442,4 +399,214 @@ func readSetenv(s *Setting, text string) {
 			s.lines = append(s.lines, optLine{0, 0, w})
 		}
 	}
+}
+
+func readBatch(text string, wanted map[string]bool) (map[string]string, bool) {
+	vals := map[string]string{}
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		low := strings.ToLower(line)
+		if line == "" || strings.HasPrefix(low, "rem") && (len(low) == 3 || low[3] == ' ') || strings.HasPrefix(line, "::") || strings.HasPrefix(low, "@rem") {
+			continue
+		}
+		if strings.HasPrefix(low, "if ") || strings.HasPrefix(low, "for ") || strings.HasPrefix(low, "goto") || strings.HasPrefix(line, ":") || strings.ContainsAny(line, "()") {
+			for n := range wanted {
+				if strings.Contains(line, n) {
+					return nil, false
+				}
+			}
+			continue
+		}
+		m := batSetRE.FindStringSubmatch(line)
+		if m == nil || !wanted[m[1]] {
+			continue
+		}
+		vals[m[1]] = batVarRE.ReplaceAllStringFunc(m[2], func(v string) string { return vals[strings.Trim(v, "%")] })
+	}
+	return vals, true
+}
+
+var heredocRE = regexp.MustCompile(`<<(-?)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
+
+// shellCmd is one simple command of a line and whether it runs only
+// depending on another (after && or ||, or in a pipeline).
+type shellCmd struct {
+	text string
+	cond bool
+}
+
+// splitCommands splits a line on ; && || | & outside quotes.
+func splitCommands(line string) []shellCmd {
+	var out []shellCmd
+	var q byte
+	start, cond := 0, false
+	add := func(end int, next bool) {
+		out = append(out, shellCmd{strings.TrimSpace(line[start:end]), cond})
+		cond = next
+	}
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case q != 0:
+			if c == q {
+				q = 0
+			} else if c == '\\' && q == '"' {
+				i++
+			}
+		case c == '"' || c == '\'':
+			q = c
+		case c == '\\':
+			i++
+		case c == ';':
+			add(i, false)
+			start = i + 1
+		case c == '&' || c == '|':
+			two := i+1 < len(line) && line[i+1] == c
+			add(i, true)
+			if two {
+				i++
+			}
+			start = i + 1
+		}
+	}
+	add(len(line), false)
+	return out
+}
+
+func readShell(text string, wanted map[string]bool) (map[string]string, bool) {
+	vals := map[string]string{}
+	exported := map[string]bool{}
+	depth := 0
+	heredoc, dashed := "", false
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSuffix(raw, "\r")
+		if heredoc != "" {
+			end := line
+			if dashed {
+				end = strings.TrimLeft(end, "\t")
+			}
+			if end == heredoc {
+				heredoc = ""
+			}
+			continue
+		}
+		line = strings.TrimSpace(stripComment(line))
+		if line == "" {
+			continue
+		}
+		if m := heredocRE.FindStringSubmatch(line); m != nil {
+			heredoc, dashed = m[2], m[1] == "-"
+		}
+		for _, c := range splitCommands(line) {
+			words := Words(c.text)
+			if len(words) == 0 {
+				continue
+			}
+			// Leading keywords that start a block or a branch. A function
+			// header ("function f {", "f() {") opens one block, whose "{"
+			// may be on the same line.
+			fn := false
+			for len(words) > 0 {
+				switch words[0] {
+				case "function":
+					depth++
+					fn = true
+					words = words[1:]
+					if len(words) > 0 {
+						words = words[1:] // the name
+					}
+					continue
+				case "{":
+					if !fn {
+						depth++
+					}
+					fn = false
+					words = words[1:]
+					continue
+				case "if", "case", "for", "while", "until":
+					depth++
+					words = words[1:]
+					continue
+				case "then", "else", "elif", "do", "!":
+					words = words[1:]
+					continue
+				case "fi", "esac", "done", "}":
+					if depth > 0 {
+						depth--
+					}
+					words = words[1:]
+					continue
+				}
+				break
+			}
+			if len(words) > 0 && strings.HasSuffix(words[0], "()") {
+				depth++ // name() { ...: a function body
+				fn = true
+				words = words[1:]
+			}
+			if n := len(words); n > 0 && words[n-1] == "{" {
+				// "&& {" opens a group whose end is a "}" line; a function
+				// header's "{" belongs to the block it already opened.
+				if !fn {
+					depth++
+				}
+				words = words[:n-1]
+			}
+			if fn && len(words) == 1 && words[0] == "{" {
+				words = nil
+			}
+			if len(words) == 0 {
+				continue
+			}
+			cond := c.cond || depth > 0
+			touches := func(n string) bool { return wanted[n] }
+			switch words[0] {
+			case "unset", "export", "readonly", "declare", "local":
+				for _, w := range words[1:] {
+					name, value, assign := strings.Cut(w, "=")
+					if !touches(name) {
+						continue
+					}
+					if cond {
+						return nil, false
+					}
+					switch {
+					case words[0] == "unset":
+						delete(vals, name)
+						delete(exported, name)
+					case assign:
+						vals[name] = expand(value, vals)
+						exported[name] = words[0] == "export" || exported[name]
+					default:
+						exported[name] = exported[name] || words[0] == "export"
+					}
+				}
+				continue
+			}
+			m := assignRE.FindStringSubmatch(words[0])
+			if m == nil || !touches(m[1]) {
+				continue
+			}
+			if cond || len(words) > 1 {
+				// Under a condition, or a prefix assignment for one command
+				// (NAME=value cmd), which does not persist.
+				if !cond && len(words) > 1 {
+					continue
+				}
+				return nil, false
+			}
+			vals[m[1]] = expand(m[2], vals)
+		}
+	}
+	for n := range vals {
+		if jvmEnvVar(n) && !exported[n] {
+			delete(vals, n) // not exported: java does not see it
+		}
+	}
+	return vals, true
+}
+
+// expand substitutes $NAME and ${NAME} with the values set so far.
+func expand(v string, vals map[string]string) string {
+	return shVarRE.ReplaceAllStringFunc(v, func(x string) string { return vals[strings.Trim(x, "${}")] })
 }

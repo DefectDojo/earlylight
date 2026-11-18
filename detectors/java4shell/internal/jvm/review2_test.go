@@ -85,3 +85,44 @@ func FuzzParseRelease(f *testing.F) {
 		_ = r.JLinked()
 	})
 }
+
+// Round-2 finding 2: what the setenv.sh model still accepted.
+func TestSetenvModelRound2(t *testing.T) {
+	jira := "/opt/atlassian/jira/bin/setenv.sh"
+	tomcat := "/opt/tomcat/bin/setenv.sh"
+	for _, c := range []struct {
+		file, text string
+		want       bool
+	}{
+		{jira, "never_called() {\n  JVM_SUPPORT_RECOMMENDED_ARGS=\"-XX:-UseBASE64Intrinsics\"\n}\n", false},
+		{jira, "function f {\n  CATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\n}\n", false},
+		{jira, "[ \"$X\" = 1 ] && {\n  JVM_SUPPORT_RECOMMENDED_ARGS=\"-XX:-UseBASE64Intrinsics\"\n}\n", false},
+		{jira, "if [ -n \"$Y\" ]; then\n  echo done\n  JVM_SUPPORT_RECOMMENDED_ARGS=\"-XX:-UseBASE64Intrinsics\"\nfi\n", false},
+		{jira, "cat <<EOF\nJVM_SUPPORT_RECOMMENDED_ARGS=\"-XX:-UseBASE64Intrinsics\"\nEOF\n", false},
+		{tomcat, "JAVA_OPTS=\"-XX:-UseBASE64Intrinsics\"; JAVA_OPTS=\"-Xmx1g\"\n", false},
+		{tomcat, "JAVA_OPTS=\"-XX:-UseBASE64Intrinsics\"\nunset JAVA_OPTS\n", false},
+		{tomcat, "JAVA_TOOL_OPTIONS=\"-XX:-UseBASE64Intrinsics\"\n", false},
+		{jira, "SOLR_OPTS=\"-XX:-UseBASE64Intrinsics\"\n", false},
+		{tomcat, "JVM_SUPPORT_RECOMMENDED_ARGS=\"-XX:-UseBASE64Intrinsics\"\n", false},
+		// Launcher order: catalina.sh passes $JAVA_OPTS then $CATALINA_OPTS.
+		{tomcat, "CATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\nJAVA_OPTS=\"-XX:+UseBASE64Intrinsics\"\n", true},
+		{tomcat, "CATALINA_OPTS=\"-XX:+UseBASE64Intrinsics\"\nJAVA_OPTS=\"-XX:-UseBASE64Intrinsics\"\n", false},
+		// Still counted.
+		{tomcat, "export JAVA_TOOL_OPTIONS=\"-XX:-UseBASE64Intrinsics\"\n", true},
+		{tomcat, "JAVA_TOOL_OPTIONS=\"-XX:-UseBASE64Intrinsics\"\nexport JAVA_TOOL_OPTIONS\n", true},
+		{tomcat, "cat <<'EOF'\nignored\nEOF\nCATALINA_OPTS=\"$CATALINA_OPTS -XX:-UseBASE64Intrinsics\"\n", true},
+		{jira, "JVM_SUPPORT_RECOMMENDED_ARGS=\"-XX:-UseBASE64Intrinsics\"\n", true},
+		// After a function or group closes, assignments count again.
+		{tomcat, "f() {\n  echo hi\n}\nCATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\n", true},
+		{tomcat, "function g {\n  echo hi\n}\nCATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\n", true},
+		{tomcat, "[ -f x ] && {\n  echo hi\n}\nCATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\n", true},
+	} {
+		s, ok := ReadSetting(c.file, []byte(c.text))
+		if !ok {
+			t.Fatal("not read")
+		}
+		if m, _ := s.Options(21).Mitigates(); m != c.want {
+			t.Errorf("%s %q: %v, want %v", c.file, c.text, m, c.want)
+		}
+	}
+}
