@@ -406,7 +406,7 @@
     "linux/amd64",
     "/opt/atlassian/jira/jre",
     "bundled-runtime",
-    "inactive",
+    "vulnerable",
     "mitigated"
    ],
    [
@@ -473,7 +473,7 @@
     "linux/amd64",
     "/opt/java/openjdk",
     "runtime",
-    "inactive",
+    "vulnerable",
     "mitigated"
    ]
   ]
@@ -488,7 +488,7 @@
     "linux/amd64",
     "/opt/java/openjdk",
     "runtime",
-    "inactive",
+    "vulnerable",
     "mitigated"
    ]
   ]
@@ -518,7 +518,7 @@
     "linux/amd64",
     "/opt/java/openjdk",
     "runtime",
-    "inactive",
+    "vulnerable",
     "mitigated"
    ]
   ]
@@ -533,7 +533,7 @@
     "linux/amd64",
     "/opt/java/openjdk",
     "runtime",
-    "inactive",
+    "vulnerable",
     "mitigated"
    ]
   ]
@@ -609,7 +609,7 @@
    [
     "Dockerfile.pkg:2",
     "os-package",
-    "inactive"
+    "vulnerable"
    ],
    [
     "build.gradle.kts:3",
@@ -629,7 +629,7 @@
    [
     "compose.yaml:5",
     "image-pin",
-    "inactive"
+    "vulnerable"
    ],
    [
     "compose.yaml:13",

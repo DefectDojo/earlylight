@@ -83,8 +83,6 @@ func repoFinding(f repo.Finding) engine.Finding {
 	switch f.Status {
 	case repo.StatusUnknown:
 		v = engine.Unknown
-	case repo.StatusMitigated:
-		v = engine.Inactive
 	}
 	if reason == "" && v != engine.Vulnerable {
 		reason = "not decided"
@@ -92,6 +90,9 @@ func repoFinding(f repo.Finding) engine.Finding {
 	facts := map[string]string{}
 	for k, val := range f.Props {
 		facts[k] = val
+	}
+	if f.Status == repo.StatusMitigated {
+		facts["status"] = "mitigated" // still vulnerable: a fact, not a clearance
 	}
 	out := engine.Finding{Kind: f.Rule, Path: f.File, Line: f.Line, Verdict: v, Reason: reason, Message: f.Message, Method: "source",
 		Facts: facts, Fix: f.Fix, CVEs: []engine.CVEResult{{ID: knowledge.CVE, Verdict: v, Reason: reason}}}
@@ -139,10 +140,9 @@ func (d *Detector) pulled(dir string, f repo.Finding, o engine.Options, cache ma
 		g.Facts["image"], g.Facts["runtime"] = img, x.Path
 		g.Message = fmt.Sprintf("image %s: %s: %s", img, x.Path, x.Message)
 		if mit := f.Props["mitigation"]; mit != "" && x.Verdict == engine.Vulnerable {
-			g.Verdict = engine.Inactive
-			g.Reason = x.Reason + "; " + mit
-			g.Message += ", mitigated by its JVM options until it is updated"
-			g.CVEs = []engine.CVEResult{{ID: knowledge.CVE, Verdict: g.Verdict, Reason: g.Reason}}
+			// Still vulnerable: the options are a mitigation, recorded as a fact.
+			g.Facts["status"], g.Facts["mitigation"] = "mitigated", mit
+			g.Message += "; the deployment sets a mitigation until it is updated"
 		}
 		g.Fix = x.Fix + " Use a release of " + img + " built with the fix (or rebuild it), then redeploy."
 		out = append(out, g)
@@ -187,9 +187,6 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 				}
 				dummy := &engine.Target{}
 				for _, g := range d.pulled(dir, f, o, pulls, dummy) {
-					if g.Verdict == engine.Inactive {
-						continue
-					}
 					fmt.Fprintf(stdout, "not fixed  %s  %s\n           %s\n", where, repo.Printable(g.Message), repo.Printable(g.Fix))
 					if g.Facts["product"] != "" && f.Props["mitigation"] == "" && strings.HasSuffix(strings.ToLower(f.File), "dockerfile") {
 						fmt.Fprintf(stdout, "           optional interim mitigation (not applied):\n           %s\n", repo.Printable(repo.Mitigation(f.File, f.Line)))
@@ -198,7 +195,8 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 				}
 				continue
 			}
-			if f.Status == repo.StatusMitigated || f.Level == "note" && f.Rule != repo.RuleNotChecked {
+			// A mitigated pin still needs the update, so fix moves it too.
+			if f.Level == "note" && f.Rule != repo.RuleNotChecked && f.Status != repo.StatusMitigated {
 				continue
 			}
 			if f.Rule == repo.RuleNotChecked {

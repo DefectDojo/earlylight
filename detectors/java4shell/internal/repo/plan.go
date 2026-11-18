@@ -215,7 +215,7 @@ func planLine(ctx context.Context, root string, f Finding, file string, line, co
 		had[key(x)]++
 	}
 	for _, x := range after.Findings {
-		if x.File == f.File && x.Line == f.Line && x.Rule == f.Rule && x.Status != StatusMitigated {
+		if x.File == f.File && x.Line == f.Line && x.Rule == f.Rule {
 			return nil, declined("after the edit, line %d of %s still selects a release without the fix; change it by hand", f.Line, f.File)
 		}
 		if had[key(x)] == 0 && x.Level != "note" {

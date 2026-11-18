@@ -268,8 +268,10 @@ var verdicts = map[assess.Status]engine.Verdict{
 	assess.Vulnerable:  engine.Vulnerable,
 	assess.Fixed:       engine.Fixed,
 	assess.NotAffected: engine.Fixed,
-	assess.Mitigated:   engine.Inactive,
-	assess.Unknown:     engine.Unknown,
+	// Mitigated is not cleared: the options can be overridden where the
+	// runtime is deployed, and the runtime still needs the update.
+	assess.Mitigated: engine.Vulnerable,
+	assess.Unknown:   engine.Unknown,
 }
 
 func finding(x assess.Finding) engine.Finding {

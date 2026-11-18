@@ -78,7 +78,7 @@ func TestScanFS(t *testing.T) {
 	if f := fs["/opt/arm"]; f.Verdict != engine.Fixed || f.Facts["status"] != "not-affected" || !strings.Contains(f.Reason, "aarch64") {
 		t.Errorf("arm: %+v", f)
 	}
-	if f := fs["/opt/atlassian/confluence/jre"]; f.Kind != java4shell.KindBundled || f.Verdict != engine.Inactive || f.Facts["status"] != "mitigated" || f.Fix == "" {
+	if f := fs["/opt/atlassian/confluence/jre"]; f.Kind != java4shell.KindBundled || f.Verdict != engine.Vulnerable || f.Facts["status"] != "mitigated" || f.Fix == "" {
 		t.Errorf("confluence: %+v", f)
 	}
 	if code != 1 {

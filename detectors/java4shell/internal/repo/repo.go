@@ -740,7 +740,8 @@ func (s *scanner) dockerfile(rel, text string) {
 		for k := stageStart; k < len(s.findings); k++ {
 			f := &s.findings[k]
 			if f.File == rel && f.Rule == RulePackage && f.Status == StatusVulnerable {
-				f.Status, f.Level = StatusMitigated, "note"
+				f.Status = StatusMitigated
+				f.Props["mitigation"] = how
 				f.Reason += "; " + how
 				f.Message += ", mitigated by the stage's JVM options until it is updated"
 			}

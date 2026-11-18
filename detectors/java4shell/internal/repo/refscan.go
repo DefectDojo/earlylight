@@ -95,7 +95,7 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 		f.Fix = fmt.Sprintf("Java %d received no fix: move to a supported release with the fix, such as %s (a major upgrade: test it).", feature, knowledge.Upgrade(feature))
 	}
 	if mit != "" {
-		f.Status, f.Level = StatusMitigated, "note"
+		f.Status = StatusMitigated
 		f.Reason = why + "; " + mit
 		f.Message += ", mitigated by its JVM options until it is updated"
 	}
