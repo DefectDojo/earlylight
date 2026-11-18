@@ -22,8 +22,12 @@ type Source interface {
 // Limits on what one configuration can make the loader read.
 const (
 	MaxFiles = 4096
-	MaxBytes = 64 << 20
-	maxNest  = 32
+	MaxBytes = 16 << 20
+	// MaxTotalTokens bounds what every file of one configuration, each
+	// time it is included, makes the loader parse: one file included many
+	// times is parsed each time.
+	MaxTotalTokens = 2 << 20
+	maxNest        = 32
 )
 
 // Config is a loaded configuration.
@@ -41,6 +45,7 @@ type loader struct {
 	prefix string // the configuration prefix: the main file's directory
 	cfg    *Config
 	bytes  int
+	tokens int // left of MaxTotalTokens
 	stack  []string
 }
 
@@ -50,7 +55,7 @@ type loader struct {
 // itself, directly or not, is a loop nginx cannot load. extra are
 // directives given on the command line (-g), added to the main context.
 func Load(src Source, main string, extra []Directive) *Config {
-	l := &loader{src: src, prefix: path.Dir(main), cfg: &Config{Main: main}}
+	l := &loader{src: src, prefix: path.Dir(main), cfg: &Config{Main: main}, tokens: MaxTotalTokens}
 	root, ok := l.file(main, 0)
 	if !ok {
 		return l.cfg
@@ -93,7 +98,7 @@ func (l *loader) file(p string, nest int) ([]Directive, bool) {
 		return nil, false
 	}
 	l.cfg.Files = append(l.cfg.Files, p)
-	ds, err := Parse(p, string(data))
+	ds, err := parse(p, string(data), &l.tokens)
 	if err != nil {
 		l.unread("%s could not be parsed: %v", p, err)
 		return nil, false

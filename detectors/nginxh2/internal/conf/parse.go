@@ -44,6 +44,7 @@ type tokenizer struct {
 	i      int
 	line   int
 	tokens int
+	budget *int // tokens left across every file of one load; nil for none
 }
 
 // tok kinds
@@ -73,6 +74,12 @@ func (t *tokenizer) next() (token, error) {
 	t.tokens++
 	if t.tokens > maxTokens {
 		return token{}, t.errf("more than %d tokens", maxTokens)
+	}
+	if t.budget != nil {
+		if *t.budget <= 0 {
+			return token{}, t.errf("over the limit of %d tokens across all included files", MaxTotalTokens)
+		}
+		*t.budget--
 	}
 	for t.i < len(t.s) {
 		c := t.s[t.i]
@@ -189,7 +196,11 @@ func (t *tokenizer) word() (token, error) {
 // Parse reads one file's directives. Includes are left as directives; the
 // loader expands them.
 func Parse(file, text string) ([]Directive, error) {
-	t := &tokenizer{file: file, s: text, line: 1}
+	return parse(file, text, nil)
+}
+
+func parse(file, text string, budget *int) ([]Directive, error) {
+	t := &tokenizer{file: file, s: text, line: 1, budget: budget}
 	ds, end, err := parseBlock(t, 0)
 	if err != nil {
 		return nil, err

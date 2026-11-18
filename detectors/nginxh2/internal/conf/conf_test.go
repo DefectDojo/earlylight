@@ -237,3 +237,20 @@ func TestPortOf(t *testing.T) {
 		}
 	}
 }
+
+// Review 2, finding 7: what all includes together make the loader parse
+// is bounded; past the bound the answer is unknown.
+func TestR7TotalBudget(t *testing.T) {
+	big := strings.Repeat("a;\n", 300000) // 900 KB, 600k tokens
+	main := ""
+	for i := 0; i < 62; i++ {
+		main += "include /etc/nginx/big.conf;\n"
+	}
+	c := Load(mem{files: map[string]string{"/etc/nginx/nginx.conf": "http { " + main + " server { listen 80; } }", "/etc/nginx/big.conf": big}}, "/etc/nginx/nginx.conf", nil)
+	if !strings.Contains(strings.Join(c.Unread, " "), "limit") {
+		t.Fatalf("no limit reached: %d files, unread %v", len(c.Files), c.Unread)
+	}
+	if e := Analyze(c); e.Flow != Unknown {
+		t.Errorf("over the budget: %s", e.Flow)
+	}
+}
