@@ -45,7 +45,8 @@ type loader struct {
 	prefix string // the configuration prefix: the main file's directory
 	cfg    *Config
 	bytes  int
-	tokens int // left of MaxTotalTokens
+	tokens int  // left of MaxTotalTokens
+	spent  bool // a limit was reached: no further file is read
 	stack  []string
 }
 
@@ -83,8 +84,12 @@ func (l *loader) file(p string, nest int) ([]Directive, bool) {
 		l.unread("includes nested more than %d deep at %s", maxNest, p)
 		return nil, false
 	}
+	if l.spent {
+		return nil, false // recorded once, when the limit was reached
+	}
 	if len(l.cfg.Files) >= MaxFiles {
 		l.unread("more than %d configuration files; %s and later ones not read", MaxFiles, p)
+		l.spent = true
 		return nil, false
 	}
 	data, ok, why := l.src.Read(p)
@@ -94,13 +99,17 @@ func (l *loader) file(p string, nest int) ([]Directive, bool) {
 	}
 	l.bytes += len(data)
 	if l.bytes > MaxBytes {
-		l.unread("more than %d bytes of configuration; %s not read", MaxBytes, p)
+		l.unread("more than %d bytes of configuration; %s and later files not read", MaxBytes, p)
+		l.spent = true
 		return nil, false
 	}
 	l.cfg.Files = append(l.cfg.Files, p)
 	ds, err := parse(p, string(data), &l.tokens)
 	if err != nil {
 		l.unread("%s could not be parsed: %v", p, err)
+		if l.tokens <= 0 {
+			l.spent = true
+		}
 		return nil, false
 	}
 	l.stack = append(l.stack, p)

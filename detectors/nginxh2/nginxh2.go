@@ -876,6 +876,8 @@ type confSource struct {
 	// unread are the paths the walk recorded as not scanned, with why.
 	unread    map[string]string
 	unreadAll bool // more not-scanned records than kept: any path may be one
+	index     *globIndex
+	wildGlobs int
 	// virtual are files the image's entrypoint writes at start
 	// (templates), by the path they get.
 	virtual map[string][]byte
@@ -1005,6 +1007,72 @@ func (s *confSource) unreadAt(p string) (string, bool) {
 	return "", false
 }
 
+// globIndex is what Glob looks through, by directory: the files kept, the
+// virtual ones, the links, the not-scanned records and the files too large
+// to keep. It is built on the first glob.
+type globIndex struct {
+	files, unread, large map[string][]string
+	disk                 map[string]diskList
+}
+
+type diskList struct {
+	names []string // regular files and links
+	err   bool     // the directory could not be listed
+}
+
+// maxWildGlobs bounds the globs with a wildcard in their directory part,
+// which are matched against every path: past it a glob is not complete.
+const maxWildGlobs = 64
+
+func (s *confSource) idx() *globIndex {
+	if s.index != nil {
+		return s.index
+	}
+	x := &globIndex{files: map[string][]string{}, unread: map[string][]string{}, large: map[string][]string{}, disk: map[string]diskList{}}
+	for _, m := range []map[string][]byte{s.kept, s.virtual} {
+		for p := range m {
+			x.files[path.Dir(p)] = append(x.files[path.Dir(p)], p)
+		}
+	}
+	for _, m := range []map[string]string{s.links, s.hardlinks} {
+		for p := range m {
+			x.files[path.Dir(p)] = append(x.files[path.Dir(p)], p)
+		}
+	}
+	for p := range s.unread {
+		x.unread[path.Dir(p)] = append(x.unread[path.Dir(p)], p)
+	}
+	for p := range s.tooLarge {
+		x.large[path.Dir(p)] = append(x.large[path.Dir(p)], p)
+	}
+	s.index = x
+	return x
+}
+
+// diskDir lists a directory below the system root, once.
+func (s *confSource) diskDir(dir string) diskList {
+	x := s.idx()
+	if l, ok := x.disk[dir]; ok {
+		return l
+	}
+	var l diskList
+	if full, ok := s.diskPath(dir); ok {
+		ents, err := os.ReadDir(full)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			l.err = true
+		}
+		for _, e := range ents {
+			if e.Type().IsRegular() || e.Type()&fs.ModeSymlink != 0 {
+				l.names = append(l.names, e.Name())
+			}
+		}
+	} else {
+		l.err = true
+	}
+	x.disk[dir] = l
+	return l
+}
+
 func (s *confSource) Glob(pattern string) ([]string, bool) {
 	complete := !s.full
 	match := func(pat, p string) bool {
@@ -1022,49 +1090,63 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 			out = append(out, p)
 		}
 	}
-	for _, m := range []map[string][]byte{s.kept, s.virtual} {
-		for p := range m {
-			if match(pattern, p) {
-				add(p)
+	x := s.idx()
+	dir, base := path.Dir(pattern), path.Base(pattern)
+	if strings.ContainsAny(dir, "*?[") {
+		// A wildcard in the directory part: every path is a candidate, so
+		// only a few such globs are matched.
+		s.wildGlobs++
+		if s.wildGlobs > maxWildGlobs || s.root != "" {
+			return nil, false
+		}
+		for _, ps := range x.files {
+			for _, p := range ps {
+				if match(pattern, p) {
+					add(p)
+				}
 			}
 		}
+		prefix := dir[:strings.IndexAny(dir, "*?[")]
+		for _, ps := range x.unread {
+			for _, u := range ps {
+				if strings.HasPrefix(u, prefix) {
+					complete = false
+				}
+			}
+		}
+		for _, ps := range x.large {
+			for _, p := range ps {
+				if match(pattern, p) {
+					complete = false
+				}
+			}
+		}
+		if _, ok := s.unreadAt(prefix); ok || s.unreadAll {
+			complete = false
+		}
+		sort.Strings(out)
+		return out, complete && keptByAll(pattern)
 	}
-	// Symbolic links match too (sites-enabled/default ->
+	// Symbolic and hard links match too (sites-enabled/default ->
 	// ../sites-available/default); Read follows them, and one that leads
 	// nowhere the scan read is reported as not read.
-	for p := range s.links {
+	for _, p := range x.files[dir] {
 		if match(pattern, p) {
 			add(p)
 		}
 	}
-	for p := range s.hardlinks {
-		if match(pattern, p) {
-			add(p)
-		}
-	}
-	dir, base := path.Dir(pattern), path.Base(pattern)
-	wildDir := strings.ContainsAny(dir, "*?[")
 	resolved := pattern
-	if !wildDir {
+	switch r := s.resolve(dir); {
+	case r == "":
+		complete = false
+	case r != dir:
 		// A directory reached through a symbolic link: its target's files
 		// and links, under the linked name. Whether the list is complete
 		// is decided on the directory the files are really in.
-		switch r := s.resolve(dir); {
-		case r == "":
-			complete = false
-		case r != dir:
-			resolved = path.Join(r, base)
-			for _, m := range []map[string][]byte{s.kept, s.virtual} {
-				for p := range m {
-					if path.Dir(p) == r && match(base, path.Base(p)) {
-						add(path.Join(dir, path.Base(p)))
-					}
-				}
-			}
-			for p := range s.links {
-				if path.Dir(p) == r && match(base, path.Base(p)) {
-					add(path.Join(dir, path.Base(p)))
-				}
+		resolved = path.Join(r, base)
+		for _, p := range x.files[r] {
+			if match(base, path.Base(p)) {
+				add(path.Join(dir, path.Base(p)))
 			}
 		}
 	}
@@ -1073,18 +1155,18 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 	// may hold a match.
 	for _, pat := range []string{pattern, resolved} {
 		d := path.Dir(pat)
-		if s.unreadAll {
+		if _, ok := s.unreadAt(d); ok {
 			complete = false
 		}
-		for u := range s.unread {
-			if u == d || strings.HasPrefix(d, u+"/") || match(pat, u) || strings.ContainsAny(d, "*?[") && strings.HasPrefix(u, d[:strings.IndexAny(d, "*?[")]) {
+		for _, u := range x.unread[d] {
+			if match(pat, u) {
 				complete = false
 			}
 		}
-	}
-	for p := range s.tooLarge {
-		if match(pattern, p) || match(resolved, p) {
-			complete = false
+		for _, p := range x.large[d] {
+			if match(pat, p) {
+				complete = false
+			}
 		}
 	}
 	if s.root != "" {
@@ -1092,21 +1174,24 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 		// entry, symbolic links included (Read follows them inside the
 		// root). A directory that cannot be listed leaves the list
 		// incomplete; one that does not exist matches nothing, as for
-		// nginx.
-		complete = !s.full && !wildDir
-		if full, ok := s.diskPath(dir); ok {
-			ents, err := os.ReadDir(full)
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				complete = false
-			}
-			for _, e := range ents {
-				if match(base, e.Name()) && (e.Type().IsRegular() || e.Type()&fs.ModeSymlink != 0) {
-					add(path.Join(dir, e.Name()))
-				}
-			}
-		} else {
-			complete = false
+		// nginx. What the walk recorded as not read still counts.
+		diskComplete := !s.full
+		l := s.diskDir(dir)
+		if l.err {
+			diskComplete = false
 		}
+		for _, n := range l.names {
+			if match(base, n) {
+				add(path.Join(dir, n))
+			}
+		}
+		walkGap := false
+		for _, pat := range []string{pattern, resolved} {
+			if _, ok := s.unreadAt(path.Dir(pat)); ok {
+				walkGap = true
+			}
+		}
+		complete = diskComplete && !walkGap
 	}
 	sort.Strings(out)
 	return out, complete

@@ -3,7 +3,9 @@ package nginxh2
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/ngxtest"
 	"github.com/DefectDojo/earlylight/internal/engine"
@@ -140,5 +142,21 @@ func TestV2SystemdUnreadable(t *testing.T) {
 		if f := find(tg, KindFlow, "/usr/sbin/nginx"); f == nil || f.Facts["exposure"] != "unknown" {
 			t.Errorf("%s unreadable: %+v", p, f)
 		}
+	}
+}
+
+// V7: glob includes do not each walk every link of the target.
+func TestV7GlobWork(t *testing.T) {
+	links := map[string]string{}
+	for i := 0; i < 30000; i++ {
+		links["/usr/share/x/l"+strconv.Itoa(i)] = "/elsewhere"
+	}
+	s := &confSource{kept: map[string][]byte{"/etc/nginx/conf.d/a.conf": []byte("x")}, links: links}
+	start := time.Now()
+	for i := 0; i < 2000; i++ {
+		s.Glob("/etc/nginx/conf.d/*.conf")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("2,000 globs over 30,000 links took %s", d)
 	}
 }

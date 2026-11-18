@@ -262,3 +262,29 @@ func TestR7TotalBudget(t *testing.T) {
 		t.Errorf("over the budget: %s", e.Flow)
 	}
 }
+
+// counting is a Source that counts reads.
+type counting struct {
+	mem
+	reads int
+}
+
+func (c *counting) Read(p string) ([]byte, bool, string) {
+	c.reads++
+	return c.mem.Read(p)
+}
+
+// Verification 7: once the loader's budget is spent, it reads no further
+// includes.
+func TestV7StopsReading(t *testing.T) {
+	big := strings.Repeat("# comment line to fill bytes\n", 150000) // ~4.3 MB
+	main := strings.Repeat("include /etc/nginx/big.conf;\n", 20000)
+	c := &counting{mem: mem{files: map[string]string{"/etc/nginx/nginx.conf": main, "/etc/nginx/big.conf": big}}}
+	cfg := Load(c, "/etc/nginx/nginx.conf", nil)
+	if c.reads > 10 {
+		t.Errorf("%d files read after the byte budget was spent", c.reads)
+	}
+	if e := Analyze(cfg); e.Flow != Unknown {
+		t.Errorf("over the budget: %s", e.Flow)
+	}
+}
