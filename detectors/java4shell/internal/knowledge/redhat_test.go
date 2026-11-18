@@ -76,3 +76,27 @@ func TestRPMUpstream(t *testing.T) {
 		}
 	}
 }
+
+func FuzzRPM(f *testing.F) {
+	for _, s := range [][2]string{{"1:17.0.21.0.9-1.el9_6", "17.0.21.0.9-2.el9"}, {"1.0~rc1-1", "1.0a-1"}, {"22.3.1", "17"}} {
+		f.Add(s[0], s[1])
+	}
+	f.Fuzz(func(t *testing.T, a, b string) {
+		if len(a) > 256 || len(b) > 256 {
+			return
+		}
+		if c := CompareRPM(a, a); c != 0 {
+			t.Fatalf("CompareRPM(%q, itself) = %d", a, c)
+		}
+		if x, y := CompareRPM(a, b), CompareRPM(b, a); x != -y {
+			t.Fatalf("CompareRPM(%q, %q) = %d but reversed %d", a, b, x, y)
+		}
+		_ = RPMUpstream(a)
+		if st, why, known := JudgeRedHat("java-17-openjdk-headless", a); known && (st == "" || why == "") {
+			t.Fatalf("JudgeRedHat(%q) gave no verdict or reason", a)
+		}
+		if st, why := JudgeGraalVMRelease(a, len(b)%40); st == "" || why == "" {
+			t.Fatalf("JudgeGraalVMRelease(%q) gave no verdict or reason", a)
+		}
+	})
+}
