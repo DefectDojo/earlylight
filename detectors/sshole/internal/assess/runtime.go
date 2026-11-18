@@ -147,7 +147,7 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 		// The first is the program the command runs; a later one is an
 		// argument to it, which may or may not run (arg).
 		c := s.Command
-		program := false
+		program, operand := false, false
 		for i, w := range c {
 			n := len(out)
 			if isShell(path.Base(w)) {
@@ -156,11 +156,30 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 						out = append(out, script{where: "the container command", text: c[j+1]})
 						break
 					}
+					// The shell's options end at its first operand, the
+					// script it runs: a -c after that is the script's
+					// argument, or another shell's.
+					if o := c[j]; !isOption(o) && !isShell(path.Base(o)) {
+						if j > i+1 && shellOptionValue[c[j-1]] {
+							continue
+						}
+						break
+					}
 				}
+			}
+			// A shell looks for a script named without a slash in the
+			// working directory first, which the scan does not know: the
+			// one found on PATH may not be the one that runs. And a word
+			// after an option may be that option's value (env -u NAME),
+			// not the program. Either is judged as an argument is: with
+			// the others, never alone.
+			unsure := !strings.HasPrefix(w, "/") && (operand && !strings.Contains(w, "/") || i > 0 && isOption(c[i-1]) && c[i-1] != "--")
+			if !isOption(w) {
+				operand = isShell(path.Base(w)) && !program
 			}
 			add(w)
 			for k := n; k < len(out); k++ {
-				out[k].arg = program
+				out[k].arg = program || unsure && out[k].where != "the container command"
 			}
 			// The program is the first word that is not a wrapper, a shell,
 			// one of their options or an assignment, whether or not it is
@@ -213,7 +232,7 @@ func beforeProgram(c []string, i int) bool {
 	case "tini", "dumb-init", "su-exec", "gosu", "env", "exec", "catatonit":
 		return true
 	}
-	if isShell(b) || strings.HasPrefix(w, "-") || strings.Contains(w, "=") && !strings.Contains(w, "/") {
+	if isShell(b) || strings.HasPrefix(w, "-") || assignmentRE.MatchString(w) && !strings.Contains(w, "/") {
 		return true
 	}
 	if i > 0 {
@@ -224,6 +243,17 @@ func beforeProgram(c []string, i int) bool {
 	}
 	return false
 }
+
+// assignmentRE is a NAME=value word before a program (env A=1 prog). A
+// shell text that merely holds "=" (sshd -o LogLevel=DEBUG) is not one.
+var assignmentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+
+// isOption reports whether a command word is an option (-e, +x, --).
+func isOption(w string) bool { return strings.HasPrefix(w, "-") || strings.HasPrefix(w, "+") }
+
+// shellOptionValue holds the shell options that take the next word as
+// their value: that word is not the script the shell runs.
+var shellOptionValue = map[string]bool{"-o": true, "+o": true, "-O": true, "+O": true, "--rcfile": true, "--init-file": true}
 
 var absPathRE = regexp.MustCompile(`/[A-Za-z0-9_./-]+`)
 
