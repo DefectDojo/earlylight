@@ -186,6 +186,16 @@ type Reader interface {
 	Wants(path string, head []byte, executable bool) bool
 }
 
+// SkipVisitor is implemented by a Scan whose verdicts must not rest on a
+// file's absence. Before Finish it is given every file and directory the
+// walk recorded as not scanned (unreadable, a directory that could not be
+// listed, over --max-file-size, a file a detector failed on), with paths
+// inside the system root. Deliberate exclusions (pseudo-filesystems,
+// container storage) are left out.
+type SkipVisitor interface {
+	VisitSkips(skips []Skip)
+}
+
 // ErrNotApplicable is what a Prober returns when the address does not run
 // the service it checks (no SSH server where a TLS check was asked for). The
 // host scan skips that detector, and fails only when every detector did.

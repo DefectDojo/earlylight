@@ -301,6 +301,7 @@ func (w *walker) visitSafely(i int, s Scan, f File) (skips []Skip) {
 
 func (w *walker) finish() {
 	for i, s := range w.scans {
+		w.visitSkips(i, s)
 		fs, err := finishSafely(s, w.ctx)
 		if err != nil {
 			w.t.Error = fmt.Sprintf("detector %s failed: %v", w.dets[i].Manifest().ID, err)
@@ -308,6 +309,33 @@ func (w *walker) finish() {
 		}
 		w.t.Findings = append(w.t.Findings, check(w.dets[i].Manifest().ID, fs)...)
 	}
+}
+
+// visitSkips gives a SkipVisitor the walk's coverage gaps. The walk
+// records paths below the directory it started at; archive members carry
+// their outer file's full path already.
+func (w *walker) visitSkips(i int, s Scan) {
+	sv, ok := s.(SkipVisitor)
+	if !ok {
+		return
+	}
+	var skips []Skip
+	for _, sk := range w.t.Skipped {
+		if sk.Excluded || strings.HasPrefix(sk.Reason, "excluded:") {
+			continue
+		}
+		p := sk.Path
+		if !strings.Contains(p, "!/") {
+			p = w.abs(p)
+		}
+		skips = append(skips, Skip{Path: p, Reason: sk.Reason})
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			w.t.Problems = append(w.t.Problems, fmt.Sprintf("detector %s failed reading the files not scanned (%v)", w.dets[i].Manifest().ID, r))
+		}
+	}()
+	sv.VisitSkips(skips)
 }
 
 func finishSafely(s Scan, ctx TargetContext) (fs []Finding, err error) {

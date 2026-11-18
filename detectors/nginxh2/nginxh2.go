@@ -223,6 +223,8 @@ type scan struct {
 	confFull  bool            // the limit on configuration files was reached
 	tooLarge  map[string]bool // configuration files over maxConf, not kept
 	db        map[string][]byte
+	unread    map[string]string
+	unreadAll bool
 	dbBytes   int
 	ingress   bool
 	f5ingress bool
@@ -275,6 +277,24 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 	return nil
 }
 
+// maxUnread bounds the not-scanned records kept.
+const maxUnread = 1 << 16
+
+// VisitSkips records what the walk could not read: a configuration file
+// among them leaves exposure unknown, never off.
+func (s *scan) VisitSkips(skips []engine.Skip) {
+	if s.unread == nil {
+		s.unread = map[string]string{}
+	}
+	for _, sk := range skips {
+		if len(s.unread) >= maxUnread {
+			s.unreadAll = true
+			return
+		}
+		s.unread[path.Clean("/"+sk.Path)] = sk.Reason
+	}
+}
+
 func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	if len(s.binaries) == 0 {
 		return nil
@@ -283,7 +303,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		ctx.Problem("nginxh2: more nginx binaries than the detector's limit; some were not checked")
 	}
 	links, _ := ctx.Links()
-	src := &confSource{kept: s.conf, full: s.confFull, tooLarge: s.tooLarge, root: ctx.SystemRoot(), links: links}
+	src := &confSource{kept: s.conf, full: s.confFull, tooLarge: s.tooLarge, root: ctx.SystemRoot(), links: links, unread: s.unread, unreadAll: s.unreadAll}
 	if s.kind == engine.Image && s.db["/docker-entrypoint.d/20-envsubst-on-templates.sh"] != nil {
 		src.templates(ctx.Env())
 	}
@@ -454,6 +474,9 @@ type confSource struct {
 	tooLarge map[string]bool
 	root     string
 	links    map[string]string
+	// unread are the paths the walk recorded as not scanned, with why.
+	unread    map[string]string
+	unreadAll bool // more not-scanned records than kept: any path may be one
 	// virtual are files the image's entrypoint writes at start
 	// (templates), by the path they get.
 	virtual map[string][]byte
@@ -552,6 +575,9 @@ func (s *confSource) Read(p string) ([]byte, bool, string) {
 			return b, true, ""
 		}
 	}
+	if why, ok := s.unreadAt(r); ok {
+		return nil, false, "not scanned: " + why
+	}
 	switch {
 	case s.tooLarge[r]:
 		return nil, false, fmt.Sprintf("larger than the %d bytes the detector reads of a configuration file", maxConf)
@@ -561,6 +587,20 @@ func (s *confSource) Read(p string) ([]byte, bool, string) {
 		return nil, false, "not a file the scan reads as configuration, or not in the target"
 	}
 	return nil, false, "not in the target, or not readable"
+}
+
+// unreadAt reports a path, or a directory above it, the walk could not
+// read.
+func (s *confSource) unreadAt(p string) (string, bool) {
+	for q := p; q != "/" && q != "."; q = path.Dir(q) {
+		if why, ok := s.unread[q]; ok {
+			return why, true
+		}
+	}
+	if s.unreadAll {
+		return "more files were not scanned than the detector keeps a record of", true
+	}
+	return "", false
 }
 
 func (s *confSource) Glob(pattern string) ([]string, bool) {
@@ -622,6 +662,19 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 		}
 	}
 	complete = complete && keptByAll(pattern) && keptByAll(resolved)
+	// A file or directory the walk could not read where the pattern looks
+	// may hold a match.
+	for _, pat := range []string{pattern, resolved} {
+		d := path.Dir(pat)
+		if s.unreadAll {
+			complete = false
+		}
+		for u := range s.unread {
+			if u == d || strings.HasPrefix(d, u+"/") || match(pat, u) || strings.ContainsAny(d, "*?[") && strings.HasPrefix(u, d[:strings.IndexAny(d, "*?[")]) {
+				complete = false
+			}
+		}
+	}
 	for p := range s.tooLarge {
 		if match(pattern, p) || match(resolved, p) {
 			complete = false
