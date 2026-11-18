@@ -41,9 +41,10 @@ func TestReviewRepo(t *testing.T) {
 		t.Error("CorrettoJava")
 	}
 
-	// setup-java early access is not judged or rewritten.
+	// setup-java early access is not judged or rewritten: it is not
+	// checked (final review B6: said, not passed in silence).
 	root = tree(t, map[string]string{".github/workflows/a.yml": "jobs:\n  a:\n    steps:\n      - uses: actions/setup-java@v4\n        with:\n          distribution: corretto\n          java-version: '21.0.13-ea'\n"})
-	if res := scan(t, root); len(res.Findings) != 0 {
+	if res := scan(t, root); len(res.Findings) != 1 || res.Findings[0].Rule != RuleNotChecked || res.Findings[0].Fixable {
 		t.Errorf("early access: %+v", res.Findings)
 	}
 

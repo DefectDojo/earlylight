@@ -263,9 +263,14 @@ func kindOf(rel string) string {
 		return "sdkmanrc"
 	case lower == ".tool-versions":
 		return "tool-versions"
-	case lower == "mise.toml" || lower == ".mise.toml" || lower == "mise.local.toml" || lower == ".rtx.toml":
+	case lower == "mise.toml" || lower == ".mise.toml" || lower == ".rtx.toml",
+		strings.HasSuffix(lower, ".toml") && (strings.HasPrefix(lower, "mise.") || strings.HasPrefix(lower, ".mise.")),
+		lower == "config.toml" && (path.Base(path.Dir(rel)) == "mise" || path.Base(path.Dir(rel)) == ".mise"):
+		// mise.toml, mise.local.toml, mise.<env>.toml, .mise/config.toml,
+		// mise/config.toml, .config/mise/config.toml.
 		return "mise"
-	case strings.HasPrefix(rel, ".github/workflows/") && (strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml")):
+	case strings.HasPrefix(rel, ".github/workflows/") && (strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml")),
+		lower == "action.yml" || lower == "action.yaml": // a composite action's steps
 		return "workflow"
 	case lower == "build.gradle" || lower == "build.gradle.kts" || lower == "settings.gradle" || lower == "settings.gradle.kts" || lower == "gradle.properties":
 		return "gradle"
@@ -412,9 +417,10 @@ func (s *scanner) judgeVersion(rel string, line int, ga bool, verText, source, v
 			s.add(Finding{Rule: RuleLine, File: rel, Line: line, Level: "error", Status: StatusVulnerable, Reason: l.Note,
 				Message: fmt.Sprintf("%s selects Java %s, a line that received no Java4Shell fix", source, verText),
 				Fix:     pinFix(tv.Nums[0], source), Props: props})
-		} else if tv.Exact {
+		} else if tv.Exact || tv.EA {
 			// A pinned release the data does not settle (17.0.22, a later
-			// update): not checked, as an image tag of it is.
+			// update), or a pre-release: not checked, as an image tag of
+			// it is.
 			s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown, Reason: why,
 				Message: fmt.Sprintf("%s selects Java %s: not checked for the Java4Shell fix", source, verText),
 				Fix:     fmt.Sprintf("Check that Java %s includes %s.", verText, knowledge.BugRef), Props: props})
@@ -433,24 +439,47 @@ func pinFix(feature int, source string) string {
 	return fmt.Sprintf("Java %d received no fix: move %s to a supported release with the fix, such as %s.", feature, source, knowledge.Upgrade(feature))
 }
 
+// unread reports a value that selects a Java release in a form this scan
+// does not read: not checked, never passed in silence.
+func (s *scanner) unread(rel string, line int, value, source string) {
+	s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown,
+		Reason:  "the value selects a Java release in a form this scan does not read",
+		Message: fmt.Sprintf("%s selects %s, which this scan cannot read as a Java release: not checked for the Java4Shell fix", source, refs.CleanText(value, 80)),
+		Fix:     "Check which Java release this selects: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update have the fix.",
+		Props:   map[string]string{"source": source, "current": refs.CleanText(value, 80)}})
+}
+
+// versionMarker is a pre-release or self-built marker after a version.
+var versionMarker = regexp.MustCompile(`(?i)-(?:ea|beta|rc|internal|snapshot)|adhoc`)
+
 func (s *scanner) javaVersionFile(rel, text string) {
 	for i, l := range lines(text) {
-		l = strings.TrimSpace(l)
+		l = strings.TrimSpace(strings.TrimPrefix(l, "\ufeff"))
 		if l == "" || strings.HasPrefix(l, "#") {
 			continue
 		}
 		// jenv names: temurin64-21.0.13, openjdk64-17.0.21, 21.0.13.
 		idx := jenvName.FindStringSubmatchIndex(l)
 		if idx == nil {
+			s.unread(rel, i+1, l, ".java-version")
 			return
 		}
 		m := jenvName.FindStringSubmatch(l)
-		ver := m[2]
+		ver, rest := m[2], l[idx[5]:]
 		if strings.HasPrefix(strings.ToLower(m[1]), "corretto") {
 			ver = CorrettoJava(ver)
 		}
-		ver += plusBuild(l[idx[5]:])
-		s.judgeVersion(rel, i+1, false, ver, ".java-version", vendorWord(l))
+		pre, build := versionMarker.MatchString(rest), plusBuild(rest)
+		if strings.Count(ver, ".") < 2 && !pre && build == "" {
+			// 21, 21.0: whichever release of the line is installed.
+			feature, _, _ := strings.Cut(ver, ".")
+			s.movingPin(rel, i+1, atoi(feature), strings.ToLower(m[1]), l, ".java-version")
+			return
+		}
+		if pre {
+			ver += "-ea" // never the release itself
+		}
+		s.judgeVersion(rel, i+1, false, ver+build, ".java-version", vendorWord(l))
 		return // jenv reads the first line
 	}
 }
@@ -475,8 +504,19 @@ var sdkmanVendors = map[string]string{"tem": "Eclipse Temurin", "amzn": "Amazon 
 
 func (s *scanner) sdkmanrc(rel, text string) {
 	for i, l := range lines(text) {
+		// java=21.0.13-tem, also quoted and with a comment after it.
+		if c := strings.Index(l, "#"); c >= 0 {
+			l = l[:c]
+		}
+		key, val, ok := strings.Cut(l, "=")
+		if !ok || strings.TrimSpace(key) != "java" {
+			continue
+		}
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		l = "java=" + val
 		m := sdkmanLine.FindStringSubmatch(l)
 		if m == nil {
+			s.unread(rel, i+1, val, ".sdkmanrc")
 			continue
 		}
 		vendor := sdkmanVendors[m[2]]
@@ -510,6 +550,9 @@ var asdfJava = regexp.MustCompile(`^(?:(adoptopenjdk|temurin|corretto|openjdk|sa
 func (s *scanner) asdfValue(rel string, line int, value, source string, mise bool) {
 	m := asdfJava.FindStringSubmatch(value)
 	if m == nil {
+		// A vendor or form no reader here knows (liberica-nik-23.1.5,
+		// latest, prefix:21): it still selects a Java.
+		s.unread(rel, line, value, source)
 		return
 	}
 	switch m[1] {
@@ -674,12 +717,52 @@ func (s *scanner) toolVersions(rel, text string) {
 	}
 }
 
-var miseJava = regexp.MustCompile(`^\s*java\s*=\s*["']([^"']+)["']`)
+var (
+	miseQuoted  = regexp.MustCompile(`["']([^"']*)["']`)
+	miseVersion = regexp.MustCompile(`\bversion\s*=\s*["']([^"']*)["']`)
+)
 
+// mise reads the java tool of a mise file: java = "temurin-21", an array
+// of versions, a table with a version, a quoted key, and [tools.java] with
+// version = "...". A value in any other form is not checked.
 func (s *scanner) mise(rel, text string) {
+	section := ""
 	for i, l := range lines(text) {
-		if m := miseJava.FindStringSubmatch(l); m != nil {
-			s.asdfValue(rel, i+1, m[1], path.Base(rel), true)
+		t := strings.TrimSpace(l)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if strings.HasPrefix(t, "[") {
+			section = strings.NewReplacer("[", "", "]", "", `"`, "", "'", "", " ", "").Replace(t)
+			continue
+		}
+		key, val, ok := strings.Cut(t, "=")
+		if !ok {
+			continue
+		}
+		key, val = strings.Trim(strings.TrimSpace(key), `"'`), strings.TrimSpace(val)
+		var values []string
+		switch {
+		case key == "java" && strings.HasPrefix(val, "{"):
+			if m := miseVersion.FindStringSubmatch(val); m != nil {
+				values = []string{m[1]}
+			}
+		case key == "java" && strings.HasPrefix(val, "["):
+			for _, m := range miseQuoted.FindAllStringSubmatch(val, 16) {
+				values = append(values, m[1])
+			}
+		case key == "java", key == "version" && section == "tools.java":
+			if m := miseQuoted.FindStringSubmatch(val); m != nil && strings.HasPrefix(val, m[0]) {
+				values = []string{m[1]}
+			}
+		default:
+			continue
+		}
+		if len(values) == 0 {
+			s.unread(rel, i+1, val, path.Base(rel))
+		}
+		for _, v := range values {
+			s.asdfValue(rel, i+1, v, path.Base(rel), true)
 		}
 	}
 }
@@ -712,21 +795,47 @@ func (s *scanner) workflow(rel string, b []byte) {
 		return
 	}
 	text := lines(string(b))
+	note := func(line int, reason, msg string) {
+		s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown, Reason: reason, Message: msg,
+			Fix: "Check which Java release the step installs: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update have the fix."})
+	}
 	walkYAML(&doc, 0, func(m *yaml.Node) {
-		uses := mapGet(m, "uses")
-		if uses == nil || !strings.HasPrefix(uses.Value, "actions/setup-java@") {
+		// GitHub reads the action's name without regard to case.
+		uses := deref(mapGet(m, "uses"))
+		if uses == nil || !strings.HasPrefix(strings.ToLower(uses.Value), "actions/setup-java@") {
 			return
 		}
-		with := mapGet(m, "with")
-		if with == nil {
-			return
-		}
+		with := deref(mapGet(m, "with"))
 		dist := ""
-		if d := mapGet(with, "distribution"); d != nil {
-			dist = d.Value
+		if d := deref(mapGet(with, "distribution")); d != nil {
+			dist = strings.ToLower(d.Value)
+		}
+		if dist == "semeru" {
+			return // OpenJ9
 		}
 		jv := mapGet(with, "java-version")
 		if jv == nil {
+			// The version comes from a file, or from nowhere this scan sees.
+			if f := deref(mapGet(with, "java-version-file")); f != nil {
+				switch strings.ToLower(path.Base(f.Value)) {
+				case ".java-version", ".tool-versions", ".sdkmanrc":
+					return // read where it lies
+				}
+				note(f.Line, "the step reads the Java version from a file this scan does not read for it",
+					fmt.Sprintf("setup-java takes the Java version from %s; check that it selects a release with the Java4Shell fix", refs.CleanText(f.Value, 80)))
+				return
+			}
+			note(uses.Line, "the step names no java-version this scan can read", "setup-java without a java-version here: not checked for the Java4Shell fix")
+			return
+		}
+		if jv.Kind == yaml.AliasNode && jv.Alias != nil {
+			// The value an anchor gives, at the line that uses it; the
+			// anchor marks it as shared (not edited).
+			jv = &yaml.Node{Kind: jv.Alias.Kind, Value: jv.Alias.Value, Line: jv.Line, Anchor: jv.Alias.Anchor}
+		}
+		if dist == "jdkfile" {
+			note(jv.Line, "the step installs a JDK archive the workflow supplies; java-version is only its label",
+				"setup-java installs a JDK from a file (distribution jdkfile): not checked for the Java4Shell fix")
 			return
 		}
 		vals := []*yaml.Node{jv}
@@ -738,6 +847,7 @@ func (s *scanner) workflow(rel string, b []byte) {
 		}
 		for _, v := range vals {
 			if v.Kind != yaml.ScalarNode {
+				note(v.Line, "java-version is not a single value", "setup-java's java-version is not a value this scan reads: not checked for the Java4Shell fix")
 				continue
 			}
 			if strings.Contains(v.Value, "${{") {
@@ -753,12 +863,22 @@ func (s *scanner) workflow(rel string, b []byte) {
 
 func (s *scanner) setupJava(rel string, v *yaml.Node, dist string, text []string) {
 	ver := strings.TrimSpace(v.Value)
-	if strings.HasSuffix(ver, "-ea") {
-		return // an early-access build: not a release this data judges
+	if ea := strings.TrimSuffix(ver, "-ea"); ea != ver {
+		// An early-access build: of a line with the decoder, it is not a
+		// release this data judges, and never the release itself.
+		if n := atoi(versionInText.FindString(strings.SplitN(ea, ".", 2)[0])); n >= 17 {
+			s.add(Finding{Rule: RuleNotChecked, File: rel, Line: v.Line, Level: "note", Status: StatusUnknown,
+				Reason:  "an early-access build is not a release, and which build is installed is decided when the job runs",
+				Message: fmt.Sprintf("setup-java's java-version %q is an early-access build: not checked for the Java4Shell fix", refs.CleanText(ver, 80)),
+				Fix:     "Use a release with the fix: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update."})
+		}
+		return
 	}
 	ver = strings.TrimSuffix(ver, ".x")
 	m := versionInText.FindString(ver)
 	if m == "" || m != ver && !strings.HasPrefix(ver, m+"+") {
+		// A range (>=17, ^17.0.6, ~21.0.5) or another form.
+		s.unread(rel, v.Line, ver, "actions/setup-java")
 		return
 	}
 	if dist == "semeru" {
@@ -783,7 +903,7 @@ func (s *scanner) setupJava(rel string, v *yaml.Node, dist string, text []string
 	if f.Rule == RuleJavaPin && publishedFix[dist] && v.Line >= 1 && v.Line <= len(text) {
 		line := text[v.Line-1]
 		col := strings.Index(line, ver)
-		if col >= 0 && strings.Count(line, ver) == 1 {
+		if col >= 0 && strings.Count(line, ver) == 1 && v.Anchor == "" {
 			f.Fixable = true
 			f.edit = &pinEdit{file: rel, line: v.Line, col: col, old: ver, kind: "setup-java", feature: feature}
 			f.Fix = fmt.Sprintf("Set java-version to %d: %s's newest Java %d release has the fix (%s), and setup-java installs it.", feature, dist, feature, knowledge.FixedVersion(feature))
@@ -1775,6 +1895,14 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 }
 
 // ---- YAML helpers
+
+// deref follows a YAML alias to the node its anchor names.
+func deref(n *yaml.Node) *yaml.Node {
+	if n != nil && n.Kind == yaml.AliasNode && n.Alias != nil {
+		return n.Alias
+	}
+	return n
+}
 
 func walkYAML(n *yaml.Node, depth int, fn func(m *yaml.Node)) {
 	if n == nil || depth > 64 {

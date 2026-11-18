@@ -146,3 +146,84 @@ func TestRpmVirtualNames(t *testing.T) {
 		}
 	}
 }
+
+// Final review B6: a version file selects a Java release, so a value this
+// scan does not read is not checked, never passed in silence; a
+// pre-release is never taken as the release.
+func TestVersionFilesSayNotChecked(t *testing.T) {
+	const nc = " not-checked unknown"
+	for name, c := range map[string]struct{ file, body, want string }{
+		"java-version pre-release of the fix": {".java-version", "27.0.1.1-ea+1\n", ".java-version:1"},
+		"java-version beta":                   {".java-version", "21.0.13.1-beta+1\n", ".java-version:1"},
+		"java-version internal":               {".java-version", "openjdk-21.0.13.1-internal\n", ".java-version:1"},
+		"java-version short":                  {".java-version", "21\n", ".java-version:1"},
+		"java-version two numbers":            {".java-version", "21.0\n", ".java-version:1"},
+		"java-version with a BOM":             {".java-version", "\xef\xbb\xbf21.0.13\n", ".java-version:1 java-pin vulnerable"},
+		"java-version with a v":               {".java-version", "v21.0.13\n", ".java-version:1" + nc},
+		"java-version jre name":               {".java-version", "temurin-jre-21.0.13\n", ".java-version:1" + nc},
+		"java-version sdkman name":            {".java-version", "21.0.13.fx-zulu\n", ".java-version:1" + nc},
+		"java-version Java 11":                {".java-version", "11.0.25\n", ""},
+		"tool-versions unknown vendor":        {".tool-versions", "java liberica-nik-23.1.5\n", ".tool-versions:1" + nc},
+		"tool-versions bisheng":               {".tool-versions", "nodejs 22.1.0\njava bisheng-17.0.10\n", ".tool-versions:2" + nc},
+		"tool-versions latest":                {".tool-versions", "java latest\n", ".tool-versions:1" + nc},
+		"sdkmanrc with a comment":             {".sdkmanrc", "java=21.0.13-tem  # the JDK\n", ".sdkmanrc:1 java-pin vulnerable"},
+		"sdkmanrc quoted":                     {".sdkmanrc", "java=\"21.0.13-tem\"\n", ".sdkmanrc:1 java-pin vulnerable"},
+		"sdkmanrc unread":                     {".sdkmanrc", "java=${JAVA}\n", ".sdkmanrc:1" + nc},
+		"mise array":                          {"mise.toml", "[tools]\njava = [\"temurin-21.0.13+9\", \"17\"]\n", "mise.toml:2 java-pin vulnerable, mise.toml:2" + nc},
+		"mise table":                          {"mise.toml", "[tools]\njava = { version = \"21.0.13\" }\n", "mise.toml:2 java-pin vulnerable"},
+		"mise quoted key":                     {"mise.toml", "[tools]\n\"java\" = \"22\"\n", "mise.toml:2 java-line vulnerable"},
+		"mise tools.java":                     {"mise.toml", "[tools.java]\nversion = \"21.0.13\"\n", "mise.toml:2 java-pin vulnerable"},
+		"mise lts":                            {"mise.toml", "[tools]\njava = \"lts\"\n", "mise.toml:2" + nc},
+		"mise prefix":                         {"mise.toml", "[tools]\njava = \"prefix:21.0.13\"\n", "mise.toml:2" + nc},
+		"mise in .mise/config.toml":           {".mise/config.toml", "[tools]\njava = \"22\"\n", ".mise/config.toml:2 java-line vulnerable"},
+		"mise in .config/mise/config.toml":    {".config/mise/config.toml", "[tools]\njava = \"22\"\n", ".config/mise/config.toml:2 java-line vulnerable"},
+		"mise.dev.toml":                       {"mise.dev.toml", "[tools]\njava = \"22\"\n", "mise.dev.toml:2 java-line vulnerable"},
+		"another config.toml":                 {"hugo/config.toml", "[tools]\njava = \"22\"\n", ""},
+	} {
+		g := strings.Join(got(t, tree(t, map[string]string{c.file: c.body})), ", ")
+		if c.want != "" && !strings.Contains(c.want, " ") {
+			// Any finding on that line: vulnerable, or not checked.
+			if !strings.HasPrefix(g, c.want+" ") || strings.Contains(g, ", ") {
+				t.Errorf("%s: [%s], want one finding at %s", name, g, c.want)
+			}
+			continue
+		}
+		if g != c.want {
+			t.Errorf("%s: [%s], want [%s]", name, g, c.want)
+		}
+	}
+}
+
+// Final review B6: setup-java steps that were passed in silence.
+func TestSetupJavaSaysNotChecked(t *testing.T) {
+	step := func(with string) string {
+		return "jobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-java@v4\n        with:\n          distribution: temurin\n" + with
+	}
+	const wf = ".github/workflows/ci.yml"
+	for name, c := range map[string]struct{ file, body, want string }{
+		"a range":                 {wf, step("          java-version: '>=17'\n"), wf + ":8 not-checked unknown"},
+		"a caret range":           {wf, step("          java-version: '^17.0.6'\n"), wf + ":8 not-checked unknown"},
+		"early access":            {wf, step("          java-version: '22-ea'\n"), wf + ":8 not-checked unknown"},
+		"early access of the fix": {wf, step("          java-version: '21.0.13.1-ea'\n"), wf + ":8 not-checked unknown"},
+		"early access of Java 11": {wf, step("          java-version: '11-ea'\n"), ""},
+		"a version file":          {wf, step("          java-version-file: backend/pom.xml\n"), wf + ":8 not-checked unknown"},
+		"a version file it reads": {wf, step("          java-version-file: .java-version\n"), ""},
+		"neither":                 {wf, step(""), wf + ":5 not-checked unknown"},
+		"upper case":              {wf, strings.Replace(step("          java-version: 21.0.13\n"), "actions/setup-java", "Actions/Setup-Java", 1), wf + ":8 java-pin vulnerable"},
+		"a composite action":      {".github/actions/setup/action.yml", "runs:\n  using: composite\n  steps:\n    - uses: actions/setup-java@v4\n      with:\n        distribution: temurin\n        java-version: 21.0.13\n", ".github/actions/setup/action.yml:7 java-pin vulnerable"},
+		"action.yml at the root":  {"action.yml", "runs:\n  using: composite\n  steps:\n    - uses: actions/setup-java@v4\n      with:\n        distribution: temurin\n        java-version: 22\n", "action.yml:7 java-line vulnerable"},
+		"a local archive":         {wf, strings.Replace(step("          java-version: 21.0.13.1\n          jdkFile: jdk.tar.gz\n"), "distribution: temurin", "distribution: jdkfile", 1), wf + ":8 not-checked unknown"},
+		"an alias": {wf, "jobs:\n  b:\n    steps:\n      - uses: actions/setup-java@v4\n        with:\n          distribution: corretto\n          java-version: &jv 17.0.20\n" +
+			"      - uses: actions/setup-java@v4\n        with:\n          distribution: temurin\n          java-version: *jv\n", wf + ":7 java-pin vulnerable, " + wf + ":11 java-pin vulnerable"},
+	} {
+		if g := strings.Join(got(t, tree(t, map[string]string{c.file: c.body})), ", "); g != c.want {
+			t.Errorf("%s: [%s], want [%s]", name, g, c.want)
+		}
+	}
+	// What an alias or an anchor names is shared: fix does not edit it.
+	res, err := Scan(context.Background(), tree(t, map[string]string{wf: "jobs:\n  b:\n    steps:\n      - uses: actions/setup-java@v4\n        with:\n          distribution: corretto\n          java-version: &jv 17.0.20\n" +
+		"      - uses: actions/setup-java@v4\n        with:\n          distribution: corretto\n          java-version: *jv\n"}), Options{})
+	if err != nil || len(res.Findings) != 2 || res.Findings[0].Fixable || res.Findings[1].Fixable {
+		t.Errorf("anchored versions: %v %+v", err, res.Findings)
+	}
+}
