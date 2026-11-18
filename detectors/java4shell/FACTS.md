@@ -120,6 +120,11 @@ OpenJDK fix commit and Amazon Corretto's changelog.
 
 - The version that decides is the one inside the libjvm (`<VM name> (<version>) for <os>-<cpu> JRE (<version>)`), read from the binary, with the
   `release` file as a second witness; the CPU architecture comes from the ELF, PE or Mach-O header.
+- A runtime directory that holds several VM libraries (server and client or minimal VMs, a Java 8 `lib/amd64/server` left by an upgrade
+  in place) is judged by every library that states a version or carries the decoder, and the worst verdict is the runtime's. A VM library
+  that is a symbolic or hard link to a file with another name is never read under its own name, so that runtime is unknown.
+- OpenJ9 is taken from an OpenJ9 VM library by name (`libj9vm29.so`). The `lib/server/libjvm.so` redirector's string
+  (`OPENJ9_JAVA_OPTIONS`) counts only with such a library in the runtime or a release file that names OpenJ9.
 - A packaged JDK (apk, dpkg, rpm) is judged by the same upstream version: no distribution has published a fixed package or a backport
   statement yet. Red Hat's fixed builds, once published, go into the Red Hat backport table, which clears a
   runtime only when its libjvm is that exact build and the release file and os-release confirm Red Hat (see "Red Hat").
