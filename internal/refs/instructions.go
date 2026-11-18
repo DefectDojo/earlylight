@@ -2,8 +2,14 @@ package refs
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
+
+// MaxDockerfileSize is the largest Dockerfile the instruction parser
+// reads: it keeps the source position of every byte, and no real
+// Dockerfile comes near this.
+const MaxDockerfileSize = maxDockerfileSize
 
 // Instruction is one Dockerfile instruction as BuildKit reads it: the
 // "# escape=" directive honoured, continuation lines joined, comment and
@@ -15,6 +21,9 @@ type Instruction struct {
 	// Cmd is the instruction word in lower case; for ONBUILD, the
 	// instruction it wraps.
 	Cmd string
+	// Onbuild is set for an instruction ONBUILD wraps: it runs in the build
+	// of an image made from this one, not in this build.
+	Onbuild bool
 	// Line is the 1-based line the instruction starts on.
 	Line int
 	// Flags are the leading --flags of the arguments, quotes removed
@@ -30,8 +39,11 @@ type Instruction struct {
 }
 
 // Instructions parses a Dockerfile. The error is the parser's: a file the
-// builder would refuse.
+// builder would refuse, or one larger than MaxDockerfileSize.
 func Instructions(b []byte) ([]Instruction, error) {
+	if len(b) > MaxDockerfileSize {
+		return nil, fmt.Errorf("larger than the %d bytes the instruction parser reads", MaxDockerfileSize)
+	}
 	p, err := parseDockerfile("", b)
 	if err != nil {
 		return nil, err
@@ -39,7 +51,8 @@ func Instructions(b []byte) ([]Instruction, error) {
 	out := make([]Instruction, 0, len(p.instrs))
 	for _, in := range p.instrs {
 		cmd, rest := in.cmd, in.rest.String()
-		if cmd == "onbuild" {
+		onbuild := cmd == "onbuild"
+		if onbuild {
 			rest = strings.TrimSpace(rest)
 			word, after, _ := strings.Cut(rest, " ")
 			if i := strings.IndexAny(rest, " \t"); i >= 0 {
@@ -47,7 +60,7 @@ func Instructions(b []byte) ([]Instruction, error) {
 			}
 			cmd, rest = strings.ToLower(word), strings.TrimSpace(after)
 		}
-		x := Instruction{Cmd: cmd, Line: in.line, Args: rest, Heredocs: in.heredocs}
+		x := Instruction{Cmd: cmd, Onbuild: onbuild, Line: in.line, Args: rest, Heredocs: in.heredocs}
 		if args, flags, err := extractBuilderFlags(rest); err == nil {
 			x.Args, x.Flags = args, flags
 		}

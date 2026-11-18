@@ -60,7 +60,7 @@ func TestRunForms(t *testing.T) {
 		"a flag from a variable":    {"FROM debian:12\nRUN apt-get install -y $APT_FLAGS curl\n", "skip Dockerfile:2"},
 		"a version from a variable": {"FROM debian:12\nRUN apt-get install -y openjdk-17-jdk=${JDK_VERSION}\n", "Dockerfile:2 os-package unknown"},
 		"a query":                   {"FROM debian:12\nRUN rpm -q java-17-openjdk\n", ""},
-		"an unterminated heredoc":   {"FROM debian:12\nRUN <<EOF\napt-get install -y openjdk-17-jdk\n", "skip Dockerfile:0"},
+		"an unterminated heredoc":   {"FROM debian:12\nRUN <<EOF\napt-get install -y openjdk-17-jdk\n", "Dockerfile:2 os-package vulnerable, skip Dockerfile:0"},
 	} {
 		if g := strings.Join(got(t, tree(t, map[string]string{"Dockerfile": c.df})), ", "); g != c.want {
 			t.Errorf("%s: [%s], want [%s]", name, g, c.want)

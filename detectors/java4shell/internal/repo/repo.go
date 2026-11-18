@@ -1173,7 +1173,7 @@ func (s *scanner) jibRef(rel string, line, col int, image string) {
 var (
 	// installRE finds a package tool on a RUN line; installArgs decides
 	// whether it installs.
-	installRE = regexp.MustCompile(`\b(?:apt-get|aptitude|apt|apk|dnf5?|yum|microdnf|tdnf|zypper|rpm|dpkg)\b`)
+	installRE = regexp.MustCompile(`\b(?:apt-get|aptitude|apt|apt-fast|nala|install_packages|apk|dnf5?|yum|microdnf|tdnf|zypper|rpm|dpkg)\b`)
 	aptJava   = regexp.MustCompile(`\b(openjdk-(\d{1,2})-(?:jre|jdk)(?:-headless)?)\b(=([^\s;&|]+))?`)
 	apkJava   = regexp.MustCompile(`\b(openjdk(\d{1,2})(?:-jre|-jdk|-jre-headless|-jmods)?)(?:([=~><]+)([^\s;&|]+))?`)
 	rpmJava   = regexp.MustCompile(`\b(java-(\d{1,2})-(openjdk|amazon-corretto)(?:-headless|-devel|-jdk)?)(?:-(\d[\w.:*?+~-]*))?`)
@@ -1202,8 +1202,10 @@ func (s *scanner) dockerfile(rel, text string) {
 	ins, err := refs.Instructions([]byte(text))
 	if err != nil {
 		// The image reference scan records the same file when it cannot
-		// parse it: one record (scanList).
-		s.unparsed = append(s.unparsed, Skip{File: rel, Reason: "the Dockerfile could not be parsed (" + refs.CleanText(err.Error(), 120) + "): the packages it installs are not checked"})
+		// parse it: one record (scanList). What the lines say is still
+		// read: a finding is not traded for the gap.
+		s.unparsed = append(s.unparsed, Skip{File: rel, Reason: "the Dockerfile could not be parsed (" + refs.CleanText(err.Error(), 120) + "): it was read line by line, and what a line alone does not show is not checked"})
+		s.dockerfileLines(rel, text)
 		return
 	}
 	from := 0
@@ -1212,7 +1214,8 @@ func (s *scanner) dockerfile(rel, text string) {
 	// stage sets the mitigation (before or after the install: ENV applies
 	// to the image the stage makes).
 	stageEnv := map[string]string{}
-	var stageCmd []string // ENTRYPOINT and CMD words of the stage
+	stageEnvAll := map[string]bool{} // the names ENV sets in the stage, its base's included
+	var stageCmd []string            // ENTRYPOINT and CMD words of the stage
 	endStage := func() {
 		o := undo(jvm.FromEnv(withoutJavaOptions(stageEnv), nil, 17, nil), stageCmd, stageEnv)
 		ok, how := o.Mitigates()
@@ -1232,11 +1235,36 @@ func (s *scanner) dockerfile(rel, text string) {
 		}
 	}
 	defer endStage()
-	// vars are the ARG defaults and ENV values the file sets, for package
-	// names a RUN takes from a variable.
+	// vars are the ARG and ENV values in force in the stage, for package
+	// names a RUN takes from a variable. An ARG before the first FROM is
+	// global: a stage has it once it declares it (ARG NAME). A stage
+	// built on an earlier one starts with that stage's ENV values;
+	// nothing else carries over.
 	vars := map[string]string{}
+	globals := map[string]string{}
+	envOf := map[string]map[string]string{} // stage name or index -> its ENV values
+	stageName, stageIndex := "", -1
+	closeStage := func() {
+		if stageIndex < 0 {
+			return
+		}
+		env := map[string]string{}
+		for k := range stageEnvAll {
+			if v, ok := vars[k]; ok {
+				env[k] = v
+			}
+		}
+		envOf[fmt.Sprint(stageIndex)] = env
+		if stageName != "" {
+			envOf[stageName] = env
+		}
+	}
 	stages := map[string]bool{}
 	for _, in := range ins {
+		if in.Onbuild && in.Cmd != "run" && in.Cmd != "copy" && in.Cmd != "add" {
+			// It runs in another image's build: it sets nothing here.
+			continue
+		}
 		// COPY --from=image and RUN --mount=...,from=image bring files of
 		// another image into the stage: the image is judged like a FROM.
 		for _, fl := range in.Flags {
@@ -1268,16 +1296,37 @@ func (s *scanner) dockerfile(rel, text string) {
 		switch in.Cmd {
 		case "from":
 			endStage()
+			closeStage()
 			from, stageStart, stageEnv, stageCmd = in.Line, len(s.findings), map[string]string{}, nil
-			if w := strings.Fields(in.Args); len(w) >= 3 && strings.EqualFold(w[len(w)-2], "as") {
-				stages[strings.ToLower(w[len(w)-1])] = true
+			stageIndex, stageName, stageEnvAll = stageIndex+1, "", map[string]bool{}
+			w := strings.Fields(in.Args)
+			vars = map[string]string{}
+			if len(w) > 0 {
+				for k, v := range envOf[strings.ToLower(w[0])] {
+					vars[k], stageEnvAll[k] = v, true
+				}
+			}
+			if len(w) >= 3 && strings.EqualFold(w[len(w)-2], "as") {
+				stageName = strings.ToLower(w[len(w)-1])
+				stages[stageName] = true
 			}
 		case "cmd", "entrypoint":
 			stageCmd = append(stageCmd, commandWords(in.Args)...)
 		case "arg":
 			for _, kv := range jvm.Words(in.Args) {
-				if k, v, ok := strings.Cut(kv, "="); ok {
-					vars[k] = v
+				k, v, ok := strings.Cut(kv, "=")
+				switch {
+				case from == 0 && ok:
+					globals[k] = v
+				case from == 0:
+				case ok:
+					if !stageEnvAll[k] {
+						vars[k] = v // an ENV of the name wins over the ARG
+					}
+				default:
+					if g, set := globals[k]; set && !stageEnvAll[k] {
+						vars[k] = g
+					}
 				}
 			}
 		case "env":
@@ -1285,13 +1334,13 @@ func (s *scanner) dockerfile(rel, text string) {
 			// image keeps; the mitigation is decided when the stage ends.
 			for _, kv := range jvm.Words(in.Args) {
 				if k, v, ok := strings.Cut(kv, "="); ok {
-					stageEnv[k], vars[k] = v, v
+					stageEnv[k], vars[k], stageEnvAll[k] = v, v, true
 				}
 			}
 		case "run":
 			run := in.Args
 			if in.JSON != nil {
-				run = strings.Join(jvm.CommandWords(in.JSON), " ")
+				run = execForm(in.JSON)
 			}
 			s.packages(rel, in.Line, run, vars)
 			for _, body := range in.Heredocs {
@@ -1324,16 +1373,258 @@ func heredocCommands(body string) string {
 	return strings.Join(out, " ; ")
 }
 
+// execForm turns the words of an exec-form RUN into a command line: the
+// script itself when the words run a shell's -c text, the words quoted
+// one by one otherwise (no shell reads them, so "&&" is an argument).
+func execForm(words []string) string {
+	if text, ok := shellText(words); ok {
+		return text
+	}
+	var b strings.Builder
+	for i, w := range words {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteByte('"')
+		b.WriteString(strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(w))
+		b.WriteByte('"')
+	}
+	return b.String()
+}
+
+// dockerInstructions are the instruction words; in a file the parser
+// refused, a line that starts with none of them is taken as shell text
+// (the body of a heredoc).
+var dockerInstructions = map[string]bool{"from": true, "run": true, "cmd": true, "label": true, "maintainer": true, "expose": true, "env": true,
+	"add": true, "copy": true, "entrypoint": true, "volume": true, "user": true, "workdir": true, "arg": true, "onbuild": true,
+	"stopsignal": true, "healthcheck": true, "shell": true}
+
+var escapeDirective = regexp.MustCompile("(?i)^#\\s*escape\\s*=\\s*([\\\\`])\\s*$")
+
+// dockerfileLines reads a Dockerfile the instruction parser refused (an
+// unterminated heredoc, a directive it does not accept, a file over its
+// size limit) line by line: continuation lines joined, comment lines
+// dropped. RUN lines and what follows them as shell text are read for
+// installs, FROM and COPY --from images are judged. ARG and ENV values are
+// taken for the whole file, and no mitigation is read from it: a line
+// alone does not show what a stage ends with.
+func (s *scanner) dockerfileLines(rel, text string) {
+	ls := lines(text)
+	escape := byte('\\')
+	for _, l := range ls {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		if !strings.HasPrefix(t, "#") {
+			break
+		}
+		if m := escapeDirective.FindStringSubmatch(t); m != nil {
+			escape = m[1][0]
+			break
+		}
+	}
+	vars := map[string]string{}
+	stages := map[string]bool{}
+	runLine := 0
+	for i := 0; i < len(ls); i++ {
+		start := i + 1
+		var b strings.Builder
+		for ; i < len(ls); i++ {
+			t := strings.TrimRight(ls[i], " \t")
+			if b.Len() > 0 && strings.HasPrefix(strings.TrimSpace(t), "#") {
+				continue // a comment line inside a continuation
+			}
+			if strings.HasSuffix(t, string(escape)) {
+				b.WriteString(strings.TrimSuffix(t, string(escape)))
+				b.WriteByte(' ')
+				continue
+			}
+			b.WriteString(t)
+			break
+		}
+		full := strings.TrimSpace(b.String())
+		if full == "" || strings.HasPrefix(full, "#") {
+			continue
+		}
+		word, rest := full, ""
+		if k := strings.IndexAny(full, " \t"); k >= 0 {
+			word, rest = full[:k], strings.TrimSpace(full[k+1:])
+		}
+		cmd := strings.ToLower(word)
+		if cmd == "onbuild" {
+			word, rest2, _ := strings.Cut(rest, " ")
+			if k := strings.IndexAny(rest, " \t"); k >= 0 {
+				word, rest2 = rest[:k], strings.TrimSpace(rest[k+1:])
+			}
+			if c := strings.ToLower(word); c == "run" || c == "copy" || c == "add" {
+				cmd, rest = c, rest2
+			} else {
+				continue
+			}
+		}
+		if !dockerInstructions[cmd] {
+			// Shell text: the body of a heredoc the RUN above opened.
+			line := start
+			if runLine > 0 {
+				line = runLine
+			}
+			s.packages(rel, line, full, vars)
+			continue
+		}
+		if cmd != "run" {
+			runLine = 0
+		}
+		words := strings.Fields(rest)
+		image := func(img, context, platform string) {
+			if img == "" || stages[strings.ToLower(img)] || atoi(img) > 0 || img == "0" || strings.Contains(img, "$") {
+				return
+			}
+			before := len(s.findings)
+			s.judgeRef(refs.Ref{File: rel, Line: start, Kind: refs.KindDockerfile, Context: context, Text: img, Image: img, Platform: platform}, s.opts)
+			for k := before; k < len(s.findings); k++ {
+				if f := &s.findings[k]; f.Fixable {
+					f.Fixable, f.edit = false, nil
+					f.Fix = "Change the image by hand: this Dockerfile could not be parsed. " + f.Fix
+				}
+			}
+		}
+		switch cmd {
+		case "from":
+			platform := ""
+			for len(words) > 0 && strings.HasPrefix(words[0], "--") {
+				if v, ok := strings.CutPrefix(words[0], "--platform="); ok {
+					platform = v
+				}
+				words = words[1:]
+			}
+			if len(words) > 0 {
+				image(expandVars(strings.Trim(words[0], `"'`), vars), "FROM", platform)
+			}
+			if len(words) >= 3 && strings.EqualFold(words[len(words)-2], "as") {
+				stages[strings.ToLower(words[len(words)-1])] = true
+			}
+		case "arg", "env":
+			for _, kv := range jvm.Words(rest) {
+				if k, v, ok := strings.Cut(kv, "="); ok {
+					vars[k] = v
+				}
+			}
+		case "copy", "add", "run":
+			for len(words) > 0 && strings.HasPrefix(words[0], "--") {
+				fl := strings.Trim(words[0], `"'`)
+				if v, ok := strings.CutPrefix(fl, "--from="); ok {
+					image(v, strings.ToUpper(cmd)+" from", "")
+				}
+				if v, ok := strings.CutPrefix(fl, "--mount="); ok {
+					for _, kv := range strings.Split(v, ",") {
+						if img, ok := strings.CutPrefix(kv, "from="); ok {
+							image(img, "RUN from", "")
+						}
+					}
+				}
+				words = words[1:]
+				rest = strings.TrimSpace(strings.TrimPrefix(rest, strings.Fields(rest)[0]))
+			}
+			if cmd != "run" {
+				continue
+			}
+			runLine = start
+			var arr []string
+			if strings.HasPrefix(rest, "[") && json.Unmarshal([]byte(rest), &arr) == nil {
+				rest = execForm(arr)
+			}
+			s.packages(rel, start, rest, vars)
+		}
+	}
+}
+
+// lineVars returns the variables in force for a RUN line: the stage's,
+// changed by what the line itself assigns before it uses them. A shell
+// variable set on the line (PKG=x && ..., export PKG=x; ...) has that
+// value, a for loop's variable has its list, and one set from a command,
+// from another variable or by read has none this file gives.
+func lineVars(run string, vars map[string]string) map[string]string {
+	if !strings.Contains(run, "$") {
+		return vars
+	}
+	var out map[string]string
+	set := func(k, v string, known bool) {
+		if out == nil {
+			out = make(map[string]string, len(vars)+2)
+			for a, b := range vars {
+				out[a] = b
+			}
+		}
+		if known {
+			out[k] = v
+		} else {
+			delete(out, k)
+		}
+	}
+	for _, cmd := range jvm.SplitCommands(run) {
+		words := jvm.Words(cmd)
+		for len(words) > 0 && shellLead[strings.TrimLeft(words[0], "({")] {
+			words = words[1:]
+		}
+		if len(words) == 0 {
+			continue
+		}
+		switch {
+		case words[0] == "for" && len(words) >= 3 && words[2] == "in":
+			list := strings.Join(words[3:], " ")
+			set(words[1], list, !strings.ContainsAny(list, "$`*"))
+		case words[0] == "read":
+			for _, w := range words[1:] {
+				if !strings.HasPrefix(w, "-") {
+					set(w, "", false)
+				}
+			}
+		case assignment.MatchString(words[0]):
+			all := true
+			for _, w := range words {
+				all = all && assignment.MatchString(w)
+			}
+			k, v, _ := strings.Cut(words[0], "=")
+			if !all {
+				// NAME=$(command ...) spans words; NAME=x command is a
+				// prefix for that command alone.
+				if strings.HasPrefix(v, "$(") || strings.HasPrefix(v, "`") {
+					set(k, "", false)
+				}
+				continue
+			}
+			for _, w := range words {
+				k, v, _ := strings.Cut(w, "=")
+				set(k, v, !strings.ContainsAny(v, "$`"))
+			}
+		}
+	}
+	if out == nil {
+		return vars
+	}
+	return out
+}
+
+var (
+	assignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	// shellLead are words that stand before a command without changing
+	// what it is.
+	shellLead = map[string]bool{"do": true, "then": true, "else": true, "export": true, "declare": true, "local": true, "readonly": true, "while": true, "until": true, "if": true, "!": true}
+)
+
 // packages finds the OpenJDK packages a RUN line installs: distribution
 // packages and the vendors' own (Temurin, Corretto, Zulu, Microsoft,
 // SapMachine), with or without a version.
 func (s *scanner) packages(rel string, line int, run string, vars map[string]string) {
-	if !installRE.MatchString(run) {
+	// The tool can come from a variable (ARG APT="apt-get install -y").
+	run = expandVars(run, lineVars(run, vars))
+	if !installRE.MatchString(run) && !strings.Contains(run, "$") {
 		return
 	}
 	var hits []pkgHit
 	var opaque []string
-	for _, arg := range installArgs(expandVars(run, vars), 0) {
+	for _, arg := range installArgs(run, 0) {
 		if strings.HasPrefix(arg, opaqueArg) {
 			opaque = append(opaque, strings.TrimPrefix(arg, opaqueArg))
 			continue
@@ -1342,8 +1633,17 @@ func (s *scanner) packages(rel string, line int, run string, vars map[string]str
 		arg = strings.TrimPrefix(arg, fileArg)
 		// A version range in one quoted word ('java-17-openjdk >= 17.0.21.1'):
 		// the package is judged without the range.
+		// A word that holds several names (an exec-form argument with a
+		// space in it) is judged by the Java package among them.
 		if name, _, ok := strings.Cut(arg, " "); ok && !fromFile {
+			whole := arg
 			arg = name
+			for _, w := range strings.Fields(whole)[1:] {
+				if !javaPackage(name) && javaPackage(w) {
+					arg = w
+					break
+				}
+			}
 		}
 		before := len(hits)
 		switch {
@@ -1461,8 +1761,11 @@ var (
 )
 
 var (
-	pkgTools = map[string]bool{"apt-get": true, "aptitude": true, "apt": true, "apk": true, "dnf": true, "dnf5": true, "yum": true, "microdnf": true, "tdnf": true, "zypper": true, "rpm": true, "dpkg": true}
-	pkgVerbs = map[string]bool{"install": true, "add": true, "in": true, "reinstall": true, "localinstall": true}
+	pkgTools = map[string]bool{"apt-get": true, "aptitude": true, "apt": true, "apt-fast": true, "nala": true, "install_packages": true, "apk": true, "dnf": true, "dnf5": true, "yum": true, "microdnf": true, "tdnf": true, "zypper": true, "rpm": true, "dpkg": true}
+	// pkgVerbs install the packages named after them. An upgrade or a
+	// downgrade that names a package installs a release of it too.
+	pkgVerbs = map[string]bool{"install": true, "add": true, "in": true, "reinstall": true, "localinstall": true, "satisfy": true,
+		"upgrade": true, "update": true, "up": true, "downgrade": true, "dist-upgrade": true, "full-upgrade": true}
 	// pkgValueFlags are package-manager options followed by a separate value.
 	pkgValueFlags = map[string]bool{"-t": true, "-o": true, "-X": true, "--repository": true, "--virtual": true, "-c": true, "--root": true,
 		"-p": true, "--target-release": true, "--option": true, "--repo": true, "--setopt": true, "--enablerepo": true, "--disablerepo": true,
@@ -1602,8 +1905,20 @@ func vendorFileVersion(name string) string {
 // their values, paths and URLs.
 func installArgs(run string, depth int) []string {
 	var out []string
+	var prev []string // the words of the command before
+	at := 0           // where the search for the next command starts in run
 	for _, cmd := range jvm.SplitCommands(run) {
+		// Whether a pipe leads into this command (xargs reads the one
+		// before it).
+		piped := false
+		if k := strings.Index(run[at:], cmd); k >= 0 && cmd != "" {
+			before := strings.TrimRight(run[:at+k], " \t\n")
+			piped = strings.HasSuffix(before, "|") && !strings.HasSuffix(before, "||")
+			at += k + len(cmd)
+		}
 		words := jvm.Words(cmd)
+		last := prev
+		prev = words
 		// A group or subshell: ( apt-get install x ), { ...; }.
 		for k, w := range words {
 			if t := strings.TrimLeft(w, "({"); t != "" {
@@ -1627,11 +1942,48 @@ func installArgs(run string, depth int) []string {
 			i++
 		}
 		if i == len(words) {
+			// A tool this file names by a variable it does not set
+			// ($INSTALL openjdk-17-jdk): the words after it are read as
+			// packages, since a Java package name there is an install.
+			if k := leadWords(words); k < len(words) && bareVar.MatchString(words[k]) {
+				for _, w := range words[k+1:] {
+					if strings.HasPrefix(w, "#") {
+						break
+					}
+					if !strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "$") && javaPackage(w) {
+						out = append(out, packageName(w))
+					}
+				}
+			}
 			continue
+		}
+		// xargs gives the tool its package names: those of an echo or
+		// printf piped into it are read, anything else (a file, another
+		// command's output) is a list this file does not show.
+		for _, w := range words[:i] {
+			if path.Base(w) != "xargs" {
+				continue
+			}
+			lead := leadWords(last)
+			if piped && lead < len(last) && (last[lead] == "echo" || last[lead] == "printf") {
+				for _, a := range last[lead+1:] {
+					if a = redirect.ReplaceAllString(a, ""); a == "" || strings.HasPrefix(a, "-") || strings.Contains(a, "%") || strings.Contains(a, "\\") {
+						continue
+					}
+					if strings.HasPrefix(a, "$") || strings.HasPrefix(a, "`") {
+						out = append(out, opaqueArg+a)
+					} else if n := packageName(a); n != "" {
+						out = append(out, n)
+					}
+				}
+			} else {
+				out = append(out, opaqueArg+"xargs")
+			}
+			break
 		}
 		tool := path.Base(words[i])
 		i++
-		installs := false
+		installs := tool == "install_packages" // Bitnami's wrapper: the packages follow it
 		for i < len(words) && strings.HasPrefix(words[i], "-") {
 			if tool == "rpm" && rpmInstallFlag.MatchString(words[i]) || tool == "dpkg" && dpkgInstallFlag.MatchString(words[i]) {
 				installs = true
@@ -1641,7 +1993,7 @@ func installArgs(run string, depth int) []string {
 			}
 			i++
 		}
-		if tool == "rpm" || tool == "dpkg" {
+		if tool == "rpm" || tool == "dpkg" || tool == "install_packages" {
 			// rpm -ivh file.rpm, dpkg -i file.deb: the package files follow
 			// the flags.
 			if !installs {
@@ -1652,6 +2004,9 @@ func installArgs(run string, depth int) []string {
 			continue
 		}
 		for j := i + 1; j < len(words); j++ {
+			if strings.HasPrefix(words[j], "#") {
+				break // a shell comment: the rest of the line
+			}
 			w := redirect.ReplaceAllString(words[j], "")
 			if w == "" {
 				continue
@@ -1692,25 +2047,88 @@ func installArgs(run string, depth int) []string {
 // a version, not by a path or a descriptor.)
 var redirect = regexp.MustCompile(`(?:>>?|<)[/&].*$|(?:>>?|<)$`)
 
-// shellText returns the script of a "sh -c TEXT" command (also -ec, -lc
-// and the like, behind env or a path).
-func shellText(words []string) (string, bool) {
-	for i := 0; i < len(words) && i < 4; i++ {
-		switch path.Base(words[i]) {
-		case "sh", "bash", "ash", "dash", "zsh", "ksh":
-			for j := i + 1; j < len(words); j++ {
-				w := words[j]
-				if !strings.HasPrefix(w, "-") || strings.HasPrefix(w, "--") {
-					return "", false
-				}
-				if strings.HasSuffix(w, "c") && j+1 < len(words) {
-					return words[j+1], true
-				}
-			}
-			return "", false
+// bareVar is a word that is one variable and nothing else.
+var bareVar = regexp.MustCompile(`^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$`)
+
+// javaPackage reports whether a word names a Java package any reader here
+// knows.
+func javaPackage(w string) bool {
+	n := packageName(w)
+	if n == "" {
+		return false
+	}
+	base, _, _ := strings.Cut(n, "=")
+	return aptArg.MatchString(n) || apkArg.MatchString(n) || rpmArg.MatchString(n) || vendorArg.MatchString(n) || defaultArg.MatchString(n) ||
+		rpmVirtual.MatchString(base) || rpmLatest.MatchString(base) || zypperArg.MatchString(n) || varJavaArg.MatchString(n)
+}
+
+// leadWords returns the index of a command's own word: after assignments
+// and the words that run another command (env, exec, sudo, nice, time,
+// chroot DIR) with their options.
+func leadWords(words []string) int {
+	i := 0
+	for i < len(words) && i < 12 {
+		w := words[i]
+		switch b := path.Base(w); {
+		case b == "chroot" && i+1 < len(words):
+			i++
+		case strings.HasPrefix(w, "-"), assignment.MatchString(w), b == "env", b == "exec", b == "sudo", b == "nice", b == "time", b == "nohup", b == "command":
+		default:
+			return i
 		}
-		if !strings.Contains(words[i], "=") && path.Base(words[i]) != "env" && path.Base(words[i]) != "exec" {
-			return "", false
+		i++
+	}
+	return i
+}
+
+// shellOptionWithValue are the shell options that take the next word.
+var shellOptionWithValue = map[string]bool{"-o": true, "+o": true, "-O": true, "+O": true, "--rcfile": true, "--init-file": true}
+
+// shellText returns the script of a "sh -c TEXT" command: also -ec, -lc,
+// -o pipefail -c, --login -c and the like, behind env, sudo or a path,
+// the text of su -c, and what eval is given.
+func shellText(words []string) (string, bool) {
+	i := leadWords(words)
+	if i >= len(words) {
+		return "", false
+	}
+	script := func(text string) (string, bool) {
+		// Lines of a script are commands of their own.
+		return strings.ReplaceAll(text, "\n", " ; "), true
+	}
+	switch path.Base(words[i]) {
+	case "sh", "bash", "ash", "dash", "zsh", "ksh":
+		c := false
+		for j := i + 1; j < len(words); j++ {
+			w := words[j]
+			switch {
+			case shellOptionWithValue[w]:
+				j++
+			case strings.HasPrefix(w, "--"):
+			case strings.HasPrefix(w, "-") || strings.HasPrefix(w, "+"):
+				// A cluster: -ec has -c; one that ends in o (-euo)
+				// takes the next word as the option's name.
+				if strings.HasPrefix(w, "-") && strings.Contains(w, "c") {
+					c = true
+				}
+				if strings.HasSuffix(w, "o") {
+					j++
+				}
+			case c:
+				return script(w)
+			default:
+				return "", false // a script file, not a text
+			}
+		}
+	case "su":
+		for j := i + 1; j+1 < len(words); j++ {
+			if words[j] == "-c" || words[j] == "--command" {
+				return script(words[j+1])
+			}
+		}
+	case "eval":
+		if i+1 < len(words) {
+			return script(strings.Join(words[i+1:], " "))
 		}
 	}
 	return "", false

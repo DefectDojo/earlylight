@@ -19,7 +19,11 @@ func TestInstructions(t *testing.T) {
 	}
 	var got []string
 	for _, in := range ins {
-		got = append(got, fmt.Sprintf("%d %s %q %q %q %q", in.Line, in.Cmd, in.Flags, in.Args, in.JSON, in.Heredocs))
+		cmd := in.Cmd
+		if in.Onbuild {
+			cmd = "onbuild:" + cmd
+		}
+		got = append(got, fmt.Sprintf("%d %s %q %q %q %q", in.Line, cmd, in.Flags, in.Args, in.JSON, in.Heredocs))
 	}
 	want := []string{
 		`2 from [] "debian:12 AS base" [] []`,
@@ -27,7 +31,7 @@ func TestInstructions(t *testing.T) {
 		`7 run [] "[\"apt-get\", \"install\", \"-y\", \"x\"]" ["apt-get" "install" "-y" "x"] []`,
 		`8 run ["--mount=type=bind,from=eclipse-temurin:21,target=/j"] "cp -r /j /opt" [] []`,
 		`9 run [] "<<EOF" [] ["apt-get install -y a\necho done\n"]`,
-		`13 run [] "apt-get install -y b" [] []`,
+		`13 onbuild:run [] "apt-get install -y b" [] []`,
 		`14 copy ["--link" "--from=eclipse-temurin:21.0.13_9-jre"] "/opt/java /opt/java" [] []`,
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
@@ -44,5 +48,8 @@ func TestInstructions(t *testing.T) {
 	ins, err = Instructions([]byte(bt))
 	if err != nil || len(ins) != 2 || ins[1].Args != "apt-get update  && apt-get install -y openjdk-17-jdk" {
 		t.Errorf("backtick escape: %v %+v", err, ins)
+	}
+	if _, err := Instructions(make([]byte, MaxDockerfileSize+1)); err == nil {
+		t.Error("a Dockerfile over MaxDockerfileSize was parsed")
 	}
 }
