@@ -96,6 +96,10 @@ type Input struct {
 	// Linked are VM library names that are links to a file the scan did
 	// not read as a VM library: the runtime there was not judged.
 	Linked []LinkedLibrary
+	// UnreadLibraries are VM libraries the scan met and did not read (over
+	// a size limit, unreadable, at a path an image's layers do not
+	// settle): the runtime there was not judged by them.
+	UnreadLibraries []string
 	// OSID is the target's os-release ID (rhel, rocky, debian), "" when
 	// it has none.
 	OSID string
@@ -127,13 +131,30 @@ func Run(in Input) []Finding {
 		}
 		linked[root] = append(linked[root], l)
 	}
+	unread := map[string][]string{}
+	for _, p := range in.UnreadLibraries {
+		root, ok := jvm.Root(p)
+		if !ok {
+			root = path.Dir(p)
+		}
+		unread[root] = append(unread[root], p)
+	}
 	roots := make([]string, 0, len(byRoot))
+	seen := map[string]bool{}
 	for r := range byRoot {
-		roots = append(roots, r)
+		roots, seen[r] = append(roots, r), true
 	}
 	for r := range linked {
-		if _, ok := byRoot[r]; !ok {
-			roots = append(roots, r)
+		if !seen[r] {
+			roots, seen[r] = append(roots, r), true
+		}
+	}
+	for _, l := range loose {
+		seen[path.Dir(l.Path)] = true // judged below, where it lies
+	}
+	for r := range unread {
+		if !seen[r] {
+			roots, seen[r] = append(roots, r), true
 		}
 	}
 	sort.Strings(roots)
@@ -142,14 +163,19 @@ func Run(in Input) []Finding {
 	for _, r := range roots {
 		f := Finding{Kind: KindRuntime, Path: r}
 		if libs := byRoot[r]; len(libs) > 0 {
-			f = redHat(in, judgeAll(in, env, r, libs))
+			f = judgeAll(in, env, r, libs)
 		} else if name, dir, ok := Product(r); ok {
 			f.Kind, f.Product, f.ProductDir = KindBundled, name, dir
 		}
-		out = append(out, withFix(notFollowed(f, linked[r])))
+		out = append(out, withFix(notRead(notFollowed(f, linked[r]), unread[r])))
 	}
 	for _, l := range loose {
-		out = append(out, withFix(redHat(in, judge(in, env, path.Dir(l.Path), []*jvm.Library{l}))))
+		f := redHat(in, judge(in, env, path.Dir(l.Path), []*jvm.Library{l}))
+		if _, ok := byRoot[path.Dir(l.Path)]; ok {
+			out = append(out, withFix(f)) // that directory's unread libraries are told there
+			continue
+		}
+		out = append(out, withFix(notRead(f, unread[path.Dir(l.Path)])))
 	}
 	return out
 }
@@ -162,21 +188,73 @@ func Run(in Input) []Finding {
 // put in bin/server. Each other library that states a version or carries
 // the decoder is judged on its own, and the worst verdict is the
 // runtime's: a library that clears never hides one that does not.
+//
+// A Red Hat row speaks for one build, so it is applied to each library's
+// verdict before the worst is taken, never to the runtime's afterwards.
+// And a library that cannot be judged on its own (no HotSpot version line
+// and no decoder stubs, in a runtime that is not OpenJ9: the redirector's
+// string alone, a stripped or packed file) was not judged at all: a
+// runtime the others would clear is unknown.
 func judgeAll(in Input, env map[string]string, root string, libs []*jvm.Library) Finding {
-	f := judge(in, env, root, libs)
+	group := judge(in, env, root, libs)
+	f := redHat(in, group)
 	worst := f
+	var unjudged []*jvm.Library
 	for _, l := range libs {
-		if l == f.Library || l.OpenJ9 || !l.HotSpot() && !l.VBMIStubs {
+		switch {
+		case l == f.Library:
+			continue
+		case l.OpenJ9 && group.VM == "OpenJ9":
+			continue // the redirector and the VM of one OpenJ9 runtime
+		case !l.HotSpot() && !l.VBMIStubs:
+			unjudged = append(unjudged, l)
 			continue
 		}
-		if x := judge(in, env, root, []*jvm.Library{l}); rank(x.Status) > rank(worst.Status) {
+		if x := redHat(in, judge(in, env, root, []*jvm.Library{l})); rank(x.Status) > rank(worst.Status) {
 			worst = x
 		}
 	}
 	if worst.Library != f.Library {
 		worst.Reason += fmt.Sprintf("; this runtime holds %d VM libraries and the worst decides (%s alone: %s)", len(libs), f.Library.Path, f.Status)
 	}
+	if len(unjudged) > 0 && rank(worst.Status) == 0 {
+		sort.Slice(unjudged, func(i, j int) bool { return unjudged[i].Path < unjudged[j].Path })
+		why := fmt.Sprintf("its VM library %s states no version (no HotSpot version line, no decoder stubs) and is not shown to be OpenJ9, so that library was not judged", unjudged[0].Path)
+		if len(unjudged) > 1 {
+			why += fmt.Sprintf(", nor were %d more", len(unjudged)-1)
+		}
+		v, vok := knowledge.Parse(worst.Version)
+		worst.Release = knowledge.Unknown
+		return worst.set(Unknown, worst.Reason+"; but "+why, describe(worst, v, vok)+": one of its VM libraries could not be judged")
+	}
 	return worst
+}
+
+// notRead applies what a runtime's unread VM libraries leave open, as
+// notFollowed does for links: a runtime with nothing else to judge is
+// unknown, and so is one its other libraries would clear.
+func notRead(f Finding, unread []string) Finding {
+	if len(unread) == 0 {
+		return f
+	}
+	sort.Strings(unread)
+	why := fmt.Sprintf("its VM library %s was not read (over a size limit, unreadable, or at a path the image's layers do not settle)", unread[0])
+	if len(unread) > 1 {
+		why += fmt.Sprintf(", nor were %d more", len(unread)-1)
+	}
+	v, vok := knowledge.Parse(f.Version)
+	switch {
+	case f.Library == nil && f.Status == "":
+		return f.set(Unknown, why+": the runtime was not checked", "Java runtime: its VM library was not read")
+	case f.Library == nil:
+		f.Reason += "; " + why
+		return f
+	case rank(f.Status) == 0:
+		f.Release = knowledge.Unknown
+		return f.set(Unknown, f.Reason+"; but "+why+": that library was not checked", describe(f, v, vok)+": one of its VM libraries was not read")
+	}
+	f.Reason += "; " + why
+	return f
 }
 
 // notFollowed applies what a runtime's linked VM libraries leave open: a

@@ -123,6 +123,9 @@ OpenJDK fix commit and Amazon Corretto's changelog.
 - A runtime directory that holds several VM libraries (server and client or minimal VMs, a Java 8 `lib/amd64/server` left by an upgrade
   in place) is judged by every library that states a version or carries the decoder, and the worst verdict is the runtime's. A VM library
   that is a symbolic or hard link to a file with another name is never read under its own name, so that runtime is unknown.
+  The same holds for a VM library the scan met and did not read (over `--max-file-size`, unreadable, at a path an image's layers do not
+  settle) and for one that states no version and carries no decoder stubs in a runtime that is not OpenJ9: a runtime the other libraries
+  would clear is unknown. A Red Hat row is applied to each library's verdict before the worst is taken.
 - OpenJ9 is taken from an OpenJ9 VM library by name (`libj9vm29.so`). The `lib/server/libjvm.so` redirector's string
   (`OPENJ9_JAVA_OPTIONS`) counts only with such a library in the runtime or a release file that names OpenJ9.
 - A packaged JDK (apk, dpkg, rpm) is judged by the same upstream version: no distribution has published a fixed package or a backport

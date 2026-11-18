@@ -144,8 +144,9 @@ func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
 // mitigation the scan would report. A start script not read keeps a
 // mitigation from being reported when the container's command runs it. An
 // /etc/os-release not read keeps a Red Hat row from clearing a runtime
-// (osID). The other files with a limit are deliberate exclusions: no
-// verdict is cleared on them.
+// (osID). A VM library not read leaves its runtime unknown (assess). The
+// other files with a limit are deliberate exclusions: no verdict is
+// cleared on them.
 func (s *scan) VisitOverLimit(p string, _ int64) []engine.Skip {
 	s.notRead(p)
 	return nil
@@ -170,6 +171,15 @@ func (s *scan) notRead(p string) {
 	if p == "/etc/os-release" {
 		s.osUnread = true
 	}
+	if jvm.IsLibraryName(path.Base(p)) {
+		// The file a runtime's verdict is made of: its runtime was not
+		// judged by it, and is not cleared without it.
+		if len(s.unreadLibs) >= maxLibs {
+			s.limit(fmt.Sprintf("more than %d Java VM libraries", maxLibs))
+		} else {
+			s.unreadLibs[p] = true
+		}
+	}
 	if hsErr.MatchString(path.Base(p)) || p == "/etc/os-release" || p == "/usr/lib/os-release" {
 		return
 	}
@@ -185,7 +195,7 @@ func (s *scan) notRead(p string) {
 // FinishSkips reports the JVM settings files not read as coverage gaps
 // when the target holds a runtime.
 func (s *scan) FinishSkips() []engine.Skip {
-	if s.libs.len() == 0 {
+	if s.libs.len() == 0 && len(s.unreadLibs) == 0 {
 		return nil
 	}
 	var out []engine.Skip
@@ -214,6 +224,7 @@ func (s *scan) Forget(p string) {
 	delete(s.scriptWords, p)
 	delete(s.undoScripts, p)
 	delete(s.unreadScripts, p)
+	delete(s.unreadLibs, p)
 	delete(s.overSettings, p)
 	if path.Base(p) == "release" {
 		delete(s.releases, path.Dir(p))
@@ -301,7 +312,7 @@ const (
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
 	return &scan{kind: kind, releases: map[string]jvm.Release{}, badReleases: map[string]string{},
 		kept: map[string][]byte{}, lists: map[string][]byte{}, scripts: map[string]map[string]bool{}, unreadScripts: map[string]bool{}, overSettings: map[string]bool{},
-		scriptWords: map[string]assess.WordSet{}, undoScripts: map[string]string{}}
+		scriptWords: map[string]assess.WordSet{}, undoScripts: map[string]string{}, unreadLibs: map[string]bool{}}
 }
 
 type scan struct {
@@ -328,6 +339,8 @@ type scan struct {
 	scriptWords map[string]assess.WordSet
 	undoScripts map[string]string
 	scriptsOver bool
+	// unreadLibs are VM libraries the scan met and did not read.
+	unreadLibs map[string]bool
 	// overSettings are JVM settings files not read.
 	overSettings map[string]bool
 	// osUnread is set when /etc/os-release was met and not read.
@@ -491,7 +504,12 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	links, hardlinks := ctx.Links()
 	res := resolver{links: links}
 	linked := s.linkedLibraries(ctx, res, links, hardlinks)
-	if s.libs.len() == 0 && len(linked) == 0 {
+	unreadLibs := make([]string, 0, len(s.unreadLibs))
+	for p := range s.unreadLibs {
+		unreadLibs = append(unreadLibs, p)
+	}
+	sort.Strings(unreadLibs)
+	if s.libs.len() == 0 && len(linked) == 0 && len(unreadLibs) == 0 {
 		if len(s.limits) > 0 {
 			ctx.Problem("java4shell: the scan reached its limit on " + strings.Join(s.limits, " and ") + " for one target")
 		}
@@ -511,20 +529,21 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		}
 	}
 	in := assess.Input{
-		Libraries:     s.libs.list(),
-		Releases:      s.releases,
-		BadReleases:   s.badReleases,
-		Settings:      s.settings.list(),
-		Owners:        owners,
-		Resolve:       res.resolve,
-		Scripts:       s.scripts,
-		UnreadScripts: s.unreadScripts,
-		UnreadDirs:    s.unreadDirs,
-		UnreadAll:     s.unreadAll,
-		ScriptWords:   s.scriptWords,
-		UndoScripts:   s.undoScripts,
-		ScriptsOver:   s.scriptsOver,
-		Linked:        linked,
+		Libraries:       s.libs.list(),
+		Releases:        s.releases,
+		BadReleases:     s.badReleases,
+		Settings:        s.settings.list(),
+		Owners:          owners,
+		Resolve:         res.resolve,
+		Scripts:         s.scripts,
+		UnreadScripts:   s.unreadScripts,
+		UnreadDirs:      s.unreadDirs,
+		UnreadAll:       s.unreadAll,
+		ScriptWords:     s.scriptWords,
+		UndoScripts:     s.undoScripts,
+		ScriptsOver:     s.scriptsOver,
+		Linked:          linked,
+		UnreadLibraries: unreadLibs,
 	}
 	in.OSID = s.osID(ctx.Exists, res, hardlinks)
 	if s.kind == engine.Image {
