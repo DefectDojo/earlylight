@@ -186,7 +186,16 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	}
 	what := describe(f, v, vok)
 
+	hotspot := false
+	for _, l := range libs {
+		if l.HotSpot() {
+			hotspot = true
+		}
+	}
 	switch {
+	case openj9 && hotspot:
+		return f.set(Unknown, "the runtime's files contradict each other: a HotSpot VM library was read, but the release file or another VM library names OpenJ9",
+			what+": HotSpot and OpenJ9 evidence disagree")
 	case openj9:
 		return f.set(NotAffected, "an OpenJ9 VM: the vulnerable decoder is HotSpot code that OpenJ9 does not contain",
 			what+" runs the OpenJ9 VM, not HotSpot")
@@ -205,6 +214,15 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	ks, kwhy := knowledge.Judge(v)
 	f.Release = ks
 	read := lib.HotSpot() // the stub names are only meaningful in a HotSpot library that was read
+	if !read && ks != knowledge.Vulnerable {
+		// Only the release file states the version, and a release file is
+		// text anyone can write: it never clears a runtime alone.
+		why := fmt.Sprintf("the VM library's version line could not be read, and the release file alone (Java %s) does not prove the runtime is safe", v)
+		if lib.VBMIStubs {
+			why = fmt.Sprintf("the VM library carries the AVX-512 VBMI Base64 decoder, but its version line could not be read; the release file alone (Java %s) does not prove the fix", v)
+		}
+		return f.set(Unknown, why, what+": version not readable from the VM library")
+	}
 	switch ks {
 	case knowledge.NotAffected:
 		if read && lib.VBMIStubs {
@@ -475,24 +493,24 @@ func fixText(f Finding, v knowledge.Version, ok bool) string {
 	if f.Status == Mitigated {
 		interim = " The JVM options keep the vulnerable decoder from running until then; keep them until it is updated."
 	}
-	target := "a release with the fix (17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later on the same update)"
+	target := "a Java release with the fix (17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later on the same update)"
 	if ok && v.Feature() < 17 {
 		// A backported decoder (Oracle's Java 8 Performance Pack).
 		target = fmt.Sprintf("a build of Java %d from the same vendor with the fix (none was known on %s), or one without the backported AVX-512 decoder", v.Feature(), knowledge.Checked)
 	} else if ok {
 		if fx := knowledge.FixedVersion(v.Feature()); fx != "" {
-			target = fx + " or later of the same update"
+			target = "Java " + fx + " or later of the same update"
 		} else if v.Feature() >= 17 {
-			target = "a supported release with the fix, such as " + knowledge.Upgrade(v.Feature()) + " (Java " + fmt.Sprint(v.Feature()) + " received none)"
+			target = "a supported Java release with the fix, such as " + knowledge.Upgrade(v.Feature()) + " (Java " + fmt.Sprint(v.Feature()) + " received none)"
 		}
 	}
 	switch {
 	case f.Product != "":
-		return fmt.Sprintf("Upgrade %s to a release that bundles Java %s; its own runtime is not updated by the operating system's Java packages.%s", f.Product, target, interim)
+		return fmt.Sprintf("Upgrade %s to a release that bundles %s; its own runtime is not updated by the operating system's Java packages.%s", f.Product, target, interim)
 	case f.Package != nil:
-		return fmt.Sprintf("Update the %s package to Java %s: %s (%s).%s", f.Package.Name, target, upgradeLine(*f.Package), distroStatus(*f.Package), interim)
+		return fmt.Sprintf("Update the %s package to %s: %s (%s).%s", f.Package.Name, target, upgradeLine(*f.Package), distroStatus(*f.Package), interim)
 	case f.JLinked:
 		return fmt.Sprintf("Rebuild this jlink image from a JDK at %s.%s", target, interim)
 	}
-	return fmt.Sprintf("Update this runtime to Java %s (Amazon Corretto and SapMachine published theirs on 2026-11-17; check your vendor).%s", target, interim)
+	return fmt.Sprintf("Update this runtime to %s (Amazon Corretto and SapMachine published theirs on 2026-11-17; check your vendor).%s", target, interim)
 }

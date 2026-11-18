@@ -99,7 +99,7 @@ func TestReleaseFile(t *testing.T) {
 	}
 	// Java 8 JDK: the release file one level above jre/.
 	in = Input{
-		Libraries: []*jvm.Library{lib(t, "/usr/lib/jvm/j8/jre/lib/amd64/server/libjvm.so", testlib.Lib{})},
+		Libraries: []*jvm.Library{lib(t, "/usr/lib/jvm/j8/jre/lib/amd64/server/libjvm.so", testlib.Lib{Version: "1.8.0_452-b09"})},
 		Releases:  map[string]jvm.Release{"/usr/lib/jvm/j8": rel(t, "JAVA_VERSION", "1.8.0_452")},
 	}
 	if f := one(t, in); f.Status != NotAffected {

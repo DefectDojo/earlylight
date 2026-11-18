@@ -17,6 +17,7 @@ type Lib struct {
 	VBMI    bool
 	VMName  string // OpenJDK 64-Bit Server VM (default)
 	Extra   string // more bytes
+	Musl    bool   // the platform is <os>-<cpu>-musl, as on Alpine
 }
 
 // Build returns the file's bytes.
@@ -56,6 +57,9 @@ func Build(l Lib) []byte {
 		binary.LittleEndian.PutUint16(b[18:], m)
 	}
 	cpu := map[string]string{"x86-64": "amd64", "aarch64": "aarch64", "x86": "x86"}[l.Machine]
+	if l.Musl {
+		cpu += "-musl"
+	}
 	if l.Version != "" {
 		b = append(b, 0)
 		b = append(b, fmt.Sprintf("%s (%s) for %s-%s JRE (%s), built on 2026-10-20T00:00:00Z by \"admin\" with gcc 11.3.0", l.VMName, l.Version, l.OS, cpu, l.Version)...)

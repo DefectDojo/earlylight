@@ -79,8 +79,9 @@ func IsLibraryName(base string) bool {
 }
 
 // vmLine is the version line HotSpot compiles in. JDK 8 has the same shape
-// ("... JRE (1.8.0_452-b09)").
-var vmLine = regexp.MustCompile(`([A-Za-z][ -~]{2,80}?VM) \(([0-9][!-'*-~]{0,60})\) for ([a-z0-9_]{1,20})-([a-z0-9_]{1,20}) JRE \(([0-9][!-'*-~]{0,80})\)`)
+// ("... JRE (1.8.0_452-b09)"), and musl builds name their platform
+// linux-amd64-musl.
+var vmLine = regexp.MustCompile(`([A-Za-z][ -~]{2,80}?VM) \(([0-9][!-'*-~]{0,60})\) for ([a-z0-9_]{1,20})-([a-z0-9_]{1,20}(?:-[a-z0-9_]{1,20})?) JRE \(([0-9][!-'*-~]{0,80})\)`)
 
 // maxScan bounds how much of a file the version line is looked for in: it
 // sits in read-only data, and a libjvm is under 64 MiB.
@@ -107,7 +108,10 @@ func Inspect(p string, data []byte) (*Library, bool) {
 		l.Platform = string(m[3]) + "-" + string(m[4])
 	}
 	l.VBMIStubs = bytes.Contains(b, []byte("lookup_lo_base64\x00")) && bytes.Contains(b, []byte("pack_vec_base64\x00"))
-	if IsOpenJ9Name(base) || l.VMName == "" && (bytes.Contains(b, []byte("OPENJ9_JAVA_OPTIONS")) || bytes.Contains(b, []byte("j9vm"))) {
+	// OpenJ9: its VM library by name, or its lib/server redirector, which
+	// has no HotSpot version line, no HotSpot decoder stubs and names
+	// OPENJ9_JAVA_OPTIONS.
+	if IsOpenJ9Name(base) || l.VMName == "" && !l.VBMIStubs && bytes.Contains(b, []byte("OPENJ9_JAVA_OPTIONS")) {
 		l.OpenJ9 = true
 	}
 	return l, true
