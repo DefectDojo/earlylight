@@ -326,3 +326,11 @@ func TestR6NoHTTP2Evidence(t *testing.T) {
 		t.Errorf("Tengine 2.0.3 with HTTP/2: %v", st)
 	}
 }
+
+// R16: a fixed verdict rests on the version; the message says so.
+func TestR16FixedWording(t *testing.T) {
+	f := byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.9"))}, Source: mem{}}))[knowledge.Flow]
+	if strings.Contains(f.Message, "has the fix for") || !strings.Contains(f.Message, "version") {
+		t.Errorf("%s", f.Message)
+	}
+}

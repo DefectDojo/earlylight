@@ -226,7 +226,7 @@ func backport(c knowledge.CVE, st knowledge.Status, why string, b *ngx.Binary, p
 			return knowledge.Unknown, why + fmt.Sprintf("; its package version %s could not be compared with the backport %s", pkg.Version, r.Fixed)
 		}
 		if cmp >= 0 {
-			return knowledge.Fixed, fmt.Sprintf("%s %s carries the backported fix (%s, fixed in %s; %s)", pkg.Name, pkg.Version, r.Distro, r.Fixed, r.Advisory)
+			return knowledge.Fixed, fmt.Sprintf("%s %s is at or past the build %s lists as fixed (%s; %s)", pkg.Name, pkg.Version, r.Distro, r.Fixed, r.Advisory)
 		}
 	}
 	return st, why
@@ -344,7 +344,7 @@ func message(c knowledge.CVE, b *ngx.Binary, f Finding) string {
 	case knowledge.Vulnerable:
 		verb = "is vulnerable to"
 	case knowledge.Fixed:
-		verb = "has the fix for"
+		verb = "reports a version with the fix for"
 	case knowledge.NotAffected:
 		verb = "is not affected by"
 	default:

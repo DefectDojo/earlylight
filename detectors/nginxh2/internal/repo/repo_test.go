@@ -541,3 +541,29 @@ func TestR15MinorUpgrade(t *testing.T) {
 		t.Errorf("%s", f.Fix)
 	}
 }
+
+// R16: what is known only from a date or a version is worded so.
+func TestR16Wording(t *testing.T) {
+	res := scan(t, map[string]string{"Dockerfile": "FROM debian:trixie-slim\nRUN echo 'deb http://nginx.org/packages/mainline/debian trixie nginx' > /etc/apt/sources.list.d/n.list && apt-get update && apt-get install -y nginx\n"})
+	f := one(t, res, "Dockerfile", 2, RuleNotChecked, knowledge.Unknown)
+	if strings.Contains(f.Message, "a build from 2026-11-18 on gets") {
+		t.Errorf("certainty about nginx.org's packages: %s", f.Message)
+	}
+}
+
+// R17: a YAML file that stops decoding, or has more documents than are
+// read, is recorded as not checked.
+func TestR17YAMLErrors(t *testing.T) {
+	many := strings.Repeat("---\nkind: Service\n", 1100)
+	res := scan(t, map[string]string{
+		"bad.yaml":  "kind: ConfigMap\ndata:\n  a.conf: x\n---\nkey: [unclosed\n",
+		"many.yaml": many,
+	})
+	got := map[string]bool{}
+	for _, s := range res.Skips {
+		got[s.File] = true
+	}
+	if !got["bad.yaml"] || !got["many.yaml"] {
+		t.Errorf("%+v", res.Skips)
+	}
+}

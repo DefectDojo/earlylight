@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -117,6 +118,9 @@ const (
 	maxFiles    = 200000
 	maxFindings = 10000
 )
+
+// maxDocs bounds the YAML documents read from one file.
+const maxDocs = 1024
 
 var skipDirs = map[string]bool{".git": true, ".hg": true, ".svn": true, "node_modules": true, "bower_components": true}
 
@@ -586,9 +590,16 @@ func splitWhere(w string) (string, int) {
 // carry an nginx configuration.
 func (s *scanner) yamlFile(rel string, b []byte) {
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
-	for i := 0; i < 64; i++ {
+	for i := 0; ; i++ {
+		if i >= maxDocs {
+			s.skips = append(s.skips, Skip{File: rel, Reason: fmt.Sprintf("more than %d YAML documents: the rest are not checked for nginx configurations and charts", maxDocs)})
+			return
+		}
 		var doc yaml.Node
 		if err := dec.Decode(&doc); err != nil {
+			if !errors.Is(err, io.EOF) {
+				s.skips = append(s.skips, Skip{File: rel, Reason: fmt.Sprintf("could not be read as YAML after %d documents (%s): the rest is not checked for nginx configurations and charts", i, refs.CleanText(err.Error(), 120))})
+			}
 			return
 		}
 		if len(doc.Content) == 0 {

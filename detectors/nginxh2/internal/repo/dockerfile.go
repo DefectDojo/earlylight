@@ -497,13 +497,13 @@ func (s *scanner) unpinned(f *Finding, p pkg, st *stage) {
 	case st.nginxOrg:
 		f.Rule, f.Level, f.Status = RuleNotChecked, "note", knowledge.Unknown
 		f.Reason = "the release is decided when the image is built"
-		f.Message = "installs nginx from nginx.org without a version: a build from 2026-11-18 on gets 1.31.9 or 1.30.7; an image built before, or from a cached layer, does not"
+		f.Message = "installs nginx from nginx.org without a version: the release it gets depends on when the image is built (the official images, built from nginx.org's packages, moved to 1.31.9 and 1.30.7 on 2026-11-18; nginx.org's own pages were not read here), and an image built before, or from a cached layer, keeps the older release"
 		f.Fix = "Pin nginx=1.31.9-1~<codename> or 1.30.7-1~<codename> (or a floor) so a cached layer cannot keep the vulnerable release, and rebuild."
 	case st.distro == "alpine" && knowledge.AlpineFixed[st.branch] != "":
 		v := knowledge.AlpineFixed[st.branch]
 		f.Rule, f.Level, f.Status = RuleNotChecked, "note", knowledge.Unknown
 		f.Reason = "the release is decided when the image is built"
-		f.Message = fmt.Sprintf("installs %s on Alpine %s (%s) without a version: a build from %s on gets the fixed %s; an image built before, or from a cached layer, does not", p.name, st.branch, st.base, knowledge.Checked, v)
+		f.Message = fmt.Sprintf("installs %s on Alpine %s (%s) without a version: Alpine's index listed the fixed %s on %s, so a build after that gets it or a later build; an image built before, or from a cached layer, keeps the older release", p.name, st.branch, st.base, v, knowledge.Checked)
 		f.Fix = fmt.Sprintf("Add a floor (apk add '%s>=%s') so a cached layer cannot keep the vulnerable release, and rebuild.", p.name, v)
 	case st.distro == "alpine" && st.branch == "":
 		f.Rule, f.Level, f.Status = RuleNotChecked, "note", knowledge.Unknown
