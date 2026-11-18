@@ -86,12 +86,19 @@ type Input struct {
 	UnreadAll  bool
 	// Owners maps installed files to the OS package that installed them.
 	Owners map[string]Package
+	// Linked are VM library names that are links to a file the scan did
+	// not read as a VM library: the runtime there was not judged.
+	Linked []LinkedLibrary
 	// OSID is the target's os-release ID (rhel, rocky, debian), "" when
 	// it has none.
 	OSID string
 	// Resolve follows symbolic links within the target.
 	Resolve func(string) string
 }
+
+// LinkedLibrary is a VM library name that is a symbolic or hard link, and
+// the file it leads to.
+type LinkedLibrary struct{ Path, Target string }
 
 // Run judges every runtime in the target.
 func Run(in Input) []Finding {
@@ -105,15 +112,34 @@ func Run(in Input) []Finding {
 		}
 		byRoot[root] = append(byRoot[root], l)
 	}
+	linked := map[string][]LinkedLibrary{}
+	for _, l := range in.Linked {
+		root, ok := jvm.Root(l.Path)
+		if !ok {
+			root = path.Dir(l.Path)
+		}
+		linked[root] = append(linked[root], l)
+	}
 	roots := make([]string, 0, len(byRoot))
 	for r := range byRoot {
 		roots = append(roots, r)
+	}
+	for r := range linked {
+		if _, ok := byRoot[r]; !ok {
+			roots = append(roots, r)
+		}
 	}
 	sort.Strings(roots)
 	env := jvm.EnvMap(in.Env)
 	var out []Finding
 	for _, r := range roots {
-		out = append(out, withFix(redHat(in, judgeAll(in, env, r, byRoot[r]))))
+		f := Finding{Kind: KindRuntime, Path: r}
+		if libs := byRoot[r]; len(libs) > 0 {
+			f = redHat(in, judgeAll(in, env, r, libs))
+		} else if name, dir, ok := Product(r); ok {
+			f.Kind, f.Product, f.ProductDir = KindBundled, name, dir
+		}
+		out = append(out, withFix(notFollowed(f, linked[r])))
 	}
 	for _, l := range loose {
 		out = append(out, withFix(redHat(in, judge(in, env, path.Dir(l.Path), []*jvm.Library{l}))))
@@ -144,6 +170,31 @@ func judgeAll(in Input, env map[string]string, root string, libs []*jvm.Library)
 		worst.Reason += fmt.Sprintf("; this runtime holds %d VM libraries and the worst decides (%s alone: %s)", len(libs), f.Library.Path, f.Status)
 	}
 	return worst
+}
+
+// notFollowed applies what a runtime's linked VM libraries leave open: a
+// library that is a link to a file with another name was never read, so a
+// runtime with nothing else to judge is unknown, and so is one its other
+// libraries would clear.
+func notFollowed(f Finding, links []LinkedLibrary) Finding {
+	if len(links) == 0 {
+		return f
+	}
+	sort.Slice(links, func(i, j int) bool { return links[i].Path < links[j].Path })
+	why := fmt.Sprintf("its VM library %s is a link to %s, which the scan does not read as a VM library (a symbolic link is not followed, and a hard link in an image is read under the name of its first entry)", links[0].Path, links[0].Target)
+	if len(links) > 1 {
+		why += fmt.Sprintf(", and so are %d more", len(links)-1)
+	}
+	v, vok := knowledge.Parse(f.Version)
+	switch {
+	case f.Library == nil:
+		return f.set(Unknown, why+": the runtime was not checked", "Java runtime: its VM library is a link the scan did not follow")
+	case rank(f.Status) == 0:
+		f.Release = knowledge.Unknown
+		return f.set(Unknown, f.Reason+"; but "+why+": that library was not checked", describe(f, v, vok)+": one of its VM libraries is a link the scan did not follow")
+	}
+	f.Reason += "; " + why
+	return f
 }
 
 // rank orders verdicts from cleared to vulnerable.

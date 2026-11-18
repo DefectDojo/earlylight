@@ -463,14 +463,15 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	if osr := osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]); osr != "" {
 		ctx.Annotate("java4shell_os", osr)
 	}
-	if s.libs.len() == 0 {
+	links, hardlinks := ctx.Links()
+	res := resolver{links: links}
+	linked := s.linkedLibraries(ctx, res, links, hardlinks)
+	if s.libs.len() == 0 && len(linked) == 0 {
 		if len(s.limits) > 0 {
 			ctx.Problem("java4shell: the scan reached its limit on " + strings.Join(s.limits, " and ") + " for one target")
 		}
 		return nil
 	}
-	links, hardlinks := ctx.Links()
-	res := resolver{links: links}
 	owners := map[string]assess.Package{}
 	for _, db := range []string{"/lib/apk/db/installed", "/usr/lib/apk/db/installed"} {
 		if b := s.kept[db]; b != nil {
@@ -495,6 +496,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		UnreadScripts: s.unreadScripts,
 		UnreadDirs:    s.unreadDirs,
 		UnreadAll:     s.unreadAll,
+		Linked:        linked,
 	}
 	in.OSID = s.osID(ctx.Exists, res, hardlinks)
 	if s.kind == engine.Image {
@@ -561,6 +563,39 @@ func (s *scan) osID(exists func(string) bool, res resolver, hardlinks map[string
 	}
 	id, _, _ := strings.Cut(osRelease(s.kept[file]), " ")
 	return id
+}
+
+// linkedLibraries lists the VM library names that are links to a file the
+// scan did not read as a VM library. The walk hands a file out under its
+// own name only: a symbolic link is recorded, not followed, and a hard
+// link in an image names a file read under the name of its first entry.
+// When that name is not a VM library's, the library was never read. A link
+// to a library that was read is judged there, and a link to nothing in an
+// image is no runtime.
+func (s *scan) linkedLibraries(ctx engine.TargetContext, res resolver, links, hardlinks map[string]string) []assess.LinkedLibrary {
+	var out []assess.LinkedLibrary
+	add := func(p, to string) {
+		if s.libs.has(to) || s.kind == engine.Image && !ctx.Exists(to) {
+			return
+		}
+		if len(out) >= maxLibs {
+			s.limit(fmt.Sprintf("more than %d Java VM libraries", maxLibs))
+			return
+		}
+		out = append(out, assess.LinkedLibrary{Path: p, Target: to})
+	}
+	for p := range links {
+		if jvm.IsLibraryName(path.Base(p)) {
+			add(p, res.resolve(p))
+		}
+	}
+	for p, to := range hardlinks {
+		if jvm.IsLibraryName(path.Base(p)) {
+			add(p, to)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 var verdicts = map[assess.Status]engine.Verdict{
@@ -785,6 +820,9 @@ func (l *pathList[T]) drop(p string) []T {
 }
 
 func (l *pathList[T]) len() int { return l.live }
+
+// has reports whether p added an item that was not dropped.
+func (l *pathList[T]) has(p string) bool { return len(l.at[p]) > 0 }
 
 // list returns the items not dropped, in the order added.
 func (l *pathList[T]) list() []T {
