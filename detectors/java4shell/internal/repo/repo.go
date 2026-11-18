@@ -184,7 +184,7 @@ func scanList(ctx context.Context, root string, list []string, opts Options, res
 		}
 	}
 	sort.Strings(list)
-	s := &scanner{root: root, opts: opts, mitigated: map[string]string{}, buildArgs: map[string]string{}}
+	s := &scanner{root: root, opts: opts, mitigated: map[string]string{}}
 	for _, rel := range list {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
@@ -329,13 +329,24 @@ type scanner struct {
 	mitigated map[string]string
 	// unparsed are Dockerfiles the instruction parser refused.
 	unparsed []Skip
-	// buildArgs maps a build argument a Compose file sets to that file.
-	buildArgs map[string]string
+	// buildArgs are the build arguments Compose files set.
+	buildArgs []buildArg
+}
+
+// buildArg is one build argument a Compose service sets: the value, when
+// the file gives it as a literal, and the Dockerfile the service builds,
+// "" when the tree cannot place it (a context in a variable or outside).
+type buildArg struct {
+	name, value string
+	literal     bool
+	compose     string // the Compose file
+	dockerfile  string
 }
 
 // composeArgs records the build arguments a Compose file sets
-// (services.*.build.args, as a map or a list of NAME=value): they replace
-// the ARG defaults a Dockerfile's FROM is read with.
+// (services.*.build.args, as a map or a list of NAME=value) and the
+// Dockerfile each service builds: they replace the ARG defaults that
+// Dockerfile's FROM is read with.
 func (s *scanner) composeArgs(rel string, b []byte) {
 	if !bytes.Contains(b, []byte("args")) || !bytes.Contains(b, []byte("build")) {
 		return
@@ -345,25 +356,45 @@ func (s *scanner) composeArgs(rel string, b []byte) {
 		return // the image reference scan records a file it cannot parse
 	}
 	walkYAML(&doc, 0, func(m *yaml.Node) {
-		args := deref(mapGet(deref(mapGet(m, "build")), "args"))
+		build := deref(mapGet(m, "build"))
+		args := deref(mapGet(build, "args"))
 		if args == nil {
 			return
 		}
-		var names []string
+		// The Dockerfile: build.dockerfile inside build.context, both
+		// relative to the Compose file.
+		dockerfile := ""
+		ctx, df := ".", "Dockerfile"
+		if n := deref(mapGet(build, "context")); n != nil && n.Kind == yaml.ScalarNode {
+			ctx = n.Value
+		}
+		if n := deref(mapGet(build, "dockerfile")); n != nil && n.Kind == yaml.ScalarNode {
+			df = n.Value
+		}
+		if !strings.ContainsAny(ctx+df, "$:") && !path.IsAbs(ctx) && !path.IsAbs(df) {
+			if p := path.Join(path.Dir(rel), ctx, df); p != ".." && !strings.HasPrefix(p, "../") {
+				dockerfile = p
+			} else {
+				return // a Dockerfile outside the tree
+			}
+		}
+		add := func(name, value string, set bool) {
+			if name == "" || len(s.buildArgs) >= 4096 {
+				return
+			}
+			s.buildArgs = append(s.buildArgs, buildArg{name: name, value: value, literal: set && !strings.Contains(value, "$"), compose: rel, dockerfile: dockerfile})
+		}
 		switch args.Kind {
 		case yaml.MappingNode:
 			for i := 0; i+1 < len(args.Content); i += 2 {
-				names = append(names, args.Content[i].Value)
+				v := deref(args.Content[i+1])
+				// A null value takes the variable from the environment.
+				add(args.Content[i].Value, v.Value, v.Kind == yaml.ScalarNode && v.Tag != "!!null")
 			}
 		case yaml.SequenceNode:
 			for _, a := range args.Content {
-				n, _, _ := strings.Cut(a.Value, "=")
-				names = append(names, n)
-			}
-		}
-		for _, n := range names {
-			if _, ok := s.buildArgs[n]; !ok && n != "" && len(s.buildArgs) < 4096 {
-				s.buildArgs[n] = rel
+				n, v, ok := strings.Cut(a.Value, "=")
+				add(n, v, ok)
 			}
 		}
 	})

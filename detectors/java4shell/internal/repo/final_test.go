@@ -256,13 +256,14 @@ func TestBuildSettingsForms(t *testing.T) {
 }
 
 // Final review B6: a Compose file that sets a build argument overrides the
-// ARG default a FROM is read with: the image that build uses is not
-// checked.
+// ARG default a FROM is read with: the image that build uses is judged
+// with the argument's value (TestComposeBuildArgsAreJudged has the cases
+// where it cannot be).
 func TestComposeBuildArgs(t *testing.T) {
 	const df = "ARG TAG=21.0.13.1_2-jre\nFROM eclipse-temurin:${TAG}\n"
 	for name, c := range map[string]struct{ compose, want string }{
-		"a map":            {"services:\n  app:\n    build:\n      context: .\n      args:\n        TAG: 21.0.13_9-jre\n", "skip Dockerfile:2"},
-		"a list":           {"services:\n  app:\n    build:\n      context: .\n      args:\n        - TAG=21.0.13_9-jre\n", "skip Dockerfile:2"},
+		"a map":            {"services:\n  app:\n    build:\n      context: .\n      args:\n        TAG: 21.0.13_9-jre\n", "Dockerfile:2 image-pin vulnerable"},
+		"a list":           {"services:\n  app:\n    build:\n      context: .\n      args:\n        - TAG=21.0.13_9-jre\n", "Dockerfile:2 image-pin vulnerable"},
 		"another argument": {"services:\n  app:\n    build:\n      context: .\n      args:\n        HTTP_PROXY: http://proxy\n", ""},
 		"no arguments":     {"services:\n  app:\n    build: .\n", ""},
 	} {
