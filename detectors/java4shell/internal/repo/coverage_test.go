@@ -31,14 +31,14 @@ func TestFivePartRepo(t *testing.T) {
 			"RUN apt-get install -y msopenjdk-21=21.0.13.0.2-1",
 			"RUN apt-get install -y temurin-27-jdk=27.0.1.0.2+1",
 		}, "\n") + "\n",
-		".java-version": "27.0.1.0.2\n",
-		"a/.java-version": "temurin64-27.0.1.0.2\n",
-		"b/.java-version": "oracle64-17.0.21.0.3\n",
-		".sdkmanrc":       "java=21.0.13.0.2-ms\n",
-		"c/.sdkmanrc":     "java=25.0.5.0.3-oracle\n",
-		".tool-versions":  "java temurin-27.0.1.0.2+1\n",
+		".java-version":    "27.0.1.0.2\n",
+		"a/.java-version":  "temurin64-27.0.1.0.2\n",
+		"b/.java-version":  "oracle64-17.0.21.0.3\n",
+		".sdkmanrc":        "java=21.0.13.0.2-ms\n",
+		"c/.sdkmanrc":      "java=25.0.5.0.3-oracle\n",
+		".tool-versions":   "java temurin-27.0.1.0.2+1\n",
 		"d/.tool-versions": "java microsoft-17.0.21.0.2\n",
-		"mise.toml":       "[tools]\njava = \"oracle-25.0.5.0.3\"\n",
+		"mise.toml":        "[tools]\njava = \"oracle-25.0.5.0.3\"\n",
 		".github/workflows/ci.yml": `on: push
 jobs:
   b:

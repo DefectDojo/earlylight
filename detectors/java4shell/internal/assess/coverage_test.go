@@ -52,7 +52,7 @@ func TestFivePartPackages(t *testing.T) {
 	// verdict comes from the VM library whatever the package version says.
 	for _, c := range []struct {
 		root, lib string
-		owners   map[string]Package
+		owners    map[string]Package
 	}{
 		{"/usr/lib/jvm/java-17-openjdk-amd64", "17.0.21.0.3+1-Debian-1", map[string]Package{
 			"/usr/lib/jvm/java-17-openjdk-amd64/lib/server/libjvm.so": {Manager: "dpkg", Name: "openjdk-17-jre-headless", Version: "17.0.21.0.3+1-1"}}},
