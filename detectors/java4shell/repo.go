@@ -375,7 +375,7 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 		// distribution; one that does can move to its next release). The
 		// current image is read for its os-release only. A current tag that
 		// is gone is tolerated when the new tag names its OS.
-		c := engine.ScanImage([]engine.Detector{osProbe{}}, current, engine.Options{Platform: "linux/amd64", Guarded: true, PublicOnly: o.PublicOnly})
+		c := osOf(current, o)
 		_, tag, _ := strings.Cut(target[strings.LastIndex(target, "/")+1:], ":")
 		if c.Error == "" || !repo.NamesBaseOS(tag) {
 			if err := repo.SameBase(annotation(c, "java4shell_os"), annotation(t, "java4shell_os")); err != nil {
@@ -415,4 +415,9 @@ func annotation(t *engine.Target, key string) string {
 	}
 	v, _ := t.Annotations[key].(string)
 	return v
+}
+
+// osOf reads an image for its os-release only.
+func osOf(ref string, o engine.Options) *engine.Target {
+	return engine.ScanImage([]engine.Detector{osProbe{}}, ref, engine.Options{Platform: "linux/amd64", MaxFileSize: o.MaxFileSize, Guarded: true, PublicOnly: o.PublicOnly})
 }

@@ -153,3 +153,20 @@ func TestVerifierBaseOS(t *testing.T) {
 		t.Errorf("unbounded os-release: %d bytes", len(got))
 	}
 }
+
+// Round-3 finding 3: the os-release probe keeps to --max-file-size.
+func TestOSProbeMaxFileSize(t *testing.T) {
+	host := testRegistry(t)
+	ref := host + "/acme/big:1"
+	pushImage(t, ref, map[string][]byte{"/etc/os-release": append([]byte("ID=ubuntu\n"), bytes.Repeat([]byte("#"), 2<<20)...)})
+	tg := osOf(ref, engine.Options{MaxFileSize: 1 << 20})
+	skipped := false
+	for _, s := range tg.Skipped {
+		if s.Path == "/etc/os-release" {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Errorf("a 2 MiB os-release was read past a 1 MiB limit: %+v", tg.Skipped)
+	}
+}
