@@ -1,6 +1,7 @@
 package emudhra_test
 
 import (
+	"archive/tar"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -41,5 +42,38 @@ func TestBotocoreNotClearedByUnreadCertifi(t *testing.T) {
 		if code != c.want {
 			t.Errorf("%s: exit %d, want %d\n%s%s", c.name, code, c.want, out.String(), errb.String())
 		}
+	}
+}
+
+// Round-3 review finding 2: of two image entries for certifi's bundle, the
+// last is the file: one over --max-file-size after a read one does not
+// clear botocore's bundle.
+func TestCertifiNamedTwice(t *testing.T) {
+	g3, err := os.ReadFile(filepath.Join(g3Bundle(t), "cacert.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := "usr/lib/python3/site-packages/"
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, e := range []struct {
+		name string
+		body []byte
+	}{
+		{site + "botocore/cacert.pem", g3},
+		{site + "certifi/cacert.pem", []byte("# empty bundle\n")},
+		{site + "certifi/cacert.pem", append(g3, bytes.Repeat([]byte("#"), 5000)...)},
+	} {
+		tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.body)), Typeflag: tar.TypeReg})
+		tw.Write(e.body)
+	}
+	tw.Close()
+	img := filepath.Join(t.TempDir(), "rootfs.tar")
+	if err := os.WriteFile(img, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := cli.Run(engine, []string{"scan", "image", "--detector", "emudhra", "--max-file-size", "4096", "rootfs:" + img}, &out, &errb); code != 1 {
+		t.Errorf("exit %d, want 1\n%s%s", code, out.String(), errb.String())
 	}
 }

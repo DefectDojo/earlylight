@@ -10,6 +10,7 @@ package emudhra
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -100,6 +101,20 @@ type scan struct {
 // certifi/core.py, which is only ever read for the cacert.pem next to it.
 func keep(p string) bool {
 	return p == "/etc/ca-certificates.conf" || strings.HasSuffix(p, "/certifi/core.py")
+}
+
+// Forget drops what was found in p, and inside it: an image names it
+// again, and the last entry is the file.
+func (s *scan) Forget(p string) {
+	delete(s.files, p)
+	delete(s.scanned, p)
+	in := func(q string) bool { return q == p || strings.HasPrefix(q, p+"!/") }
+	s.findings = slices.DeleteFunc(s.findings, func(x detect.Finding) bool { return in(x.Path) })
+	for k := range s.dedupe {
+		if in(k[:strings.IndexByte(k, 0)]) {
+			delete(s.dedupe, k)
+		}
+	}
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
