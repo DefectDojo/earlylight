@@ -115,7 +115,16 @@ var (
 // since JDK 10.
 func GraalVMOwnNumber(s string) bool {
 	v, ok := Parse(s)
-	return ok && v.Feature() >= 10 && len(v.Nums) >= 2 && v.Nums[1] != 0
+	return ok && NotJava(v.Nums)
+}
+
+// NotJava reports numbers that are not a Java version: since JDK 10 the
+// second number (the interim release) has always been 0.
+func NotJava(nums []int) bool { return len(nums) >= 2 && nums[0] >= 10 && nums[1] != 0 }
+
+// NotJavaWhy says why a version is not judged.
+func NotJavaWhy(v string) string {
+	return fmt.Sprintf("%s is not a Java version: Java's second number has been 0 since JDK 10 (GraalVM Community's own release numbers, such as 25.5.5.0.3 for JDK 25.0.5.0.3, look like this), so which Java update it names is not known", v)
 }
 
 // graalRelease is a well-formed GraalVM release number: two to four

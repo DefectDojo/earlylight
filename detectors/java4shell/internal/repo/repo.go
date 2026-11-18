@@ -347,6 +347,13 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 	if vendor != "" {
 		props["vendor"] = vendor
 	}
+	if knowledge.NotJava(tv.Nums) && !isGraal(vendor) {
+		s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown, Reason: knowledge.NotJavaWhy(verText),
+			Message: fmt.Sprintf("%s selects %s, which is not a Java version: not checked for the Java4Shell fix", source, verText),
+			Fix:     "Check which Java release this selects: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update have the fix.",
+			Props:   props})
+		return
+	}
 	if isGraal(vendor) {
 		s.graalVersion(rel, line, tv, st, why, source, graalDist(vendor), props)
 		return

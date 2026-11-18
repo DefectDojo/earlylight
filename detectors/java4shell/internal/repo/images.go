@@ -163,6 +163,9 @@ func (f Family) ParseTag(tag string) (TagVersion, bool) {
 // both unfixed and fixed releases is Unknown: the image has to be read.
 func JudgeTag(tv TagVersion) (knowledge.Status, string) {
 	nums := tv.Nums
+	if knowledge.NotJava(nums) {
+		return knowledge.Unknown, "the tag names " + tv.Text + ", which " + strings.TrimPrefix(knowledge.NotJavaWhy(tv.Text), tv.Text+" ")
+	}
 	feature := nums[0]
 	what := "the tag names Java " + tv.Text
 	if !tv.Exact {

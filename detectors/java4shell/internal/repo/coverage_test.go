@@ -465,3 +465,27 @@ func TestGraalVMRound2Repo(t *testing.T) {
 		{"c/.tool-versions", 1, RuleNotChecked, StatusUnknown},
 	})
 }
+
+// Round 2, item 6: a number whose second field is not 0 is not a Java
+// version wherever it appears (GraalVM Community's 25.5.5.0.3).
+func TestNotJavaNumbers(t *testing.T) {
+	res := scan(t, tree(t, map[string]string{
+		".java-version":    "25.5.5.0.3\n",
+		"a/.tool-versions": "java 25.5.5.0.3\n",
+		"b/.tool-versions": "java openjdk-25.5.5.0.3\n",
+		".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - uses: actions/setup-java@v5\n        with:\n          distribution: oracle\n          java-version: 25.1.3\n",
+		"Dockerfile": "FROM eclipse-temurin:25.5.5\n",
+	}))
+	checkAll(t, res, []want{
+		{".java-version", 1, RuleNotChecked, StatusUnknown},
+		{"a/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"b/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{".github/workflows/ci.yml", 7, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 1, RuleNotChecked, StatusUnknown},
+	})
+	for _, f := range res.Findings {
+		if !strings.Contains(f.Reason, "not a Java version") {
+			t.Errorf("%s:%d: %s", f.File, f.Line, f.Reason)
+		}
+	}
+}
