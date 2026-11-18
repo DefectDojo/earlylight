@@ -61,7 +61,7 @@ func TestLargeDockerfileMemory(t *testing.T) {
 	if want := "Dockerfile:2 os-package vulnerable, skip Dockerfile:0"; g != want {
 		t.Errorf("[%s], want [%s]", g, want)
 	}
-	if mb := (after.TotalAlloc - before.TotalAlloc) >> 20; mb > 160 {
+	if mb := (after.TotalAlloc - before.TotalAlloc) >> 20; mb > 160 && !raceDetector {
 		t.Errorf("scanning a %d MiB Dockerfile allocated %d MiB", b.Len()>>20, mb)
 	}
 }
