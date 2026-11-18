@@ -12,8 +12,9 @@ import (
 // CVE is the vulnerability this detector checks.
 const CVE = "CVE-2026-114938"
 
-// Bug is the OpenJDK change taken as the fix. The mapping is inferred:
-// the OpenJDK advisory that would state it could not be read, and the
+// Bug is the OpenJDK change taken as the fix. The mapping is inferred: the
+// OpenJDK advisory confirms the component (hotspot/compiler), the lines (17,
+// 21, 25, 27) and the last affected releases but names no JDK bug, and the
 // public descriptions of the CVE match this change (FACTS.md).
 const Bug = "JDK-8393212"
 
@@ -37,6 +38,33 @@ const (
 	// their fixed releases.
 	VendorFixPublished = "2026-11-17"
 )
+
+// The advisories that name the affected releases (read by the lead on
+// 2026-11-17/18; FACTS.md).
+const (
+	OpenJDKAdvisory = "https://openjdk.org/groups/vulnerability/advisories/2026-11-17"
+	OracleAdvisory  = "https://www.oracle.com/security-alerts/cspunov2026.html"
+)
+
+// CVSS is the score OpenJDK and Oracle give (CVSS 3.1
+// AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H). Calif scores it 9.2 and Red Hat
+// 9.8 (FACTS.md).
+const CVSS = "8.1"
+
+// Vendor status as of Checked, for fix texts.
+const (
+	// VendorsFixed published fixed releases.
+	VendorsFixed = "Amazon Corretto and SapMachine"
+	// VendorsNotFixed had published none.
+	VendorsNotFixed = "Temurin, Microsoft, Debian, Ubuntu, Alpine and Red Hat"
+	// VendorsNotChecked could not be checked.
+	VendorsNotChecked = "Azul and BellSoft Liberica"
+)
+
+// VendorStatus says who had published a fixed release, in words.
+func VendorStatus() string {
+	return VendorsFixed + " published theirs on " + VendorFixPublished + "; " + VendorsNotFixed + " had not " + AsOf() + "; " + VendorsNotChecked + " were not checked"
+}
 
 // AsOf says a status statement's date.
 func AsOf() string { return "as of " + Checked + ", the date of this detector's release data" }

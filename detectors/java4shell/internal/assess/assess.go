@@ -575,5 +575,5 @@ func fixText(f Finding, v knowledge.Version, ok bool) string {
 	case f.JLinked:
 		return fmt.Sprintf("Rebuild this jlink image from a JDK at %s.%s", target, interim)
 	}
-	return fmt.Sprintf("Update this runtime to %s (Amazon Corretto and SapMachine published theirs on %s; others had not %s: check your vendor).%s", target, knowledge.VendorFixPublished, knowledge.AsOf(), interim)
+	return fmt.Sprintf("Update this runtime to %s (%s: check your vendor).%s", target, knowledge.VendorStatus(), interim)
 }

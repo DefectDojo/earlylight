@@ -32,15 +32,15 @@ const (
 func repoKinds() []engine.Kind {
 	cwe := []string{"CWE-787"}
 	return []engine.Kind{
-		{ID: KindImagePin, Title: "Source tree uses a Java image without the Java4Shell fix", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,
+		{ID: KindImagePin, Title: "Source tree uses a Java image without the Java4Shell fix", Level: "error", SecuritySeverity: knowledge.CVSS, CWEs: cwe,
 			Description: "A Dockerfile, Compose, Kubernetes, Helm values, CI or Jib file names a Java runtime image (eclipse-temurin, amazoncorretto, azul/zulu-openjdk, bellsoft/liberica, sapmachine and others) whose tag is a Java release without the fix."},
-		{ID: KindImage, Title: "Image the source tree uses holds a Java runtime vulnerable to Java4Shell", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,
+		{ID: KindImage, Title: "Image the source tree uses holds a Java runtime vulnerable to Java4Shell", Level: "error", SecuritySeverity: knowledge.CVSS, CWEs: cwe,
 			Description: "An image the tree builds on or deploys, read from its registry for linux/amd64 and judged as scan image does: a moving tag, or a product image (Jira, Elasticsearch, Jenkins...) that carries its own runtime."},
 		{ID: KindJavaPin, Title: "Source tree pins a Java release without the Java4Shell fix", Level: "warning", SecuritySeverity: "6.5", CWEs: cwe,
 			Description: "A version file (.java-version, .sdkmanrc, .tool-versions, mise), a GitHub Actions setup-java step, a buildpack setting or a Maven Enforcer floor that selects or allows a Java release without the fix."},
-		{ID: KindLine, Title: "Source tree selects a Java line that received no Java4Shell fix", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,
+		{ID: KindLine, Title: "Source tree selects a Java line that received no Java4Shell fix", Level: "error", SecuritySeverity: knowledge.CVSS, CWEs: cwe,
 			Description: "A toolchain, version file, CI step, buildpack, image or package of Java 18, 19, 20, 22, 23, 24 or 26: those lines are end of life and received no fix."},
-		{ID: KindPackage, Title: "Dockerfile installs a distribution OpenJDK package without the Java4Shell fix", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,
+		{ID: KindPackage, Title: "Dockerfile installs a distribution OpenJDK package without the Java4Shell fix", Level: "error", SecuritySeverity: knowledge.CVSS, CWEs: cwe,
 			Description: "An apt, apk, dnf, yum or microdnf install of an OpenJDK 17 or later package pinned to a release without the fix, or without a version while the distribution had no fixed package."},
 		{ID: KindNotChecked, Title: "Java runtime not checked for the Java4Shell fix", Level: "note",
 			Description: "An image whose tag does not name one Java release (a moving tag, a product image) that was not read, a workflow expression, or a file that could not be read. It is not known to be safe."},

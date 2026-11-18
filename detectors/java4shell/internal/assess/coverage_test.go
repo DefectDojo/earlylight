@@ -151,3 +151,12 @@ func TestRedHatRuntime(t *testing.T) {
 		t.Errorf("Fedora: %s (%s)", f.Status, f.Reason)
 	}
 }
+
+func TestVendorStatusFix(t *testing.T) {
+	f := one(t, Input{Libraries: []*jvm.Library{lib(t, temurin+"/lib/server/libjvm.so", testlib.Lib{Version: "21.0.13+9-LTS", VBMI: true})}})
+	for _, s := range []string{"Amazon Corretto and SapMachine", "Temurin, Microsoft, Debian, Ubuntu, Alpine and Red Hat had not", "Azul and BellSoft Liberica were not checked"} {
+		if !strings.Contains(f.Fix, s) {
+			t.Errorf("fix text does not say %q: %s", s, f.Fix)
+		}
+	}
+}

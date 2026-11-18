@@ -1,6 +1,7 @@
 package java4shell_test
 
 import (
+	"github.com/DefectDojo/earlylight/detectors/java4shell"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,5 +69,29 @@ func TestGraalVMLayout(t *testing.T) {
 	}
 	if f := fs["/opt/graalvm-25"]; f.Verdict != engine.Unknown || !strings.Contains(f.Reason, "no fixed GraalVM build") {
 		t.Errorf("GraalVM at the OpenJDK fix: %+v", f)
+	}
+}
+
+// CVSS: the OpenJDK advisory and Oracle score CVE-2026-114938 8.1; that is
+// the primary score (Calif's 9.2 and Red Hat's 9.8 are in FACTS.md). The
+// two advisories are linked now that they have been read.
+func TestManifestScoreAndLinks(t *testing.T) {
+	m := (&java4shell.Detector{}).Manifest()
+	for _, k := range m.Kinds {
+		if k.SecuritySeverity == "9.2" || k.SecuritySeverity == "9.8" {
+			t.Errorf("kind %s scores %s, want the OpenJDK/Oracle 8.1", k.ID, k.SecuritySeverity)
+		}
+		if k.Level == "error" && k.SecuritySeverity != "8.1" {
+			t.Errorf("kind %s scores %q", k.ID, k.SecuritySeverity)
+		}
+	}
+	links := strings.Join(m.Advisories, " ")
+	for _, u := range []string{"https://openjdk.org/groups/vulnerability/advisories/2026-11-17", "https://www.oracle.com/security-alerts/cspunov2026.html"} {
+		if !strings.Contains(links, u) {
+			t.Errorf("advisory %s not linked", u)
+		}
+	}
+	if !strings.Contains(m.Kinds[0].Description, "GraalVM") {
+		t.Error("the runtime kind does not say GraalVM is affected")
 	}
 }

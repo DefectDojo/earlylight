@@ -210,3 +210,36 @@ func TestRedHatRepo(t *testing.T) {
 		t.Errorf("the listed fixed build reported: %+v", f)
 	}
 }
+
+// Vendor status of 2026-11-18: Temurin, Microsoft, Debian, Ubuntu, Alpine
+// had no fixed release and Red Hat no fixed build; Azul and Liberica were
+// not checked.
+func TestVendorStatus(t *testing.T) {
+	res := scan(t, tree(t, map[string]string{
+		"Dockerfile":               "FROM ubuntu:24.04\nRUN apt-get install -y msopenjdk-21\nRUN apt-get install -y zulu21-jdk\n",
+		".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - uses: actions/setup-java@v5\n        with:\n          distribution: microsoft\n          java-version: '21'\n",
+		".java-version":            "21.0.13\n",
+	}))
+	checkAll(t, res, []want{
+		{"Dockerfile", 2, RulePackage, StatusVulnerable},
+		{"Dockerfile", 3, RulePackage, StatusUnknown},
+		{".github/workflows/ci.yml", 7, RuleJavaPin, StatusVulnerable},
+		{".java-version", 1, RuleJavaPin, StatusVulnerable},
+	})
+	for _, c := range []struct {
+		file string
+		line int
+		text []string
+	}{
+		{"Dockerfile", 2, []string{"Microsoft", "2026-11-18"}},
+		{".github/workflows/ci.yml", 7, []string{"Microsoft", "2026-11-18"}},
+		{".java-version", 1, []string{"Temurin, Microsoft, Debian, Ubuntu, Alpine and Red Hat", "Azul and BellSoft Liberica were not checked"}},
+	} {
+		f, _ := find(res, c.file, c.line)
+		for _, s := range c.text {
+			if !strings.Contains(f.Reason+" "+f.Fix, s) {
+				t.Errorf("%s:%d does not say %q: %s / %s", c.file, c.line, s, f.Reason, f.Fix)
+			}
+		}
+	}
+}

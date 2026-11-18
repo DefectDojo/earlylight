@@ -372,7 +372,7 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 
 func pinFix(feature int, source string) string {
 	if fx := knowledge.FixedVersion(feature); fx != "" {
-		return fmt.Sprintf("Select Java %s or later of the same update in %s once your vendor publishes it (Amazon Corretto and SapMachine did on %s; Temurin, Debian, Ubuntu and Alpine had not %s), and reinstall.", fx, source, knowledge.VendorFixPublished, knowledge.AsOf())
+		return fmt.Sprintf("Select Java %s or later of the same update in %s once your vendor publishes it (%s), and reinstall.", fx, source, knowledge.VendorStatus())
 	}
 	return fmt.Sprintf("Java %d received no fix: move %s to a supported release with the fix, such as %s.", feature, source, knowledge.Upgrade(feature))
 }
@@ -523,6 +523,10 @@ func vendorWord(s string) string {
 // moving version ("21") installs a fixed release.
 var publishedFix = map[string]bool{"corretto": true, "sapmachine": true}
 
+// notFixedYet are the distributions (setup-java names) whose newest release
+// of each fixed line did not have the fix when the data was checked.
+var notFixedYet = map[string]string{"temurin": "Eclipse Temurin", "adopt": "Eclipse Temurin", "adopt-hotspot": "Eclipse Temurin", "microsoft": "Microsoft"}
+
 func (s *scanner) workflow(rel string, b []byte) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(b, &doc); err != nil {
@@ -622,11 +626,11 @@ func (s *scanner) movingSetupJava(rel string, v *yaml.Node, ver, dist string) {
 	}
 	fx := knowledge.FixedVersion(feature)
 	props := map[string]string{"source": "actions/setup-java", "current": ver, "distribution": dist, "fixed_in": fx}
-	if dist == "temurin" || dist == "adopt" || dist == "adopt-hotspot" {
+	if who := notFixedYet[dist]; who != "" {
 		s.add(Finding{Rule: RuleJavaPin, File: rel, Line: v.Line, Level: "warning", Status: StatusVulnerable, Props: props,
-			Reason:  fmt.Sprintf("Eclipse Temurin had published no Java %s as of %s, so the job installs a release without the fix", fx, knowledge.Checked),
+			Reason:  fmt.Sprintf("%s had published no Java %s as of %s, so the job installs a release without the fix", who, fx, knowledge.Checked),
 			Message: fmt.Sprintf("actions/setup-java installs the newest %s Java %d, which had no Java4Shell fix yet", orAny(dist), feature),
-			Fix:     fmt.Sprintf("Rerun once Temurin publishes Java %s, or use distribution corretto or sapmachine, whose newest Java %d has the fix.", fx, feature)})
+			Fix:     fmt.Sprintf("Rerun once %s publishes Java %s, or use distribution corretto or sapmachine, whose newest Java %d has the fix.", who, fx, feature)})
 		return
 	}
 	s.add(Finding{Rule: RuleNotChecked, File: rel, Line: v.Line, Level: "note", Status: StatusUnknown, Props: props,
@@ -1113,7 +1117,7 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 			Reason:  fmt.Sprintf("%s published Java %s on %s: an image built after that gets it, one built or cached before does not", who, fx, knowledge.VendorFixPublished),
 			Message: fmt.Sprintf("installs %s %s: whether the image has the Java4Shell fix depends on when it was built", h.name, what),
 			Fix:     fmt.Sprintf("Rebuild without the layer cache, or pin %s to Java %s or later.", h.name, fx)})
-	case "zulu", "msopenjdk":
+	case "zulu":
 		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown, Props: props,
 			Reason:  fmt.Sprintf("%s's fixed release could not be checked (%s)", who, knowledge.Checked),
 			Message: fmt.Sprintf("installs %s %s: not checked for the Java4Shell fix", h.name, what),
@@ -1126,9 +1130,9 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 			fix = rpmFix(h.name)
 		}
 		msg := fmt.Sprintf("installs %s %s: it gets whatever the distribution has, which had no Java4Shell fix yet", h.name, what)
-		if h.vendor == "temurin" {
-			reason = fmt.Sprintf("Eclipse Temurin had published no %s release as of %s, so a build today installs a release without it", fx, knowledge.Checked)
-			msg = fmt.Sprintf("installs %s %s: Temurin had no Java4Shell fix yet", h.name, what)
+		if h.vendor == "temurin" || h.vendor == "msopenjdk" {
+			reason = fmt.Sprintf("%s had published no %s release as of %s, so a build today installs a release without it", who, fx, knowledge.Checked)
+			msg = fmt.Sprintf("installs %s %s: %s had no Java4Shell fix yet", h.name, what, who)
 		}
 		if h.feature == 0 {
 			msg = fmt.Sprintf("installs %s, the distribution's default OpenJDK (17 or later on current Debian and Ubuntu releases), which had no Java4Shell fix yet", h.name)
