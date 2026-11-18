@@ -382,15 +382,30 @@ func (s *scanner) javaVersionFile(rel, text string) {
 		if l == "" || strings.HasPrefix(l, "#") {
 			continue
 		}
-		if m := versionInText.FindStringIndex(l); m != nil {
-			ver := l[m[0]:m[1]]
-			if vendorWord(l) == "corretto" {
-				ver = CorrettoJava(ver)
-			}
-			s.judgeVersion(rel, i+1, m[0], ver, ".java-version", vendorWord(l))
+		// jenv names: temurin64-21.0.13, openjdk64-17.0.21, 21.0.13.
+		m := jenvName.FindStringSubmatch(l)
+		if m == nil {
+			return
 		}
+		ver := m[2]
+		if strings.HasPrefix(strings.ToLower(m[1]), "corretto") {
+			ver = CorrettoJava(ver)
+		}
+		s.judgeVersion(rel, i+1, 0, ver, ".java-version", vendorWord(l))
 		return // jenv reads the first line
 	}
+}
+
+var jenvName = regexp.MustCompile(`^(?:([A-Za-z][A-Za-z.]*?)(?:64)?-)?(\d{1,3}(?:\.\d{1,9}){0,5})(?:$|[^\d.])`)
+
+// ownNumbers notes a pin written in a vendor's own version numbers
+// (Zulu 21.50.19, GraalVM 22.3.r17), which do not name the Java update.
+func (s *scanner) ownNumbers(rel string, line int, value, source string) {
+	s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown,
+		Reason:  "the vendor's own version number does not name the Java update",
+		Message: fmt.Sprintf("%s selects %s, written in the vendor's own version numbers: not checked for the Java4Shell fix", source, refs.CleanText(value, 80)),
+		Fix:     "Check which Java update this release is built on: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update have the fix.",
+		Props:   map[string]string{"source": source, "current": refs.CleanText(value, 80)}})
 }
 
 var sdkmanLine = regexp.MustCompile(`^\s*java\s*=\s*(\d[\w.]*?)(?:-([a-z]+))?\s*$`)
@@ -409,11 +424,10 @@ func (s *scanner) sdkmanrc(rel, text string) {
 		if vendor == "" {
 			vendor = m[2]
 		}
-		if m[2] == "graalce" || m[2] == "graal" || m[2] == "nik" || m[2] == "mandrel" {
-			// GraalVM versions follow the JDK's only for 17 and later builds named so.
-			if !strings.Contains(m[1], ".") {
-				continue
-			}
+		if strings.Contains(m[1], ".r") || m[2] == "grl" || (m[2] == "graalce" || m[2] == "graal" || m[2] == "nik" || m[2] == "mandrel") && strings.Count(m[1], ".") < 2 {
+			// GraalVM 22.3.r17 and the like: GraalVM's numbers.
+			s.ownNumbers(rel, i+1, strings.TrimSpace(strings.SplitN(l, "=", 2)[1]), ".sdkmanrc")
+			continue
 		}
 		s.judgeVersion(rel, i+1, strings.Index(l, m[1]), m[1], ".sdkmanrc", vendor)
 	}
@@ -431,7 +445,8 @@ func (s *scanner) asdfValue(rel string, line int, value, source string) {
 	}
 	switch m[1] {
 	case "zulu", "graalvm", "mandrel", "jetbrains":
-		return // their own version numbers
+		s.ownNumbers(rel, line, value, source) // their own version numbers
+		return
 	}
 	ver := m[2]
 	if m[1] == "corretto" {
@@ -556,6 +571,7 @@ func (s *scanner) setupJava(rel string, v *yaml.Node, dist string, text []string
 	before := len(s.findings)
 	s.judgeVersion(rel, v.Line, 0, m, "actions/setup-java", dist)
 	if len(s.findings) == before {
+		s.movingSetupJava(rel, v, m, dist)
 		return
 	}
 	f := &s.findings[len(s.findings)-1]
@@ -576,6 +592,33 @@ func (s *scanner) setupJava(rel string, v *yaml.Node, dist string, text []string
 	if !f.Fixable && f.Rule == RuleJavaPin {
 		f.Fix = fmt.Sprintf("Set java-version to %s or later once the %s distribution publishes it (it had not when this detector's data was checked, %s), or use distribution corretto or sapmachine, which have.", knowledge.FixedVersion(feature), orAny(dist), knowledge.Checked)
 	}
+}
+
+// movingSetupJava judges a moving setup-java version of a line with a fix
+// ("21"): it installs the distribution's newest release of that line when
+// the job runs.
+func (s *scanner) movingSetupJava(rel string, v *yaml.Node, ver, dist string) {
+	if strings.Count(ver, ".") >= 2 {
+		return
+	}
+	feature := atoi(ver)
+	l, ok := knowledge.LineOf(feature)
+	if !ok || l.Fixed == nil || publishedFix[dist] {
+		return
+	}
+	fx := knowledge.FixedVersion(feature)
+	props := map[string]string{"source": "actions/setup-java", "current": ver, "distribution": dist, "fixed_in": fx}
+	if dist == "temurin" || dist == "adopt" || dist == "adopt-hotspot" {
+		s.add(Finding{Rule: RuleJavaPin, File: rel, Line: v.Line, Level: "warning", Status: StatusVulnerable, Props: props,
+			Reason:  fmt.Sprintf("Eclipse Temurin had published no Java %s as of %s, so the job installs a release without the fix", fx, knowledge.Checked),
+			Message: fmt.Sprintf("actions/setup-java installs the newest %s Java %d, which had no Java4Shell fix yet", orAny(dist), feature),
+			Fix:     fmt.Sprintf("Rerun once Temurin publishes Java %s, or use distribution corretto or sapmachine, whose newest Java %d has the fix.", fx, feature)})
+		return
+	}
+	s.add(Finding{Rule: RuleNotChecked, File: rel, Line: v.Line, Level: "note", Status: StatusUnknown, Props: props,
+		Reason:  fmt.Sprintf("whether %s had published Java %s could not be checked", orAny(dist), fx),
+		Message: fmt.Sprintf("actions/setup-java installs the newest %s Java %d: not checked for the Java4Shell fix", orAny(dist), feature),
+		Fix:     fmt.Sprintf("Check that the installed release is Java %s or later.", fx)})
 }
 
 func orAny(d string) string {
@@ -715,12 +758,15 @@ func (s *scanner) jibRef(rel string, line, col int, image string) {
 // ---- Dockerfiles: OS packages and the mitigation a stage sets
 
 var (
-	aptJava  = regexp.MustCompile(`\b(openjdk-(\d{1,2})-(?:jre|jdk)(?:-headless)?)(?:=([^\s;&|]+))?`)
-	apkJava  = regexp.MustCompile(`\b(openjdk(\d{1,2})(?:-jre|-jdk|-jre-headless|-jmods)?)(?:[=~><]+([^\s;&|]+))?`)
-	rpmJava  = regexp.MustCompile(`\b(java-(\d{1,2})-(?:openjdk|amazon-corretto)(?:-headless|-devel)?)(?:-(\d[\w.:-]*))?`)
-	envJTO   = regexp.MustCompile(`(?i)^\s*ENV\s+`)
-	cmdLine  = regexp.MustCompile(`(?i)^\s*(?:ENTRYPOINT|CMD)\s+`)
-	fromLine = regexp.MustCompile(`(?i)^\s*FROM\s`)
+	installRE   = regexp.MustCompile(`\b(?:apt-get|apt|apk|dnf|yum|microdnf|tdnf|zypper)\b(?:\s+-{1,2}[\w=./:-]+)*\s+(?:install|add|in)\b`)
+	aptJava     = regexp.MustCompile(`\b(openjdk-(\d{1,2})-(?:jre|jdk)(?:-headless)?)\b(=([^\s;&|]+))?`)
+	apkJava     = regexp.MustCompile(`\b(openjdk(\d{1,2})(?:-jre|-jdk|-jre-headless|-jmods)?)(?:([=~><]+)([^\s;&|]+))?`)
+	rpmJava     = regexp.MustCompile(`\b(java-(\d{1,2})-(openjdk|amazon-corretto)(?:-headless|-devel|-jdk)?)(?:-(\d[\w.:-]*))?`)
+	vendorJava  = regexp.MustCompile(`\b((temurin|zulu|msopenjdk|sapmachine)-?(\d{1,2})(?:-ca)?(?:-(?:jdk|jre))?(?:-headless)?)\b(=([^\s;&|]+))?`)
+	defaultJava = regexp.MustCompile(`\b(default-(?:jre|jdk)(?:-headless)?)\b`)
+	envJTO      = regexp.MustCompile(`(?i)^\s*ENV\s+`)
+	cmdLine     = regexp.MustCompile(`(?i)^\s*(?:ENTRYPOINT|CMD)\s+`)
+	fromLine    = regexp.MustCompile(`(?i)^\s*FROM\s`)
 )
 
 func (s *scanner) dockerfile(rel, text string) {
@@ -783,87 +829,149 @@ func (s *scanner) dockerfile(rel, text string) {
 	}
 }
 
-// packages finds distribution OpenJDK packages a RUN line installs.
+// packages finds the OpenJDK packages a RUN line installs: distribution
+// packages and the vendors' own (Temurin, Corretto, Zulu, Microsoft,
+// SapMachine), with or without a version.
 func (s *scanner) packages(rel string, line int, run string) {
-	lower := run
-	installs := strings.Contains(lower, "apt-get install") || strings.Contains(lower, "apt install") || strings.Contains(lower, "apk add") ||
-		strings.Contains(lower, "dnf install") || strings.Contains(lower, "yum install") || strings.Contains(lower, "microdnf install") ||
-		strings.Contains(lower, "zypper in")
-	if !installs {
+	if !installRE.MatchString(run) {
 		return
 	}
-	type hit struct{ name, ver string }
-	var hits []struct {
-		hit
-		feature int
-		mgr     string
-	}
+	var hits []pkgHit
 	for _, m := range aptJava.FindAllStringSubmatch(run, -1) {
-		n := 0
-		fmt.Sscanf(m[2], "%d", &n)
-		hits = append(hits, struct {
-			hit
-			feature int
-			mgr     string
-		}{hit{m[1], m[3]}, n, "apt"})
+		hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: opOf(m[3]), ver: m[4], mgr: "apt", vendor: "distribution"})
 	}
 	for _, m := range apkJava.FindAllStringSubmatch(run, -1) {
-		n := 0
-		fmt.Sscanf(m[2], "%d", &n)
-		hits = append(hits, struct {
-			hit
-			feature int
-			mgr     string
-		}{hit{m[1], m[3]}, n, "apk"})
+		hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: m[3], ver: m[4], mgr: "apk", vendor: "distribution"})
 	}
 	for _, m := range rpmJava.FindAllStringSubmatch(run, -1) {
-		n := 0
-		fmt.Sscanf(m[2], "%d", &n)
-		hits = append(hits, struct {
-			hit
-			feature int
-			mgr     string
-		}{hit{m[1], m[3]}, n, "rpm"})
+		v := "distribution"
+		if m[3] == "amazon-corretto" {
+			v = "corretto"
+		}
+		hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), ver: m[4], mgr: "rpm", vendor: v})
+	}
+	for _, m := range vendorJava.FindAllStringSubmatch(run, -1) {
+		hits = append(hits, pkgHit{name: m[1], feature: atoi(m[3]), op: opOf(m[4]), ver: m[5], mgr: "package", vendor: m[2]})
+	}
+	for _, m := range defaultJava.FindAllStringSubmatch(run, -1) {
+		hits = append(hits, pkgHit{name: m[1], mgr: "apt", vendor: "distribution"})
 	}
 	for _, h := range hits {
-		if h.feature < 17 {
-			continue // Java 8 and 11 packages are not affected
-		}
-		props := map[string]string{"package": h.name, "manager": h.mgr}
-		l, _ := knowledge.LineOf(h.feature)
-		if l.Fixed == nil {
+		s.judgePackage(rel, line, h)
+	}
+}
+
+// pkgHit is one Java package an install names.
+type pkgHit struct {
+	name, op, ver, mgr string
+	vendor             string // distribution, corretto, temurin, zulu, msopenjdk, sapmachine
+	feature            int    // 0: the distribution's default (default-jre)
+}
+
+func opOf(v string) string {
+	if v != "" {
+		return "="
+	}
+	return ""
+}
+
+func atoi(s string) int {
+	n := 0
+	fmt.Sscanf(s, "%d", &n)
+	return n
+}
+
+var vendorNames = map[string]string{"distribution": "the distribution", "corretto": "Amazon Corretto", "temurin": "Eclipse Temurin",
+	"zulu": "Azul Zulu", "msopenjdk": "Microsoft", "sapmachine": "SapMachine"}
+
+// pinnedVersion is the Java version a package pin fixes, or "" for a pin
+// that matches several releases (17.*, ~17, 17).
+func pinnedVersion(h pkgHit) string {
+	if h.ver == "" || strings.Contains(h.ver, "*") || strings.Contains(h.op, "~") || strings.ContainsAny(h.op, "<>") {
+		return ""
+	}
+	up := h.ver
+	if i := strings.IndexByte(up, ':'); i >= 0 {
+		up = up[i+1:]
+	}
+	up = strings.ReplaceAll(up, "_p", "+")
+	if h.vendor == "corretto" {
+		up = CorrettoJava(up)
+	}
+	v, ok := knowledge.Parse(up)
+	if !ok || len(v.Nums) < 3 {
+		return ""
+	}
+	return up
+}
+
+func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
+	if h.feature > 0 && h.feature < 17 {
+		return // Java 8 and 11 packages are not affected
+	}
+	props := map[string]string{"package": h.name, "manager": h.mgr}
+	who := vendorNames[h.vendor]
+	if h.feature > 0 {
+		l, ok := knowledge.LineOf(h.feature)
+		switch {
+		case !ok:
+			s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown, Props: props,
+				Reason:  fmt.Sprintf("Java %d is not in this detector's release data (%s)", h.feature, knowledge.Checked),
+				Message: fmt.Sprintf("installs %s, a Java %d package this detector has no release data for", h.name, h.feature)})
+			return
+		case l.Fixed == nil:
 			s.add(Finding{Rule: RuleLine, File: rel, Line: line, Level: "error", Status: StatusVulnerable, Reason: l.Note,
 				Message: fmt.Sprintf("installs %s, a Java %d package: that line received no Java4Shell fix", h.name, h.feature),
 				Fix:     fmt.Sprintf("Install a supported Java package with the fix instead, such as %s.", knowledge.Upgrade(h.feature)), Props: props})
-			continue
+			return
 		}
-		fx := knowledge.FixedVersion(h.feature)
-		props["fixed_in"] = fx
-		if h.ver != "" {
-			props["current"] = h.ver
-			up := h.ver
-			if i := strings.IndexByte(up, ':'); i >= 0 {
-				up = up[i+1:]
-			}
-			up = strings.ReplaceAll(up, "_p", "+")
-			if strings.Contains(h.name, "corretto") {
-				up = CorrettoJava(up)
-			}
-			if v, ok := knowledge.Parse(up); ok {
-				if st, why := knowledge.Judge(v); st == knowledge.Vulnerable {
-					s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "error", Status: StatusVulnerable, Reason: why,
-						Message: fmt.Sprintf("pins %s to %s, without the Java4Shell fix", h.name, h.ver),
-						Fix:     fmt.Sprintf("Pin %s to a package of Java %s or later once your distribution publishes it (none had as of %s), then rebuild. Until then set ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics in this stage.", h.name, fx, knowledge.Checked),
-						Props:   props})
-				}
-			}
-			continue
+		props["fixed_in"] = knowledge.FixedVersion(h.feature)
+	}
+	fx := props["fixed_in"]
+	if fx == "" {
+		fx = "a release with the fix"
+	}
+	if up := pinnedVersion(h); up != "" {
+		props["current"] = h.ver
+		v, _ := knowledge.Parse(up)
+		if st, why := knowledge.Judge(v); st == knowledge.Vulnerable {
+			s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "error", Status: StatusVulnerable, Reason: why,
+				Message: fmt.Sprintf("pins %s to %s, without the Java4Shell fix", h.name, h.ver),
+				Fix:     fmt.Sprintf("Pin %s to a package of Java %s or later once %s publishes it, then rebuild. Until then set ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics in this stage.", h.name, fx, who),
+				Props:   props})
 		}
-		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "warning", Status: StatusVulnerable,
-			Reason:  fmt.Sprintf("Debian, Ubuntu and Alpine had published no %s package with the fix as of %s (Red Hat's status was not checked), so a build today installs a release without it", fx, knowledge.Checked),
-			Message: fmt.Sprintf("installs %s without a version: it gets whatever the distribution has, which had no Java4Shell fix yet", h.name),
-			Fix:     fmt.Sprintf("Rebuild once the distribution publishes Java %s or later and check the installed version; until then set ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics in this stage.", fx),
-			Props:   props})
+		return
+	}
+	if h.ver != "" {
+		props["current"] = h.ver
+	}
+	what := "without a version"
+	if h.ver != "" {
+		what = "with a version range (" + h.op + h.ver + ")"
+	}
+	switch h.vendor {
+	case "corretto", "sapmachine":
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown, Props: props,
+			Reason:  fmt.Sprintf("%s published Java %s on 2026-11-17: an image built after that gets it, one built or cached before does not", who, fx),
+			Message: fmt.Sprintf("installs %s %s: whether the image has the Java4Shell fix depends on when it was built", h.name, what),
+			Fix:     fmt.Sprintf("Rebuild without the layer cache, or pin %s to Java %s or later.", h.name, fx)})
+	case "zulu", "msopenjdk":
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown, Props: props,
+			Reason:  fmt.Sprintf("%s's fixed release could not be checked (%s)", who, knowledge.Checked),
+			Message: fmt.Sprintf("installs %s %s: not checked for the Java4Shell fix", h.name, what),
+			Fix:     fmt.Sprintf("Check that %s's package is Java %s or later, then rebuild.", who, fx)})
+	default:
+		reason := fmt.Sprintf("Debian, Ubuntu and Alpine had published no %s package with the fix as of %s (Red Hat's status was not checked), so a build today installs a release without it", fx, knowledge.Checked)
+		msg := fmt.Sprintf("installs %s %s: it gets whatever the distribution has, which had no Java4Shell fix yet", h.name, what)
+		if h.vendor == "temurin" {
+			reason = fmt.Sprintf("Eclipse Temurin had published no %s release as of %s, so a build today installs a release without it", fx, knowledge.Checked)
+			msg = fmt.Sprintf("installs %s %s: Temurin had no Java4Shell fix yet", h.name, what)
+		}
+		if h.feature == 0 {
+			msg = fmt.Sprintf("installs %s, the distribution's default OpenJDK (17 or later on current Debian and Ubuntu releases), which had no Java4Shell fix yet", h.name)
+		}
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "warning", Status: StatusVulnerable, Reason: reason, Message: msg, Props: props,
+			Fix: fmt.Sprintf("Rebuild once %s publishes Java %s or later and check the installed version; until then set ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics in this stage.", who, fx)})
 	}
 }
 

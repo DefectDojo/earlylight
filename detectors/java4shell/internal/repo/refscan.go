@@ -47,6 +47,10 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 	if img == "" || img == "scratch" || strings.Contains(img, "$") || !amd64(opts) {
 		return
 	}
+	// FROM --platform=linux/arm64: a stage that is not x86-64.
+	if p := r.Platform; p != "" && !strings.Contains(p, "$") && !strings.Contains(p, "amd64") && !strings.Contains(p, "x86_64") {
+		return
+	}
 	mit := s.mitigationFor(r)
 	props := map[string]string{"image": img}
 	if mit != "" {

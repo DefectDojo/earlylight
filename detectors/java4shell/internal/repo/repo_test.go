@@ -160,9 +160,8 @@ func TestScanTree(t *testing.T) {
 		t.Errorf("setup-java corretto not fixable: %+v", f)
 	}
 	check(".github/workflows/ci.yml", 11, RuleNotChecked, StatusUnknown)
-	if _, ok := find(res, ".github/workflows/ci.yml", 15); ok {
-		t.Error("a moving setup-java version of a fixed line reported")
-	}
+	// Temurin's newest 17 had no fix: the moving version is reported.
+	check(".github/workflows/ci.yml", 15, RuleJavaPin, StatusVulnerable)
 	check("build.gradle.kts", 1, RuleLine, StatusVulnerable)
 	check("build.gradle.kts", 2, RuleImagePin, StatusVulnerable)
 	check("pom.xml", 2, RuleJavaPin, StatusUnknown)
