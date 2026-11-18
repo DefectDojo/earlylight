@@ -274,3 +274,55 @@ func TestR2StartCommand(t *testing.T) {
 		t.Errorf("a custom entrypoint.d script: %s", got)
 	}
 }
+
+// Review 2, finding 6: a build is cleared as built without HTTP/2 only
+// when its configure arguments were read whole and it has a module list;
+// HTTP/2 on a core older than 1.9.5 is judged by the code where known.
+func TestR6NoHTTP2Evidence(t *testing.T) {
+	statuses := func(b ngxtest.Build) map[string]knowledge.Status {
+		out := map[string]knowledge.Status{}
+		for _, f := range Run(Input{Binaries: []*ngx.Binary{bin(t, b)}, Source: mem{}}) {
+			out[f.CVE] = f.Status
+		}
+		return out
+	}
+	// 1.9.7: no module list; 4,451 bytes of configure arguments with the
+	// HTTP/2 flag last.
+	long := ngxtest.Build{Line: "nginx/1.9.7", Configure: "--prefix=/x " + strings.Repeat("--with-cc-opt=-Dx ", 246) + "--with-http_v2_module"}
+	if st := statuses(long)[knowledge.Flow]; st == knowledge.NotAffected {
+		t.Errorf("truncated configure arguments cleared 1.9.7: %s", st)
+	}
+	or := long
+	or.Line = "openresty/1.9.7.5"
+	if st := statuses(or)[knowledge.Flow]; st == knowledge.NotAffected {
+		t.Errorf("truncated configure arguments cleared OpenResty 1.9.7.5: %s", st)
+	}
+	// No module list, short configure arguments without the flag: not
+	// cleared either (the module list is the second witness).
+	if st := statuses(ngxtest.Build{Line: "nginx/1.9.7", Configure: "--prefix=/x"})[knowledge.Flow]; st == knowledge.NotAffected {
+		t.Errorf("no module list cleared 1.9.7: %s", st)
+	}
+	// Both witnesses read, neither has HTTP/2: not affected.
+	both := ngxtest.Default("1.31.8")
+	both.Configure, both.Modules = "--prefix=/etc/nginx", []string{"ngx_core_module", "ngx_http_module"}
+	if st := statuses(both)[knowledge.Flow]; st != knowledge.NotAffected {
+		t.Errorf("no HTTP/2 with both witnesses: %s", st)
+	}
+	// HTTP/2 on a core before 1.9.5: a vendor backport, not cleared.
+	plus := ngxtest.Default("1.9.4")
+	plus.Line = "nginx/1.9.4 (nginx-plus-r7)"
+	if st := statuses(plus); st[knowledge.Flow] != knowledge.Unknown || st[knowledge.Reuse] != knowledge.Unknown {
+		t.Errorf("Plus r7 with HTTP/2 on 1.9.4: %v", st)
+	}
+	// Tengine 2.2.2 in its old one-line form, on core 1.8.1, with HTTP/2:
+	// the unfixed flow-control code; not the 2021 reuse change.
+	te := ngxtest.Default("1.8.1")
+	te.Line, te.Tengine = "", "Tengine/2.2.2 (nginx/1.8.1)"
+	if st := statuses(te); st[knowledge.Flow] != knowledge.Vulnerable || st[knowledge.Reuse] != knowledge.NotAffected {
+		t.Errorf("Tengine 2.2.2: %v", st)
+	}
+	te.Tengine = "Tengine/2.0.3 (nginx/1.4.6)"
+	if st := statuses(te); st[knowledge.Flow] != knowledge.Unknown {
+		t.Errorf("Tengine 2.0.3 with HTTP/2: %v", st)
+	}
+}

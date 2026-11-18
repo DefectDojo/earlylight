@@ -171,7 +171,7 @@ func judge(c knowledge.CVE, b *ngx.Binary) (knowledge.Status, string) {
 			return knowledge.Unknown, "its Tengine version could not be read: " + err.Error()
 		}
 		core, _ := knowledge.ParseV(b.Core)
-		st, why = knowledge.Tengine(c, v, core)
+		st, why = knowledge.Tengine(c, v, core, b.HTTP2 == ngx.Yes)
 	case ngx.Angie:
 		v, err := knowledge.ParseV(b.Version)
 		if err != nil {
@@ -184,8 +184,15 @@ func judge(c knowledge.CVE, b *ngx.Binary) (knowledge.Status, string) {
 	default:
 		return knowledge.Unknown, "not an nginx build the detector knows"
 	}
+	if b.HTTP2 == ngx.Yes && b.Product != ngx.Tengine && st == knowledge.NotAffected {
+		if core, err := knowledge.ParseV(b.Core); err == nil && knowledge.Cmp(core, knowledge.MustV("1.9.5")) < 0 {
+			// HTTP/2 compiled into a core that predates nginx's: a
+			// vendor's own backport, whose code is not known.
+			return knowledge.Unknown, fmt.Sprintf("HTTP/2 is compiled into a build on nginx %s, older than nginx's own HTTP/2 (1.9.5): a vendor backport, whose code is not known", b.Core)
+		}
+	}
 	if b.HTTP2 == ngx.No && (st == knowledge.Vulnerable || st == knowledge.Unknown) {
-		return knowledge.NotAffected, "built without HTTP/2: its configure arguments do not have --with-http_v2_module and it has no ngx_http_v2_module, so the flawed code is not in it"
+		return knowledge.NotAffected, "built without HTTP/2: its configure arguments, read to their end, do not have --with-http_v2_module and its module list has no ngx_http_v2_module, so the flawed code is not in it"
 	}
 	return st, why
 }

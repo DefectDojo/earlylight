@@ -257,7 +257,21 @@ var (
 
 // Tengine judges a Tengine release by its own number, with its nginx core
 // for the lower bound.
-func Tengine(c CVE, v, core V) (Status, string) {
+func Tengine(c CVE, v, core V, http2 bool) (Status, string) {
+	if core != nil && len(core) == 3 && Cmp(core, MustV("1.9.5")) < 0 && http2 {
+		// HTTP/2 on a core that predates it: Tengine 2.1.2 to 2.2.x carry
+		// nginx's HTTP/2 code with the unfixed WINDOW_UPDATE check and
+		// refund, and not the 2021 reuse change (alibaba/tengine
+		// src/http/v2 at tengine-2.1.2 and tengine-2.2.2; the change came
+		// with 2.4.0).
+		switch {
+		case Cmp(v, MustV("2.1.2")) >= 0 && Cmp(v, MustV("2.3.0")) < 0 && c.ID == Flow:
+			return Vulnerable, fmt.Sprintf("Tengine %s carries nginx's HTTP/2 code on core %s with the unfixed flow-control check (read from Tengine's source)", v, core)
+		case Cmp(v, MustV("2.1.2")) >= 0 && Cmp(v, MustV("2.3.0")) < 0:
+			return NotAffected, fmt.Sprintf("Tengine %s's HTTP/2 code predates the reuse change that brought the flaw (read from Tengine's source; it came with Tengine 2.4.0)", v)
+		}
+		return Unknown, fmt.Sprintf("Tengine %s has HTTP/2 on core %s, older than nginx's HTTP/2: which code it carries is not known", v, core)
+	}
 	if core != nil && len(core) == 3 && Cmp(core, c.Introduced) < 0 {
 		return NotAffected, fmt.Sprintf("Tengine %s is based on nginx %s, older than %s", v, core, c.Introduced)
 	}
@@ -265,9 +279,9 @@ func Tengine(c CVE, v, core V) (Status, string) {
 		if core == nil {
 			return Unknown, fmt.Sprintf("Tengine %s: its nginx core could not be read", v)
 		}
-		return Vulnerable, fmt.Sprintf("Tengine %s (nginx core %s) carries the unfixed HTTP/2 code; no Tengine release carries the fix (newest on %s: 3.2.0)", v, core, Checked)
+		return Vulnerable, fmt.Sprintf("Tengine %s (nginx core %s) carries the unfixed HTTP/2 code; no Tengine release with the fix was known on %s (newest tag 3.2.0-rc5)", v, core, Checked)
 	}
-	return Unknown, fmt.Sprintf("Tengine %s is newer than the newest release known on %s (3.2.0); whether it carries the fix is not known", v, Checked)
+	return Unknown, fmt.Sprintf("Tengine %s is newer than the newest release known on %s (3.2.0-rc5); whether it carries the fix is not known", v, Checked)
 }
 
 // Angie judges an Angie release. Angie forked from nginx 1.23 (2022),

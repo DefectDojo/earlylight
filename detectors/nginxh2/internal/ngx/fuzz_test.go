@@ -47,7 +47,7 @@ func FuzzVersions(f *testing.F) {
 				knowledge.OpenResty(c, x)
 				knowledge.Plus(c, v, x)
 				knowledge.Angie(c, x)
-				knowledge.Tengine(c, x, x)
+				knowledge.Tengine(c, x, x, true)
 			}
 		}
 		knowledge.UpstreamOf(deb)

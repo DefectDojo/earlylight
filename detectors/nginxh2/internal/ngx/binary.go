@@ -54,6 +54,12 @@ type Binary struct {
 	TLS         Tri    `json:"tls"`
 	// Configure is the configure arguments, when the binary has them.
 	Configure string `json:"configure,omitempty"`
+	// ConfigureWhole is set when the configure arguments were read to
+	// their end, not cut at a limit.
+	ConfigureWhole bool `json:"configure_whole,omitempty"`
+	// ModuleList is set when the binary has nginx's module list (1.9.11
+	// and later), the other witness of what is compiled in.
+	ModuleList bool `json:"module_list,omitempty"`
 	// ConfPath and Prefix are the defaults compiled in.
 	ConfPath string `json:"conf_path,omitempty"`
 	Prefix   string `json:"prefix,omitempty"`
@@ -133,6 +139,10 @@ func (b *Binary) versionLines(data []byte) bool {
 			if n, v, _ := split(ng[0]); n == "nginx" {
 				b.Core = v
 			}
+		}
+		// Before 2.3.3 one line: "Tengine/2.2.2 (nginx/1.8.1)".
+		if n, v, ok := strings.Cut(b.Build, "/"); ok && n == "nginx" && b.Core == "" {
+			b.Core = v
 		}
 		return true
 	case len(ng) == 0:
@@ -227,8 +237,21 @@ func (b *Binary) configure(data []byte) {
 	if i < 0 {
 		return
 	}
-	b.Configure = strings.TrimSpace(line(data, i+len(configureMark)))
+	at := i + len(configureMark)
+	end := at
+	for end < len(data) && end-at < maxConfigure && data[end] != 0 && data[end] != '\n' && data[end] != '\r' {
+		end++
+	}
+	b.Configure = strings.TrimSpace(string(data[at:end]))
+	b.ConfigureWhole = end < len(data) && end-at < maxConfigure
+	if len(b.Configure) > maxField {
+		b.Configure = b.Configure[:maxField]
+		b.ConfigureWhole = false // kept short: only its head is reported
+	}
 }
+
+// maxConfigure is the most of the configure arguments read.
+const maxConfigure = 64 << 10
 
 // features decides HTTP/2 and TLS. The module's name in the module list
 // proves it is compiled in. Its absence proves it is not only when the
@@ -236,11 +259,13 @@ func (b *Binary) configure(data []byte) {
 // before 1.9.11 have no module list).
 func (b *Binary) features(data []byte) {
 	cfg := " " + b.Configure + " "
+	b.ModuleList = bytes.Contains(data, coreModule)
 	decide := func(name []byte, flag string) Tri {
 		switch {
 		case bytes.Contains(data, name), strings.Contains(cfg, " "+flag+" "):
 			return Yes
-		case b.Configure != "":
+		case b.ConfigureWhole && b.ModuleList:
+			// Both witnesses read whole, and neither has it.
 			return No
 		}
 		return Unknown

@@ -104,10 +104,11 @@ func TestFeatures(t *testing.T) {
 	if b.HTTP2 != ngx.No || b.TLS != ngx.Yes {
 		t.Errorf("no v2: %+v", b)
 	}
-	// Before 1.9.11 there is no module list: the configure flag decides.
+	// Before 1.9.11 there is no module list: the configure flag shows
+	// what is in, and nothing shows what is out.
 	old := ngxtest.Build{Line: "nginx/1.9.6", Configure: "--with-http_v2_module"}
 	b, _ = ngx.Inspect("/x", old.Bytes())
-	if b.HTTP2 != ngx.Yes || b.TLS != ngx.No {
+	if b.HTTP2 != ngx.Yes || b.TLS != ngx.Unknown {
 		t.Errorf("old: %+v", b)
 	}
 	// Empty configure arguments and no module list: not known.
@@ -117,7 +118,7 @@ func TestFeatures(t *testing.T) {
 		t.Errorf("bare: %+v", b)
 	}
 	// --with-http_v2_module_x is not the flag.
-	near := ngxtest.Build{Line: "nginx/1.9.6", Configure: "--with-http_v2_modulex --prefix=/usr/local/nginx"}
+	near := ngxtest.Build{Line: "nginx/1.9.6", Configure: "--with-http_v2_modulex --prefix=/usr/local/nginx", Modules: []string{"ngx_core_module"}}
 	b, _ = ngx.Inspect("/x", near.Bytes())
 	if b.HTTP2 != ngx.No || b.ConfPath != "/usr/local/nginx/conf/nginx.conf" {
 		t.Errorf("near: %+v", b)

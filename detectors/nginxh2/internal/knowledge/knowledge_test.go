@@ -83,19 +83,19 @@ func TestOpenResty(t *testing.T) {
 func TestForks(t *testing.T) {
 	flow, _ := ByID(Flow)
 	reuse, _ := ByID(Reuse)
-	if st, _ := Tengine(reuse, MustV("3.2.0"), MustV("1.31.5")); st != Vulnerable {
+	if st, _ := Tengine(reuse, MustV("3.2.0"), MustV("1.31.5"), true); st != Vulnerable {
 		t.Errorf("Tengine 3.2.0 = %s", st)
 	}
-	if st, _ := Tengine(reuse, MustV("2.3.3"), MustV("1.18.0")); st != NotAffected {
+	if st, _ := Tengine(reuse, MustV("2.3.3"), MustV("1.18.0"), true); st != NotAffected {
 		t.Errorf("Tengine 2.3.3 on 1.18.0 reuse = %s", st)
 	}
-	if st, _ := Tengine(flow, MustV("2.3.3"), MustV("1.18.0")); st != Vulnerable {
+	if st, _ := Tengine(flow, MustV("2.3.3"), MustV("1.18.0"), true); st != Vulnerable {
 		t.Errorf("Tengine 2.3.3 on 1.18.0 flow = %s", st)
 	}
-	if st, _ := Tengine(flow, MustV("3.3.0"), MustV("1.31.9")); st != Unknown {
+	if st, _ := Tengine(flow, MustV("3.3.0"), MustV("1.31.9"), true); st != Unknown {
 		t.Errorf("Tengine 3.3.0 = %s, want unknown (never cleared by its core)", st)
 	}
-	if st, _ := Tengine(flow, MustV("3.1.0"), nil); st != Unknown {
+	if st, _ := Tengine(flow, MustV("3.1.0"), nil, true); st != Unknown {
 		t.Errorf("Tengine without core = %s", st)
 	}
 	if st, _ := Angie(flow, MustV("1.12.4")); st != Vulnerable {
