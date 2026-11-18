@@ -495,6 +495,7 @@ func readShell(text string, wanted map[string]bool) (map[string]string, bool) {
 	exported := map[string]bool{}
 	depth := 0
 	heredoc, dashed := "", false
+lines:
 	for _, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSuffix(raw, "\r")
 		if heredoc != "" {
@@ -577,7 +578,18 @@ func readShell(text string, wanted map[string]bool) (map[string]string, bool) {
 			}
 			cond := c.cond || depth > 0
 			touches := func(n string) bool { return wanted[n] }
+			// A java the file starts itself (exec java ...) that turns
+			// the decoder back on, or reads options from an @argfile,
+			// makes the file's mitigation unprovable.
+			if b64, avx, argfile := Undoes(words); b64 || avx || argfile {
+				return nil, false
+			}
 			switch words[0] {
+			case "return", "exit":
+				if !cond {
+					break lines // nothing after it runs
+				}
+				continue
 			case "unset", "export", "readonly", "declare", "local":
 				for _, w := range words[1:] {
 					name, value, assign := strings.Cut(w, "=")

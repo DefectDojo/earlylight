@@ -126,3 +126,25 @@ func TestSetenvModelRound2(t *testing.T) {
 		}
 	}
 }
+
+// Round-3 nits: unreachable assignments and an exec that turns the
+// decoder back on do not count.
+func TestSetenvRound3(t *testing.T) {
+	tomcat := "/opt/tomcat/bin/setenv.sh"
+	for _, c := range []struct {
+		text string
+		want bool
+	}{
+		{"return 0\nCATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\n", false},
+		{"exit 0\nCATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\n", false},
+		{"CATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\nexec java $CATALINA_OPTS -XX:+UseBASE64Intrinsics -jar /a.jar\n", false},
+		{"CATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\nexec \"$JAVA_HOME/bin/java\" @/opt/args.txt -jar /a.jar\n", false},
+		{"if [ -z \"$X\" ]; then\n  return 0\nfi\nCATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\n", true},
+		{"CATALINA_OPTS=\"-XX:-UseBASE64Intrinsics\"\nexit 0\n", true},
+	} {
+		s, _ := ReadSetting(tomcat, []byte(c.text))
+		if m, _ := s.Options(21).Mitigates(); m != c.want {
+			t.Errorf("%q: %v, want %v", c.text, m, c.want)
+		}
+	}
+}

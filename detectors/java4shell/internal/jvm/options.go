@@ -227,7 +227,7 @@ func Undoes(words []string) (base64, avx, argfile bool) {
 	java := false
 	for _, w := range words {
 		switch {
-		case baseName(w) == "java":
+		case baseName(w) == "java" || strings.HasSuffix(w, "/bin/java"):
 			java = true
 		case w == "-XX:+UseBASE64Intrinsics" || w == "-XX:UseBASE64Intrinsics=true":
 			base64 = true
