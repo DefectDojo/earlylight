@@ -381,6 +381,12 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 			s.add(Finding{Rule: RuleLine, File: rel, Line: line, Level: "error", Status: StatusVulnerable, Reason: l.Note,
 				Message: fmt.Sprintf("%s selects Java %s, a line that received no Java4Shell fix", source, verText),
 				Fix:     pinFix(tv.Nums[0], source), Props: props})
+		} else if tv.Exact {
+			// A pinned release the data does not settle (17.0.22, a later
+			// update): not checked, as an image tag of it is.
+			s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown, Reason: why,
+				Message: fmt.Sprintf("%s selects Java %s: not checked for the Java4Shell fix", source, verText),
+				Fix:     fmt.Sprintf("Check that Java %s includes %s.", verText, knowledge.BugRef), Props: props})
 		}
 	}
 	_ = col
@@ -457,9 +463,10 @@ func (s *scanner) sdkmanrc(rel, text string) {
 }
 
 // asdfJava reads asdf-java and mise names: temurin-21.0.5+11.0.LTS,
-// corretto-21.0.5.11.1, openjdk-21.0.2, sapmachine-21.0.5, zulu-21.38.21
+// corretto-21.0.5.11.1, openjdk-21.0.2, sapmachine-21.0.5, temurin-jre-musl-21.0.5,
+// liberica-lite-21.0.5, zulu-21.38.21
 // (a Zulu version, not a Java version: not judged).
-var asdfJava = regexp.MustCompile(`^(?:(adoptopenjdk|temurin|corretto|openjdk|sapmachine|liberica|microsoft|oracle|semeru-openj9|semeru|dragonwell|kona|zulu|graalvm|graalvm-community|oracle-graalvm|mandrel|jetbrains)-)?(?:jre-|jdk-|openj9-)?(\d[\d.]*)`)
+var asdfJava = regexp.MustCompile(`^(?:(adoptopenjdk|temurin|corretto|openjdk|sapmachine|liberica|microsoft|oracle|semeru-openj9|semeru|dragonwell|kona|zulu|graalvm|graalvm-community|oracle-graalvm|mandrel|jetbrains)-)?(?:(?:jre|jdk|openj9|musl|lite)-)*(\d[\d.]*)`)
 
 func (s *scanner) asdfValue(rel string, line int, value, source string) {
 	m := asdfJava.FindStringSubmatch(value)

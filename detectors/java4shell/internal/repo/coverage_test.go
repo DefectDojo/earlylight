@@ -489,3 +489,28 @@ func TestNotJavaNumbers(t *testing.T) {
 		}
 	}
 }
+
+// Round 2, item 8: asdf's musl, jre and lite names are read; version-file
+// pins the data does not settle are not checked, as image tags are.
+func TestVersionNamesAndUnsettled(t *testing.T) {
+	res := scan(t, tree(t, map[string]string{
+		"a/.tool-versions": "java temurin-musl-21.0.5+11.0.LTS\n",
+		"b/.tool-versions": "java temurin-jre-musl-21.0.5+11.0.LTS\n",
+		"c/.tool-versions": "java corretto-musl-21.0.5.11.1\n",
+		"d/.tool-versions": "java liberica-lite-21.0.5+11\n",
+		"e/.tool-versions": "java sapmachine-musl-21.0.5\n",
+		"f/.tool-versions": "java temurin-17.0.22+7\n",
+		"a/.sdkmanrc":      "java=17.0.22-tem\n",
+		".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n      - uses: actions/setup-java@v5\n        with:\n          distribution: zulu\n          java-version: 17.0.22\n",
+	}))
+	checkAll(t, res, []want{
+		{"a/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"b/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"c/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"d/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"e/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"f/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"a/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{".github/workflows/ci.yml", 7, RuleNotChecked, StatusUnknown},
+	})
+}
