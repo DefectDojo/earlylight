@@ -685,9 +685,9 @@ func baseFromName(img string) baseInfo {
 		name, tag = name[:i], name[i+1:]
 	}
 	repo := path.Base(name)
-	if strings.Contains(repo, "$") {
-		return baseInfo{} // the image is a variable the file does not set
-	}
+	// The name is a variable the file does not set: only a tag can say
+	// Alpine (${IMG}:alpine), and the name says nothing about glibc.
+	unnamed := strings.Contains(repo, "$")
 	// A variable in the tag: the name still says Alpine, but not which
 	// release, and the image is never looked up.
 	vary := strings.Contains(tag, "$")
@@ -710,6 +710,9 @@ func baseFromName(img string) baseInfo {
 			return baseInfo{alpine: true, known: true, branch: tag[m[2]:m[3]]}
 		}
 		return baseInfo{alpine: true, known: true}
+	}
+	if unnamed {
+		return baseInfo{}
 	}
 	for _, glibc := range []string{"wolfi", "chainguard", "debian", "ubuntu", "fedora", "centos", "rockylinux", "almalinux", "amazonlinux", "ubi", "distroless"} {
 		if strings.Contains(name, glibc) {

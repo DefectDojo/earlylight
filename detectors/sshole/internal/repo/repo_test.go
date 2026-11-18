@@ -226,6 +226,7 @@ func TestSplitShell(t *testing.T) {
 func FuzzScanText(f *testing.F) {
 	f.Add(svc)
 	f.Add("RUN apk add 'x\nFROM\n\\")
+	f.Add("FROM alpine:3.21\nRUN apk add 'openssh-server=1 (through $Y'\n")
 	f.Fuzz(func(t *testing.T, s string) {
 		sc := &scanner{ctx: context.Background(), bases: map[string]baseInfo{}}
 		for _, x := range sc.dockerfile("Dockerfile", s) {

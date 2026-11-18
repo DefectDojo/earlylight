@@ -303,6 +303,10 @@ func Printable(s string) string {
 // image that cannot be read this time; another finding for the same package
 // on the line; and a line past the end of a file that still has findings
 // like it.
+//
+// Callers (Sensei's /fix) must pass the finding's message: with none, only
+// the exact line is looked at, so a finding that moved is not followed and
+// declines, and a line with several findings of the rule returns the first.
 func Find(ctx context.Context, root, file string, line int, rule, message string, opts Options) (f *Finding, gone bool, err error) {
 	if !findRules[rule] || kindOf(file) == "" {
 		return nil, false, notChecked("%s findings in %s are not rescanned here, so it is not checked", rule, file)
@@ -391,7 +395,7 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 			// The same package, variable or build system, anywhere in
 			// the file: this rescan could not judge it.
 			return nil, false, notChecked("%s:%d is not checked this time (%s)", file, g.Line, g.Message)
-		case apk && (k.pkg != "" && g.Props["package"] == k.pkg && (g.Line == line || g.Props["spec"] == k.spec) || k.any && apkRule && g.Line == line):
+		case apk && (k.pkg != "" && g.Props["package"] == k.pkg && (g.Line == line || k.sameSpec(g.Props["spec"])) || k.any && apkRule && g.Line == line):
 			// The same package under another rule (a pin loosened, an
 			// end-of-life base no longer known as one), on the line or
 			// with the same spec elsewhere (the line moved).
@@ -417,8 +421,10 @@ var findRules = map[string]bool{RulePin: true, RuleUnpinned: true, RuleEOL: true
 
 var (
 	lineRefRE = regexp.MustCompile(`, set on line \d+\)`)
-	viaRE     = regexp.MustCompile(`\(through \$([A-Za-z_][A-Za-z0-9_]*)`)
-	tclibcRE  = regexp.MustCompile(` and (\S+):\d+ sets TCLIBC`)
+	// The variable suffix ends the message, before only the prefix note
+	// (whose parts hold no spaces), so a spec cannot fake one.
+	viaRE    = regexp.MustCompile(`\(through \$([A-Za-z_][A-Za-z0-9_]*)\)(?: \(the image starts with \S+, which this file does not set; judged as \S+\))?$`)
+	tclibcRE = regexp.MustCompile(` and (\S+):\d+ sets TCLIBC`)
 )
 
 // findKey is what a finding's message names: the OpenSSH package and the
@@ -426,6 +432,7 @@ var (
 // any: the message should name one and does not, so anything matches.
 type findKey struct {
 	pkg, spec, via, system string
+	rest                   string // the message after its verb, which starts with the whole spec
 	any                    bool
 }
 
@@ -435,6 +442,7 @@ func keyOf(msg string) findKey {
 	if len(w) >= 2 && (w[0] == "installs" || w[0] == "pins") {
 		if m := specRE.FindStringSubmatch(strings.Trim(w[1], `'"`)); m != nil && sshPackages[m[1]] {
 			k.pkg, k.spec = m[1], m[0]
+			k.rest = strings.TrimSpace(strings.TrimPrefix(msg, w[0]))
 		}
 	}
 	if m := viaRE.FindStringSubmatch(msg); m != nil {
@@ -449,6 +457,12 @@ func keyOf(msg string) findKey {
 		k.system, k.pkg = "openwrt", w[3]
 	}
 	return k
+}
+
+// sameSpec reports whether spec is the one the message quotes; one with
+// a space is cut short in k.spec.
+func (k findKey) sameSpec(spec string) bool {
+	return spec != "" && (spec == k.spec || strings.HasPrefix(k.rest, spec+" "))
 }
 
 // holds reports whether a not-checked finding is about what k names.
