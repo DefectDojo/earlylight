@@ -46,9 +46,11 @@ var planRules = map[string]bool{RuleNode: true, RuleDotnet: true, RuleBun: true,
 // was not checked, or cannot be checked again now, declines with "rescan to
 // confirm": the file is unreadable, too large or does not parse; its line
 // was not checked (a skip on that line); its line pins another release
-// without the fix; or it has no line any more (line 0, or past the end of
-// the file) and the file still pins a release of that rule without the fix
-// or has a skip on any line.
+// without the fix; it has no line any more (line 0, or past the end of the
+// file) and the file still pins a release of that rule without the fix or
+// has a skip on any line; or it is an image pin (or a finding without
+// props), no resolved image is left on its line, and the file has a skip
+// on another line, where the image may have moved.
 func Plan(ctx context.Context, root, file string, line int, rule string, props map[string]string) (*Change, bool, error) {
 	// The path as the scan writes it: ./Dockerfile and svc/../Dockerfile
 	// are Dockerfile, or the pins found in it would not match.
@@ -85,7 +87,7 @@ func Plan(ctx context.Context, root, file string, line int, rule string, props m
 		return nil, false, err
 	}
 	if !found {
-		if err := unchecked(root, before, file, line, rule, now); err != nil {
+		if err := unchecked(root, before, file, line, rule, props, now); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -195,7 +197,7 @@ func scanPins(ctx context.Context, root string, files []string, opts Options) (*
 // a file that did not get shorter (it looks like a second pin that was
 // always there), and a path that never held the pin (a wrong path, a
 // renamed file, a file no reader handles), which looks like a deleted file.
-func unchecked(root string, s *scanner, file string, line int, rule string, content []byte) error {
+func unchecked(root string, s *scanner, file string, line int, rule string, props map[string]string, content []byte) error {
 	n := strings.Count(string(content), "\n")
 	if len(content) > 0 && content[len(content)-1] != '\n' {
 		n++
@@ -203,6 +205,13 @@ func unchecked(root string, s *scanner, file string, line int, rule string, cont
 	// Without its line (line 0, or a line past the end of a file that got
 	// shorter) the finding may be anywhere in the file now.
 	lost := line == 0 || line > n
+	// An image pin can move to another line and become a reference the
+	// scan cannot judge (FROM node:${V} with no default for V, a digest
+	// only). Unless a resolved image still sits on its own line, a skip
+	// elsewhere in the file may be it. Without props the finding may be
+	// an image pin.
+	image := props["image"] != "" || strings.HasSuffix(props["source"], "-image") || props["source"] == ""
+	moved := image && !s.refLines[lineKey(file, line)]
 	for _, sk := range s.skips {
 		switch {
 		case sk.Line == 0:
@@ -214,6 +223,8 @@ func unchecked(root string, s *scanner, file string, line int, rule string, cont
 			// digest only) was not checked. A skip on another line is
 			// about another pin, which is reported on its own.
 			return notChecked("line %d of %s was not checked: %s", sk.Line, sk.File, scrub(root, sk.Reason))
+		case sk.File == file && moved:
+			return notChecked("line %d of %s holds no image now, and line %d was not checked (%s): the image may have moved there", line, file, sk.Line, scrub(root, sk.Reason))
 		}
 	}
 	for _, q := range s.pins {
@@ -245,16 +256,15 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// scrub removes the checkout's absolute path from a reason.
+// scrub removes the checkout's absolute path from a reason. File system
+// errors name joined, so cleaned, paths.
 func scrub(root, s string) string {
-	for _, r := range []string{root, filepath.Clean(root)} {
-		if r == "" || r == "." {
-			continue
-		}
-		s = strings.ReplaceAll(s, r+string(filepath.Separator), "")
-		s = strings.ReplaceAll(s, r, ".")
+	r := filepath.Clean(root)
+	if r == "." || r == string(filepath.Separator) {
+		return s
 	}
-	return s
+	s = strings.ReplaceAll(s, r+string(filepath.Separator), "")
+	return strings.ReplaceAll(s, r, ".")
 }
 
 // choose finds the pin a finding names. found is false when the file no

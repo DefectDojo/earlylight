@@ -298,8 +298,15 @@ func (s *scanner) dependencies(rel string, b []byte) {
 		}
 		if doc.Packages == nil && len(doc.Dependencies) > 0 {
 			// npm 6 and older wrote only the nested "dependencies" tree.
-			s.skips = append(s.skips, Skip{File: rel, Reason: `a lockfileVersion 1 lockfile (npm 6 and older, no "packages" map) is not read; npm 7 or later rewrites it`})
-			return
+			var deps map[string]json.RawMessage
+			if err := json.Unmarshal(doc.Dependencies, &deps); err != nil {
+				s.skips = append(s.skips, Skip{File: rel, Reason: "dependencies: " + jsonProblem(err)})
+				return
+			}
+			if len(deps) > 0 {
+				s.skips = append(s.skips, Skip{File: rel, Reason: `a lockfileVersion 1 lockfile (npm 6 and older, no "packages" map) is not read; npm 7 or later rewrites it`})
+				return
+			}
 		}
 		for key, p := range doc.Packages {
 			i := strings.LastIndex(key, "node_modules/")

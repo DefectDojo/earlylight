@@ -316,7 +316,15 @@ type scanner struct {
 	files     int
 	truncated bool
 	lines     map[string][]string // files split once per scan, for columns
+	// refLines holds file\x00line for every image reference the scan
+	// resolved, judged or not.
+	refLines map[string]bool
+	// bom holds the files that start with a byte-order mark, which is not
+	// part of line 1's columns.
+	bom map[string]bool
 }
+
+func lineKey(file string, line int) string { return fmt.Sprint(file, "\x00", line) }
 
 // exists reports a regular file in the repository (or the overlay).
 func (s *scanner) exists(rel string) bool {
@@ -382,7 +390,12 @@ func (s *scanner) result() Result {
 			continue
 		}
 		seen[k] = true
-		r.Findings = append(r.Findings, p.finding())
+		f := p.finding()
+		if c, err := strconv.Atoi(f.Props["column"]); err == nil && p.line == 1 && s.bom[p.file] && c > len(utf8BOM) {
+			// The byte-order mark is not text on the line.
+			f.Props["column"] = strconv.Itoa(c - len(utf8BOM))
+		}
+		r.Findings = append(r.Findings, f)
 	}
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		a, b := r.Findings[i], r.Findings[j]
@@ -579,7 +592,12 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 	}
 	// The JSON readers see comments and a byte-order mark as spaces, so
 	// every line and column stays where it is in the file.
-	text := b
+	if bytes.HasPrefix(b, utf8BOM) {
+		if s.bom == nil {
+			s.bom = map[string]bool{}
+		}
+		s.bom[rel] = true
+	}
 	if isJSON(rel) {
 		b = jsonText(b)
 	}
@@ -610,7 +628,7 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 		s.netlify(rel, b)
 	}
 	if textCandidate(rel) {
-		s.textPatterns(rel, text)
+		s.textPatterns(rel, b) // in JSON, a value inside a comment is not a pin
 	}
 	if dependencyFile(rel) {
 		s.dependencies(rel, b)
@@ -873,6 +891,10 @@ func (s *scanner) images(files []string) error {
 		s.skips = append(s.skips, Skip{File: k.File, Line: k.Line, Reason: clean(k.Reason, 200)})
 	}
 	for _, r := range rs {
+		if s.refLines == nil {
+			s.refLines = map[string]bool{}
+		}
+		s.refLines[lineKey(r.File, r.Line)] = true
 		s.judgeImage(r)
 	}
 	return nil
@@ -1049,6 +1071,8 @@ func ImageUpgrade(image string) (string, string, bool) {
 	return base[:i] + ":" + strings.Replace(ref.Tag, j.current, up, 1), kind, true
 }
 
+var utf8BOM = []byte("\xef\xbb\xbf")
+
 func isJSON(rel string) bool {
 	return strings.HasSuffix(strings.ToLower(rel), ".json") || path.Base(rel) == "Pipfile.lock"
 }
@@ -1059,7 +1083,7 @@ func isJSON(rel string) bool {
 // byte-order mark. Lines and byte columns are unchanged.
 func jsonText(b []byte) []byte {
 	out := append([]byte(nil), b...)
-	if bytes.HasPrefix(out, []byte("\xef\xbb\xbf")) {
+	if bytes.HasPrefix(out, utf8BOM) {
 		copy(out, "   ")
 	}
 	blank := func(from, to int) {

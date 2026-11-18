@@ -431,3 +431,118 @@ func TestLockfileSkipReasons(t *testing.T) {
 		t.Errorf("empty lockfile: %v %+v", err, res.Skips)
 	}
 }
+
+// An image pin that moved off its line and became a reference the scan
+// cannot judge (an ARG with no default, an image pinned by digest only)
+// is not fixed: the skip on its new line holds back "already fixed"
+// unless a resolved image still sits on the finding's own line.
+func TestPlanImageMovedAndUnresolved(t *testing.T) {
+	digest := "node@sha256:" + strings.Repeat("a", 64)
+	for _, c := range []struct{ what, now string }{
+		{"an ARG with no default", "ARG NODE_VERSION\nFROM node:${NODE_VERSION}\n"},
+		{"a syntax line above a digest-only FROM", "# syntax=docker/dockerfile:1\nFROM " + digest + "\n"},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{"Dockerfile": "FROM node:24.22.0\n"})
+		f := only(t, root, pins.RuleNode)
+		write(t, root, map[string]string{"Dockerfile": c.now})
+		ch, already, err := plan(root, f)
+		mustDecline(t, c.what, ch, already, err)
+		// Without the finding's props the plan cannot tell an image pin
+		// from another: it holds back too.
+		ch, already, err = pins.Plan(context.Background(), root, f.File, f.Line, f.Rule, nil)
+		mustDecline(t, c.what+", no props", ch, already, err)
+	}
+	// Fixed in place, with an unresolved stage elsewhere: fixed.
+	root := t.TempDir()
+	write(t, root, map[string]string{"Dockerfile": "FROM node:24.22.0 AS a\nARG BASE\nFROM ${BASE} AS b\n"})
+	f := only(t, root, pins.RuleNode)
+	write(t, root, map[string]string{"Dockerfile": "FROM node:24.22.1 AS a\nARG BASE\nFROM ${BASE} AS b\n"})
+	ch, already, err := plan(root, f)
+	mustBeGone(t, "fixed in place", ch, already, err)
+	// A text pin is not an image: a skip on another line does not hold it.
+	write(t, root, map[string]string{"Dockerfile": "FROM alpine:3.22\nENV NODE_VERSION=24.22.0\nFROM " + digest + "\n"})
+	g := only(t, root, pins.RuleNode)
+	write(t, root, map[string]string{"Dockerfile": "FROM alpine:3.22\nENV NODE_VERSION=24.22.1\nFROM " + digest + "\n"})
+	ch, already, err = plan(root, g)
+	mustBeGone(t, "a text pin fixed in place", ch, already, err)
+}
+
+// The comment reader leaves strings alone and keeps every line break, and
+// the text patterns read what it leaves: a URL in a JSON string is not a
+// comment, and a pin inside a comment is not a pin.
+func TestJSONTextKeepsStringsAndLines(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"app/package.json": "{\n  \"homepage\": \"https://example.com/a//b\",\n  \"repository\": \"git://x/*not a comment*/\",\n  \"volta\": {\n    \"node\": \"24.22.0\"\n  }\n}\n",
+		"global.json":      "{\n  /* the SDK\n     for the build\n     agents */\n  \"sdk\": {\n    \"version\": \"8.0.415\"\n  }\n}\n",
+		"tools.json":       "{\n  // was \"https://nodejs.org/dist/v24.21.0/node.tar.gz\"\n  \"url\": \"https://nodejs.org/dist/v24.22.0/node.tar.gz\"\n}\n",
+	})
+	res, err := pins.Scan(ctx, root, nil, pins.Options{})
+	if err != nil || len(res.Skips) != 0 {
+		t.Fatalf("%v %+v", err, res.Skips)
+	}
+	got := map[string]string{}
+	for _, f := range res.Findings {
+		got[f.File+":"+itoa(f.Line)] = f.Props["current"]
+	}
+	want := map[string]string{"app/package.json:5": "24.22.0", "global.json:6": "8.0.415", "tools.json:3": "24.22.0"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: got %q, want %q (all: %v)", k, got[k], v, got)
+		}
+	}
+	for _, f := range res.Findings {
+		if f.File == "tools.json" {
+			continue
+		}
+		ch, _, err := plan(root, f)
+		if err != nil || ch == nil || ch.Edits[0].Line != f.Line {
+			t.Errorf("%s:%d: change %+v, err %v", f.File, f.Line, ch, err)
+		}
+	}
+}
+
+// A byte-order mark is not part of line 1: the column does not count it.
+func TestBOMColumn(t *testing.T) {
+	body := `{"volta":{"node":"24.22.0"}}`
+	root := t.TempDir()
+	write(t, root, map[string]string{"package.json": "\ufeff" + body})
+	f := only(t, root, pins.RuleNode)
+	if want := itoa(strings.Index(body, "24.22.0") + 1); f.Props["column"] != want {
+		t.Errorf("column %q, want %q", f.Props["column"], want)
+	}
+	ch, _, err := plan(root, f)
+	if err != nil || ch == nil || ch.Edits[0].New[0] != "\ufeff"+`{"volta":{"node":"24.22.1"}}` {
+		t.Errorf("change %+v, err %v", ch, err)
+	}
+}
+
+// A lockfileVersion 1 package-lock.json with no dependencies has nothing
+// to read: it is not reported as not checked.
+func TestLockfileV1Empty(t *testing.T) {
+	for _, body := range []string{`{"lockfileVersion": 1, "dependencies": {}}`, `{"lockfileVersion": 1}`} {
+		root := t.TempDir()
+		write(t, root, map[string]string{"package-lock.json": body})
+		if res, err := pins.Scan(context.Background(), root, nil, pins.Options{}); err != nil || len(res.Skips) != 0 {
+			t.Errorf("%s: %v %+v", body, err, res.Skips)
+		}
+	}
+}
+
+func TestScrub(t *testing.T) {
+	for _, c := range []struct{ root, in, want string }{
+		{"/w/repo", "lstat /w/repo/svc: no such file or directory", "lstat svc: no such file or directory"},
+		{"/w/repo/", "open /w/repo/a.json: denied", "open a.json: denied"},
+		{"/w/repo", "the root /w/repo is gone", "the root . is gone"},
+		{".", "lstat svc: x", "lstat svc: x"},
+	} {
+		if got := pins.Scrub(c.root, c.in); got != c.want {
+			t.Errorf("Scrub(%q, %q) = %q, want %q", c.root, c.in, got, c.want)
+		}
+	}
+}
