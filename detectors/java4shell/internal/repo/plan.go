@@ -342,15 +342,23 @@ func NamesBaseOS(variant string) bool {
 	return false
 }
 
-// SameBase compares the base OS (ID and VERSION_ID of os-release) of the
-// current image and its replacement, for tags whose variant does not name
-// it: moving a deployment to another distribution is not this fix's call.
+// SameBase compares the base OS of the current image and its
+// replacement ("ID VERSION_ID" of os-release) on the distribution and its
+// major version: moving a deployment to another distribution or major
+// release (Ubuntu 24.04 to 26.04, Debian 12 to 13) is not this fix's call,
+// while a minor update (Oracle Linux 9.5 to 9.6, Alpine 3.21 to 3.22) is
+// what a rebuilt tag brings anyway.
 func SameBase(current, target string) error {
+	major := func(s string) string {
+		id, ver, _ := strings.Cut(s, " ")
+		ver, _, _ = strings.Cut(ver, ".")
+		return id + " " + ver
+	}
 	switch {
 	case current == "" || target == "":
-		return &Declined{Reason: "the base OS of the current or the new image could not be read, and the tag does not name it; change it by hand"}
-	case current != target:
-		return &Declined{Reason: fmt.Sprintf("the new image is on %s, the current one on %s; change it by hand", target, current)}
+		return declined("the base OS of the current or the new image could not be read; change it by hand")
+	case major(current) != major(target):
+		return declined("the new image is on %s, the current one on %s; change it by hand", refs.CleanText(target, 80), refs.CleanText(current, 80))
 	}
 	return nil
 }

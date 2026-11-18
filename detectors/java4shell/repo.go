@@ -370,14 +370,16 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 		if t.Error != "" {
 			return "", fmt.Errorf("reading %s: %s", target, t.Error)
 		}
-		// A tag whose variant does not name its base OS ("-jre") may move
-		// to another distribution between releases: compare them.
-		if fam, tag, ok := repo.FamilyOf(target); ok {
-			if tv, ok := fam.ParseTag(tag); !ok || !repo.NamesBaseOS(tv.Variant) {
-				c := engine.ScanImage([]engine.Detector{d}, current, engine.Options{Platform: "linux/amd64", MaxFileSize: o.MaxFileSize, Guarded: true, PublicOnly: o.PublicOnly})
-				if err := repo.SameBase(annotation(c, "java4shell_os"), annotation(t, "java4shell_os")); err != nil {
-					return "", err
-				}
+		// The base OS: distribution and major version must stay (a tag
+		// whose variant does not name it, "-jre", can move to another
+		// distribution; one that does can move to its next release). The
+		// current image is read for its os-release only. A current tag that
+		// is gone is tolerated when the new tag names its OS.
+		c := engine.ScanImage([]engine.Detector{osProbe{}}, current, engine.Options{Platform: "linux/amd64", Guarded: true, PublicOnly: o.PublicOnly})
+		_, tag, _ := strings.Cut(target[strings.LastIndex(target, "/")+1:], ":")
+		if c.Error == "" || !repo.NamesBaseOS(tag) {
+			if err := repo.SameBase(annotation(c, "java4shell_os"), annotation(t, "java4shell_os")); err != nil {
+				return "", err
 			}
 		}
 		if t.Incomplete != "" || t.Gaps() > 0 || len(t.Problems) > 0 {

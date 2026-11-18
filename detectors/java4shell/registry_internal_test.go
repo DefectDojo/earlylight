@@ -122,3 +122,34 @@ func errorsAs(err error, d **repo.Declined) bool {
 	}
 	return ok
 }
+
+// Round-2 finding 7: the verifier compares the base OS for every move,
+// and the os-release strings it reads are bounded.
+func TestVerifierBaseOS(t *testing.T) {
+	host := testRegistry(t)
+	cur := host + "/acme/java:21.0.13_9-jre-noble"
+	same := host + "/acme/java:21.0.13.1_2-jre-noble"
+	other := host + "/acme/java:21.0.13.1_3-jre-noble"
+	files := func(v, osr string) map[string][]byte {
+		m := runtimeFiles(v)
+		m["/etc/os-release"] = []byte(osr)
+		return m
+	}
+	pushImage(t, cur, files("21.0.13+9-LTS", "ID=ubuntu\nVERSION_ID=\"24.04\"\n"))
+	pushImage(t, same, files("21.0.13.1+2-LTS", "ID=ubuntu\nVERSION_ID=\"24.04\"\n"))
+	pushImage(t, other, files("21.0.13.1+3-LTS", "ID=ubuntu\nVERSION_ID=\"26.04\"\n"))
+	v := (&Detector{}).verifier(engine.Options{})
+	if _, err := v(context.Background(), cur, same); err != nil {
+		t.Errorf("same base declined: %v", err)
+	}
+	if _, err := v(context.Background(), cur, other); err == nil {
+		t.Error("a move from Ubuntu 24.04 to 26.04 accepted under a variant that names the OS")
+	}
+	// A deleted current tag that names its OS is tolerated.
+	if _, err := v(context.Background(), host+"/acme/java:21.0.12_7-jre-noble", same); err != nil {
+		t.Errorf("deleted current tag: %v", err)
+	}
+	if got := osRelease([]byte("ID=" + strings.Repeat("a", 60000) + "\nVERSION_ID=1\n")); len(got) > 80 {
+		t.Errorf("unbounded os-release: %d bytes", len(got))
+	}
+}

@@ -59,3 +59,24 @@ func TestSameBase(t *testing.T) {
 		t.Error("unknown base accepted")
 	}
 }
+
+// Round-2 finding 7: the base OS is compared on ID and major version.
+func TestSameBaseMajor(t *testing.T) {
+	for _, c := range []struct {
+		cur, tgt string
+		ok       bool
+	}{
+		{"ol 9.5", "ol 9.6", true},
+		{"alpine 3.21.4", "alpine 3.22.1", true},
+		{"ubuntu 24.04", "ubuntu 26.04", false},
+		{"debian 12", "debian 13", false},
+		{"ubuntu 24.04", "debian 12", false},
+	} {
+		if err := SameBase(c.cur, c.tgt); (err == nil) != c.ok {
+			t.Errorf("SameBase(%q, %q) = %v", c.cur, c.tgt, err)
+		}
+	}
+	if err := SameBase(strings.Repeat("x", 5000)+" 1", "ubuntu 24.04"); err == nil || len(err.Error()) > 400 {
+		t.Errorf("unbounded reason: %d bytes", len(err.Error()))
+	}
+}

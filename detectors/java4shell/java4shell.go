@@ -501,7 +501,7 @@ func osRelease(files ...[]byte) string {
 			if !ok {
 				continue
 			}
-			v = strings.Trim(v, "\"'")
+			v = osToken(strings.Trim(v, "\"'"))
 			switch k {
 			case "ID":
 				id = v
@@ -514,4 +514,47 @@ func osRelease(files ...[]byte) string {
 		}
 	}
 	return ""
+}
+
+// osToken keeps an os-release value short and plain: an image's files
+// are not trusted.
+func osToken(v string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(v) {
+		if b.Len() >= 32 {
+			break
+		}
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// osProbe reads only an image's os-release: a light second read of the
+// image a move starts from.
+type osProbe struct{}
+
+func (osProbe) Manifest() engine.Manifest {
+	return engine.Manifest{ID: "java4shell-osprobe", Targets: []engine.TargetKind{engine.Image}}
+}
+func (osProbe) Load() error { return nil }
+func (osProbe) Wants(p string, _ []byte, _ bool) bool {
+	return p == "/etc/os-release" || p == "/usr/lib/os-release"
+}
+func (osProbe) NewScan(engine.TargetKind) engine.Scan { return &osScan{files: map[string][]byte{}} }
+
+type osScan struct{ files map[string][]byte }
+
+func (s *osScan) Visit(f engine.File) []engine.Skip {
+	if len(f.Data) <= 64<<10 {
+		s.files[f.Path] = f.Data
+	}
+	return nil
+}
+func (s *osScan) Finish(ctx engine.TargetContext) []engine.Finding {
+	if v := osRelease(s.files["/etc/os-release"], s.files["/usr/lib/os-release"]); v != "" {
+		ctx.Annotate("java4shell_os", v)
+	}
+	return nil
 }
