@@ -587,7 +587,7 @@
  },
  {
   "name": "bitnamilegacy-1.29.1",
-  "what": "Bitnami nginx 1.29.1 (bitnamilegacy, frozen): no fix",
+  "what": "Bitnami nginx 1.29.1 (bitnamilegacy, frozen): no fix; Bitnami starts nginx through its own entrypoint script, so exposure is unknown (review 2, finding 2)",
   "mode": "registry",
   "ref": "bitnamilegacy/nginx:1.29.1@sha256:b2e803958eda5723aae1e36ed0e418f6e0c79e7ce890820eba9cad85a6381286",
   "expected": [
@@ -597,7 +597,7 @@
     "flow-control",
     "vulnerable",
     "vulnerable",
-    "not-exposed"
+    "unknown"
    ],
    [
     "linux/amd64",
@@ -605,7 +605,7 @@
     "connection-reuse",
     "vulnerable",
     "vulnerable",
-    "not-exposed"
+    "unknown"
    ]
   ]
  },
@@ -1179,7 +1179,7 @@
  },
  {
   "name": "ubuntu-pkg",
-  "what": "Ubuntu 24.04's nginx 1.24.0-2ubuntu7.19, the default site",
+  "what": "Ubuntu 24.04's nginx 1.24.0-2ubuntu7.19, the default site; the image's command is a shell, not nginx, so exposure is unknown unless the configuration shows HTTP/2 on (review 2, finding 2)",
   "mode": "build",
   "dockerfile": "ubuntu-pkg.Dockerfile",
   "expected": [
@@ -1189,7 +1189,7 @@
     "flow-control",
     "vulnerable",
     "vulnerable",
-    "not-exposed"
+    "unknown"
    ],
    [
     "linux/amd64",
@@ -1197,13 +1197,13 @@
     "connection-reuse",
     "vulnerable",
     "vulnerable",
-    "not-exposed"
+    "unknown"
    ]
   ]
  },
  {
   "name": "alpine-pkg",
-  "what": "Alpine 3.24's nginx as published at build time (1.30.7-r0 since 2026-11-18 17:06 UTC), HTTP/2 on in http.d",
+  "what": "Alpine 3.24's nginx as published at build time (1.30.7-r0 since 2026-11-18 17:06 UTC), HTTP/2 on in http.d; the image's command is a shell, not nginx, so exposure is unknown unless the configuration shows HTTP/2 on (review 2, finding 2)",
   "mode": "build",
   "dockerfile": "alpine-pkg.Dockerfile",
   "expected": [
@@ -1221,13 +1221,13 @@
     "connection-reuse",
     "fixed",
     "fixed",
-    "http2-without-proxy"
+    "unknown"
    ]
   ]
  },
  {
   "name": "alpine-3.23-pkg",
-  "what": "Alpine 3.23's nginx 1.28.3-r7: no fixed package on that branch",
+  "what": "Alpine 3.23's nginx 1.28.3-r7: no fixed package on that branch; the image's command is a shell, not nginx, so exposure is unknown unless the configuration shows HTTP/2 on (review 2, finding 2)",
   "mode": "build",
   "dockerfile": "alpine-3.23-pkg.Dockerfile",
   "expected": [
@@ -1237,7 +1237,7 @@
     "flow-control",
     "vulnerable",
     "vulnerable",
-    "not-exposed"
+    "unknown"
    ],
    [
     "linux/amd64",
@@ -1245,7 +1245,7 @@
     "connection-reuse",
     "vulnerable",
     "vulnerable",
-    "not-exposed"
+    "unknown"
    ]
   ]
  },
