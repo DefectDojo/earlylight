@@ -3,6 +3,7 @@ package repo
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
 	"github.com/DefectDojo/earlylight/internal/refs"
@@ -23,13 +24,15 @@ func isGraal(vendor string) bool { return graalVendors[vendor] }
 var (
 	sdkmanGraal = regexp.MustCompile(`^(\d{1,3}(?:\.\d{1,9}){1,4})\.r(\d{1,2})$`)
 	javaLine    = regexp.MustCompile(`java(\d{1,2})\b`)
-	graalNums   = regexp.MustCompile(`\d{1,3}(?:\.\d{1,9}){1,4}`)
 )
 
 // graalTag judges a GraalVM image tag: vulnerable where the OpenJDK
 // release would be, and otherwise unknown until a fixed GraalVM build is
 // known (the image has to be read).
 func graalTag(tv TagVersion, st knowledge.Status, why string) (knowledge.Status, string) {
+	if knowledge.GraalVMOwnNumber(tv.Text) {
+		return knowledge.Unknown, ownNumberWhy(tv.Text)
+	}
 	switch st {
 	case knowledge.Vulnerable:
 		return st, "GraalVM: " + why
@@ -43,6 +46,12 @@ func graalTag(tv TagVersion, st knowledge.Status, why string) (knowledge.Status,
 		return gs, "the tag names Java " + tv.Text + ": " + gwhy
 	}
 	return knowledge.Unknown, why
+}
+
+// ownNumberWhy says why a GraalVM release in GraalVM's own numbers is not
+// judged as a Java version.
+func ownNumberWhy(v string) string {
+	return fmt.Sprintf("%s is in GraalVM's own version numbers, not a Java version (GraalVM Community 25.1.3 is JDK 25.0.3, 25.5.5.0.3 is JDK 25.0.5.0.3): which Java update it is built on is not read from it", v)
 }
 
 // graalFix is what to do about a GraalVM release without the fix that
@@ -61,8 +70,10 @@ func graalFix(feature int, where string) string {
 
 // graalOwn judges a GraalVM release written in GraalVM's own numbers;
 // value is the text as written.
-func (s *scanner) graalOwn(rel string, line int, graal string, java int, value, source string) {
-	st, why := knowledge.JudgeGraalVMRelease(graal, java)
+// community is true for GraalVM Community's own names (sdkman grl and
+// graalce, asdf graalvm).
+func (s *scanner) graalOwn(rel string, line int, graal string, java int, community bool, value, source string) {
+	st, why := knowledge.JudgeGraalVMRelease(graal, java, community)
 	props := map[string]string{"source": source, "current": refs.CleanText(value, 80), "graalvm": graal}
 	switch st {
 	case knowledge.NotAffected:
@@ -90,6 +101,13 @@ func (s *scanner) graalOwn(rel string, line int, graal string, java int, value, 
 // no fixed GraalVM build is known; a vulnerable one names GraalVM.
 func (s *scanner) graalVersion(rel string, line int, tv TagVersion, st knowledge.Status, why, source string, props map[string]string) {
 	verText := tv.Text
+	if knowledge.GraalVMOwnNumber(verText) {
+		s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown, Reason: ownNumberWhy(verText),
+			Message: fmt.Sprintf("%s selects GraalVM %s, written in GraalVM's own version numbers: not checked for the Java4Shell fix", source, verText),
+			Fix:     "Check which Java update this GraalVM release is built on; no fixed GraalVM build had been published as of " + knowledge.Checked + ".",
+			Props:   props})
+		return
+	}
 	switch st {
 	case knowledge.NotAffected:
 		return
@@ -120,13 +138,17 @@ func graalNamed(value string) (graal string, java int, ok bool) {
 	if m := sdkmanGraal.FindStringSubmatch(value); m != nil {
 		return m[1], atoi(m[2]), true
 	}
+	// asdf: graalvm-22.3.1+java17, mandrel-22.3.1.0-Final+java17. The
+	// GraalVM number is everything between the name and the Java line, so
+	// a malformed one (22.3.0-dev) stays malformed and is not judged.
 	j := javaLine.FindStringSubmatchIndex(value)
 	if j == nil {
 		return "", 0, false
 	}
-	g := graalNums.FindString(value[:j[0]] + " " + value[j[1]:])
-	if g == "" {
+	before := strings.TrimRight(value[:j[0]], "+-_")
+	i := strings.IndexAny(before, "0123456789")
+	if i < 0 {
 		return "", 0, false
 	}
-	return g, atoi(value[j[2]:j[3]]), true
+	return strings.TrimSuffix(before[i:], "-Final"), atoi(value[j[2]:j[3]]), true
 }

@@ -2,6 +2,8 @@ package knowledge
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -42,8 +44,9 @@ func JudgeGraalVM(v Version) (Status, string) {
 	case Vulnerable:
 		return st, "GraalVM: " + why + "; " + graalVMAffected
 	}
-	fx, ok := GraalVMFixed[v.Feature()]
-	if ok && !v.EA {
+	// A row clears only what OpenJDK's data also judges fixed: a vendor
+	// build number in the fourth place or a later update stays unknown.
+	if fx, ok := GraalVMFixed[v.Feature()]; ok && st == Fixed {
 		c := Compare(v.Nums, fx.Version)
 		// A version without its build is taken as the GA build, as for OpenJDK.
 		if c < 0 || c == 0 && fx.Build >= 0 && v.Build >= 0 && v.Build < fx.Build {
@@ -80,36 +83,53 @@ var (
 	graalVM17With    = []int{22, 3, 1}
 )
 
+// GraalVMOwnNumber reports a version in GraalVM's own numbers (22.3.1,
+// 23.1.2, GraalVM Community's 25.1.3 for JDK 25.0.3 and 25.5.5.0.3 for JDK
+// 25.0.5.0.3) rather than a Java version: Java's second number has been 0
+// since JDK 10.
+func GraalVMOwnNumber(s string) bool {
+	v, ok := Parse(s)
+	return ok && v.Feature() >= 10 && len(v.Nums) >= 2 && v.Nums[1] != 0
+}
+
+// graalRelease is a well-formed GraalVM release number: two to four
+// numbers without leading zeros.
+var graalRelease = regexp.MustCompile(`^(?:0|[1-9]\d?)\.(?:0|[1-9]\d?)(?:\.(?:0|[1-9]\d{0,2})){0,2}$`)
+
 // JudgeGraalVMRelease judges a GraalVM release named by GraalVM's own
-// number and the Java line it is built for.
-func JudgeGraalVMRelease(graal string, java int) (Status, string) {
-	g, ok := Parse(graal)
-	nums := g.Nums
-	if !ok {
-		nums = nil
-		for _, p := range strings.Split(graal, ".") {
-			n, r := leadingInt(p)
-			if n < 0 || r != "" {
-				return Unknown, fmt.Sprintf("GraalVM %s for Java %d: the GraalVM version could not be read", graal, java)
-			}
-			nums = append(nums, n)
-		}
-	}
+// number and the Java line it is built for. community is true for GraalVM
+// Community's own names (sdkman grl and graalce, asdf graalvm): only those
+// are cleared, since the releases checked are GraalVM Community's; the
+// numbering of Liberica NIK, Mandrel and Oracle's builds is not checked.
+func JudgeGraalVMRelease(graal string, java int, community bool) (Status, string) {
 	name := fmt.Sprintf("GraalVM %s for Java %d", graal, java)
+	if !graalRelease.MatchString(graal) {
+		return Unknown, fmt.Sprintf("%s: the GraalVM version could not be read", name)
+	}
+	var nums []int
+	for _, p := range strings.Split(graal, ".") {
+		n, _ := strconv.Atoi(p)
+		nums = append(nums, n)
+	}
+	is213 := Compare(nums[:2], []int{21, 3}) == 0
 	switch {
+	case java < 8:
+		return Unknown, fmt.Sprintf("%s: not a Java line GraalVM is built for", name)
+	case java < firstVBMIDecode && community && !is213:
+		return NotAffected, fmt.Sprintf("%s is built on OpenJDK %d, which has no x86-64 Base64 decode intrinsic (the Java 11 build of GraalVM Community 22.3.1 carries no decoder stubs)", name, java)
 	case java < firstVBMIDecode:
-		return NotAffected, fmt.Sprintf("%s is built on OpenJDK %d, which has no x86-64 Base64 decode intrinsic (the Java 11 build of GraalVM 22.3.1 carries no decoder stubs)", name, java)
+		return Unknown, fmt.Sprintf("%s: OpenJDK %d has no decoder, but whether this build carries one is not known (GraalVM Enterprise Edition 21.3.20.0.3 is listed as affected without its Java line, and other vendors' GraalVM builds were not checked)", name, java)
 	case java >= newestFeature:
 		return Unknown, fmt.Sprintf("%s: Java %d is newer than this detector's release data (%s)", name, java, Checked)
 	case java > firstVBMIDecode:
 		// Every release of Java 18 and later has the decoder.
 		return Vulnerable, fmt.Sprintf("%s: every Java %d release has the AVX-512 VBMI Base64 decoder; %s, and no fixed GraalVM build had been published as of %s", name, java, graalVMAffected, Checked)
 	}
-	if len(nums) >= 3 && Compare(nums, graalVM17Without) == 0 {
+	if community && len(nums) == 3 && Compare(nums, graalVM17Without) == 0 {
 		return NotAffected, fmt.Sprintf("%s is built on Java 17.0.5, which predates the AVX-512 VBMI Base64 decoder (17.0.6)", name)
 	}
 	if len(nums) >= 3 && Compare(nums, graalVM17With) >= 0 || len(nums) >= 2 && Compare(nums[:2], []int{22, 3}) > 0 {
 		return Vulnerable, fmt.Sprintf("%s is built on Java 17.0.6 or later (GraalVM 22.3.1 is 17.0.6), which has the AVX-512 VBMI Base64 decoder; %s, and no fixed GraalVM build had been published as of %s", name, graalVMAffected, Checked)
 	}
-	return Unknown, fmt.Sprintf("%s: GraalVM 22.3.0 is built on Java 17.0.5 (before the decoder) and 22.3.1 and later on 17.0.6 and later (with it); which Java 17 update this release is built on is not known", name)
+	return Unknown, fmt.Sprintf("%s: GraalVM Community 22.3.0 is built on Java 17.0.5 (before the decoder) and 22.3.1 and later on 17.0.6 and later (with it); which Java 17 update this release is built on is not known", name)
 }

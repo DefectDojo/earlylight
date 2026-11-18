@@ -104,7 +104,7 @@ func FuzzRPM(f *testing.F) {
 		if st, why, known := JudgeRedHat("java-17-openjdk-headless", a); known && (st == "" || why == "") {
 			t.Fatalf("JudgeRedHat(%q) gave no verdict or reason", a)
 		}
-		if st, why := JudgeGraalVMRelease(a, len(b)%40); st == "" || why == "" {
+		if st, why := JudgeGraalVMRelease(a, len(b)%40, len(a)%2 == 0); st == "" || why == "" {
 			t.Fatalf("JudgeGraalVMRelease(%q) gave no verdict or reason", a)
 		}
 	})

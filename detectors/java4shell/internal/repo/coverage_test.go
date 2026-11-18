@@ -259,3 +259,46 @@ func TestVendorStatus(t *testing.T) {
 		}
 	}
 }
+
+// Review F3: GraalVM names the data cannot settle are not checked, never
+// silently cleared; GraalVM Community's own release numbers (25.1.3,
+// 25.5.5.0.3) are not Java versions.
+func TestGraalVMRepoStrict(t *testing.T) {
+	root := tree(t, map[string]string{
+		"a/.sdkmanrc":      "java=22.3.0.r17-nik\n",
+		"b/.sdkmanrc":      "java=22.3.1.r1-grl\n",
+		"c/.sdkmanrc":      "java=21.3.20.r8-grl\n",
+		"d/.sdkmanrc":      "java=22.3.0.r19-grl\n",
+		"e/.sdkmanrc":      "java=25.1.3-graalce\n",
+		"f/.sdkmanrc":      "java=22.3.00.r17-grl\n",
+		"a/.tool-versions": "java graalvm-22.3.1+java1\n",
+		"b/.tool-versions": "java graalvm-21.3.20+java11\n",
+		"c/.tool-versions": "java graalvm-22.3.0-dev+java17\n",
+		"d/.tool-versions": "java graalvm-22.3.0.0+java17\n",
+		"e/.tool-versions": "java mandrel-22.3.0.0-Final+java17\n",
+		"f/.tool-versions": "java graalvm-community-25.5.5.0.3\n",
+		"Dockerfile":       "FROM ghcr.io/graalvm/jdk-community:25.5.5.0.3\nFROM ghcr.io/graalvm/jdk-community:25.1.3-ol9\n",
+	})
+	res := scan(t, root)
+	checkAll(t, res, []want{
+		{"a/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"b/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"c/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"d/.sdkmanrc", 1, RuleLine, StatusVulnerable},
+		{"e/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"f/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"a/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"b/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"c/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"d/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"e/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"f/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 1, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 2, RuleNotChecked, StatusUnknown},
+	})
+	for _, f := range res.Findings {
+		if (f.File == "e/.sdkmanrc" || f.File == "f/.tool-versions" || f.File == "Dockerfile") && !strings.Contains(f.Reason, "GraalVM's own") {
+			t.Errorf("%s:%d: %s", f.File, f.Line, f.Reason)
+		}
+	}
+}

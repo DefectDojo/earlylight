@@ -83,14 +83,89 @@ func TestGraalVMRelease(t *testing.T) {
 		{"22.3", 17, Unknown}, // 22.3.0 or a later patch
 		{"21.3.5", 17, Unknown},
 		{"22.3.1", 11, NotAffected},
-		{"21.3.0", 8, NotAffected},
+		{"21.3.0", 8, Unknown}, // 21.3.x: GraalVM Enterprise 21.3 is listed
 		{"22.3.1", 19, Vulnerable},
 		{"23.1.2", 21, Vulnerable},
 		{"22.3.1", 16, NotAffected},
 		{"22.3.1", 30, Unknown},
 	} {
-		if st, why := JudgeGraalVMRelease(c.graal, c.java); st != c.want || why == "" {
+		if st, why := JudgeGraalVMRelease(c.graal, c.java, true); st != c.want || why == "" {
 			t.Errorf("JudgeGraalVMRelease(%s, %d) = %s (%s), want %s", c.graal, c.java, st, why, c.want)
+		}
+	}
+}
+
+// Review F3: GraalVM's own numbers clear a release only for GraalVM
+// Community names with Java 8 to 16 (not 21.3.x, whose Enterprise build is
+// listed as affected) or exactly 22.3.0 for Java 17; NIK, Mandrel, other
+// vendors and malformed numbers stay unknown.
+func TestGraalVMReleaseStrict(t *testing.T) {
+	for _, c := range []struct {
+		graal     string
+		java      int
+		community bool
+		want      Status
+	}{
+		{"22.3.0", 17, true, NotAffected},
+		{"22.3.0", 17, false, Unknown}, // NIK, Mandrel: numbering inferred
+		{"22.3.1", 17, false, Vulnerable},
+		{"22.3.1", 11, true, NotAffected},
+		{"22.3.1", 11, false, Unknown},
+		{"22.3.1", 1, true, Unknown},
+		{"22.3.1", 0, true, Unknown},
+		{"22.3.1", 7, true, Unknown},
+		{"21.3.20", 11, true, Unknown},
+		{"21.3.20", 8, true, Unknown},
+		{"22.3.0-dev", 17, true, Unknown},
+		{"22.3.00", 17, true, Unknown},
+		{"22.3.0.0", 17, true, Unknown},
+		{"22.3.0", 19, true, Vulnerable}, // every Java 19 release has the decoder
+		{"22.3.0", 19, false, Vulnerable},
+	} {
+		if st, why := JudgeGraalVMRelease(c.graal, c.java, c.community); st != c.want || why == "" {
+			t.Errorf("JudgeGraalVMRelease(%s, %d, community %v) = %s (%s), want %s", c.graal, c.java, c.community, st, why, c.want)
+		}
+	}
+}
+
+// Review F4: with a fixed GraalVM row, only a version OpenJDK's data also
+// judges fixed is fixed; a vendor build number or a later update stays
+// unknown, and pre-release or older builds are not fixed.
+func TestGraalVMRow(t *testing.T) {
+	saved := GraalVMFixed
+	t.Cleanup(func() { GraalVMFixed = saved })
+	GraalVMFixed = map[int]Build{17: {Version: []int{17, 0, 21, 1}, Build: 2}}
+	for v, want := range map[string]Status{
+		"17.0.21.1+2-jvmci-23.0-b99":       Fixed,
+		"17.0.21.1+3-jvmci-23.0-b99":       Fixed,
+		"17.0.21.9+1-jvmci-23.0-b99":       Unknown,
+		"17.0.22+7-jvmci-23.0-b99":         Unknown,
+		"17.0.21.1+1-jvmci-23.0-b99":       Vulnerable,
+		"17.0.21.1-ea+2-jvmci-23.0-b99":    Unknown,
+		"17.0.21.1-ea+1-jvmci-23.0-b99":    Vulnerable,
+		"17.0.21.0.3+1-LTS-jvmci-23.0-b99": Vulnerable,
+	} {
+		p, ok := Parse(v)
+		if !ok {
+			t.Fatalf("Parse(%s)", v)
+		}
+		if st, why := JudgeGraalVM(p); st != want {
+			t.Errorf("row 17.0.21.1+2: JudgeGraalVM(%s) = %s (%s), want %s", v, st, why, want)
+		}
+	}
+}
+
+// GraalVM Community's own release numbers (graal-25.5.5.0.3 is JDK
+// 25.0.5.0.3, graal-25.1.3 is JDK 25.0.3) are never Java versions.
+func TestGraalVMOwnNumbersNotJava(t *testing.T) {
+	for _, s := range []string{"25.1.3", "25.5.5.0.3", "23.1.2"} {
+		if !GraalVMOwnNumber(s) {
+			t.Errorf("%s not recognised as GraalVM's own number", s)
+		}
+	}
+	for _, s := range []string{"25.0.3", "25.0.5.0.3", "17.0.21.1", "21"} {
+		if GraalVMOwnNumber(s) {
+			t.Errorf("%s taken as GraalVM's own number", s)
 		}
 	}
 }

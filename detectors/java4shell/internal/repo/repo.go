@@ -427,7 +427,7 @@ func (s *scanner) sdkmanrc(rel, text string) {
 		}
 		if isGraal(m[2]) {
 			if g, java, ok := graalNamed(m[1]); ok {
-				s.graalOwn(rel, i+1, g, java, strings.TrimSpace(strings.SplitN(l, "=", 2)[1]), ".sdkmanrc")
+				s.graalOwn(rel, i+1, g, java, m[2] == "grl" || m[2] == "graalce", strings.TrimSpace(strings.SplitN(l, "=", 2)[1]), ".sdkmanrc")
 				continue
 			}
 		}
@@ -453,7 +453,7 @@ func (s *scanner) asdfValue(rel string, line int, value, source string) {
 	switch m[1] {
 	case "graalvm", "mandrel":
 		if g, java, ok := graalNamed(value); ok {
-			s.graalOwn(rel, line, g, java, value, source)
+			s.graalOwn(rel, line, g, java, m[1] == "graalvm", value, source)
 			return
 		}
 	}
