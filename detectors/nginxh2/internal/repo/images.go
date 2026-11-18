@@ -133,6 +133,9 @@ func (f Family) judge(c knowledge.CVE, t Tag) Verdict {
 		}
 		return Verdict{knowledge.Unknown, fmt.Sprintf("ingress-nginx controller %s: which nginx it runs was not read (before v1.0 some ran nginx older than 1.19.7)", v)}
 	case F5Ingress.ID:
+		if knowledge.Cmp(v.Line(), knowledge.MustV("5.8")) > 0 {
+			return Verdict{knowledge.Unknown, fmt.Sprintf("NGINX Ingress Controller %s is newer than any release known on %s (5.8.0): not judged", v, knowledge.Checked)}
+		}
 		if knowledge.Cmp(v, knowledge.MustV("5.8.0")) >= 0 {
 			return Verdict{knowledge.Fixed, fmt.Sprintf("NGINX Ingress Controller %s builds on nginx 1.31.9 (5.8.0's build file)", v)}
 		}

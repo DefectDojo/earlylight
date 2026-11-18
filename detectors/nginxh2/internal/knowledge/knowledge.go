@@ -160,11 +160,16 @@ const (
 )
 
 // lines judges v by per-line fixed releases: at or past the line's fix is
-// fixed, before it vulnerable; a line newer than every fixed line is
-// fixed (it branched after the fix); an older line, or one between, got
-// no fix.
-func lines(v V, fixed []V) (Status, string) {
+// fixed, before it vulnerable; a line newer than every known one is
+// unknown; an older line, or one between, got no fix.
+func lines(v V, fixed, others []V) (Status, string) {
 	newest := fixed[0]
+	known := fixed[0]
+	for _, f := range append(append([]V(nil), fixed...), others...) {
+		if Cmp(f.Line(), known.Line()) > 0 {
+			known = f
+		}
+	}
 	for _, f := range fixed {
 		if Cmp(f.Line(), v.Line()) == 0 {
 			if Cmp(v, f) >= 0 {
@@ -176,10 +181,29 @@ func lines(v V, fixed []V) (Status, string) {
 			newest = f
 		}
 	}
+	if Cmp(v.Line(), known.Line()) > 0 {
+		// A later line would carry the fix, but none was known on the
+		// check date: a version that claims one is not taken at its word
+		// (NGINX Plus's 37.x numbers, a forged or misread version line).
+		return Unknown, fmt.Sprintf("%s is on the %s line, newer than any known on %s (newest %s): not judged", v, v.Line(), Checked, known.Line())
+	}
 	if Cmp(v.Line(), newest.Line()) > 0 {
-		return Fixed, fmt.Sprintf("%s is on the %s line, which branched after the fix (%s)", v, v.Line(), newest)
+		return Fixed, fmt.Sprintf("%s is on the %s line, a known line that came after the fix (%s)", v, v.Line(), newest)
 	}
 	return Vulnerable, fmt.Sprintf("%s is on the %s line, which received no fix", v, v.Line())
+}
+
+// allFixed lists every CVE's fixed releases: the lines known to exist.
+func allFixed(plus bool) []V {
+	var out []V
+	for _, c := range CVEs {
+		if plus {
+			out = append(out, c.PlusFixed...)
+		} else {
+			out = append(out, c.Fixed...)
+		}
+	}
+	return out
 }
 
 // Nginx judges an upstream nginx version (three numbers).
@@ -190,7 +214,7 @@ func Nginx(c CVE, v V) (Status, string) {
 	if Cmp(v, c.Introduced) < 0 {
 		return NotAffected, fmt.Sprintf("nginx %s is older than %s, the first release with the flawed code", v, c.Introduced)
 	}
-	st, why := lines(v, c.Fixed)
+	st, why := lines(v, c.Fixed, allFixed(false))
 	return st, "nginx " + why
 }
 
@@ -263,7 +287,7 @@ func Plus(c CVE, rel string, core V) (Status, string) {
 		if v[0] < 37 {
 			return Unknown, fmt.Sprintf("NGINX Plus %s: a numbered release before 37 is not known", v)
 		}
-		st, why := lines(v, c.PlusFixed)
+		st, why := lines(v, c.PlusFixed, allFixed(true))
 		return st, "NGINX Plus " + why
 	}
 	r, p, ok := plusR(rel)

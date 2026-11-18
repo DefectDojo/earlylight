@@ -35,8 +35,10 @@ func TestNginxBoundaries(t *testing.T) {
 		{"1.31.8", Vulnerable, Vulnerable},
 		{"1.31.9", Fixed, Fixed},
 		{"1.31.10", Fixed, Fixed},
-		{"1.32.0", Fixed, Fixed},
-		{"2.0.0", Fixed, Fixed},
+		{"1.32.0", Unknown, Unknown}, // R5: above the newest known line
+		{"2.0.0", Unknown, Unknown},
+		{"37.0.0", Unknown, Unknown},
+		{"37.0.7", Unknown, Unknown},
 		{"0.8.54", NotAffected, NotAffected},
 	}
 	for _, c := range cases {
@@ -119,7 +121,7 @@ func TestPlus(t *testing.T) {
 		{"37.2.0.1", Vulnerable, Fixed},
 		{"37.3.0.0", Vulnerable, Fixed},
 		{"37.3.0.1", Fixed, Fixed},
-		{"37.4.0.0", Fixed, Fixed},
+		{"37.4.0.0", Unknown, Unknown},
 		{"r33", Vulnerable, Vulnerable},
 		{"r36-p1", Vulnerable, Vulnerable},
 		{"r37", Unknown, Unknown},

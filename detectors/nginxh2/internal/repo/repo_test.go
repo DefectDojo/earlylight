@@ -113,6 +113,13 @@ func TestClassifyAndTags(t *testing.T) {
 	if v := F5Ingress.Judge(Tag{Version: "5.8.0"}); v[knowledge.Flow].Status != knowledge.Fixed {
 		t.Errorf("F5 5.8.0: %+v", v)
 	}
+	if v := F5Ingress.Judge(Tag{Version: "5.9.0"}); v[knowledge.Flow].Status != knowledge.Unknown {
+		t.Errorf("F5 5.9.0: %+v", v)
+	}
+	// R5: a tag on a line newer than any known is never cleared.
+	res := scan(t, map[string]string{"Dockerfile": "FROM nginx:37.0.0\nFROM nginx:1.32.0-alpine\n"})
+	one(t, res, "Dockerfile", 1, RuleNotChecked, knowledge.Unknown)
+	one(t, res, "Dockerfile", 2, RuleNotChecked, knowledge.Unknown)
 }
 
 func TestImages(t *testing.T) {
