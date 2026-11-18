@@ -1,0 +1,13 @@
+services:
+  api:
+    image: amazoncorretto:21.0.12-al2023
+  worker:
+    image: amazoncorretto:21.0.12-al2023
+    environment:
+      JAVA_TOOL_OPTIONS: "-XX:UseAVX=2"
+  old:
+    image: eclipse-temurin:17.0.5_8-jre
+  j9:
+    image: ibm-semeru-runtimes:open-21-jre
+  latest:
+    image: eclipse-temurin:21-jre

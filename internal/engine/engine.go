@@ -125,6 +125,11 @@ type File struct {
 	Executable bool
 	// Member is true for a file found inside an archive or package.
 	Member bool
+	// Outer is, for a member, the path of the file the walk met that holds
+	// it (the archive itself, however deep the member is). A scan that
+	// keeps what it found by file forgets a member with Outer: a path
+	// that merely contains "!/" is not a member.
+	Outer string
 }
 
 // Skip records something a detector could not check, and why.
@@ -138,7 +143,8 @@ type Skip struct {
 // it decides verdicts.
 type TargetContext interface {
 	Kind() TargetKind
-	// Exists reports whether a regular file at that absolute path was scanned.
+	// Exists reports whether the walk met a regular file at that absolute
+	// path, read or not: it does not depend on which detectors ran.
 	Exists(path string) bool
 	// Env is the image configuration's environment ("KEY=value"), nil otherwise.
 	Env() []string
@@ -184,6 +190,72 @@ type Detector interface {
 // A detector without it receives every file.
 type Reader interface {
 	Wants(path string, head []byte, executable bool) bool
+}
+
+// Limiter is implemented by detectors that have a size limit of their own
+// on some files, below --max-file-size: an os-release, a start script or a
+// package database is never hundreds of MiB, and one that is should cost
+// nothing. Limit returns the most bytes of the file the detector checks,
+// from its path, first bytes and executable flag; 0 or less means no limit
+// of its own. A file over its limit is never shown to the detector, and is
+// not read past its first bytes unless another detector wants more of it.
+// It is recorded as not checked by each detector that asked for it: a
+// deliberate exclusion, not a coverage gap, unless the detector's scan says
+// otherwise (LimitVisitor). The limit applies to the files the walk meets,
+// not to archive members.
+type Limiter interface {
+	Limit(path string, head []byte, executable bool) int64
+}
+
+// LimitVisitor is implemented by a Scan that must know which files it
+// asked for and did not get, over its own limit (Limiter) or over
+// --max-file-size: an sshd_config include that may turn PAM off must not let
+// the scan clear a server. VisitOverLimit is called instead of Visit, with
+// the file's size (-1 when it was found larger while reading). For a file
+// over its own limit, the skips it returns are recorded as coverage gaps,
+// and when it returns none the file is a deliberate exclusion; a file over
+// --max-file-size is a gap already, and what it returns is not recorded.
+type LimitVisitor interface {
+	VisitOverLimit(path string, size int64) []Skip
+}
+
+// FinishSkipper is implemented by a Scan that decides only at the end which
+// of the files it did not check its findings depend on: FinishSkips is
+// called after Finish, and what it returns is recorded as coverage gaps
+// (sshole: a package database over its limit matters only when an OpenSSH
+// server was found).
+type FinishSkipper interface {
+	FinishSkips() []Skip
+}
+
+// UnreadVisitor is implemented by a Scan that must know which files and
+// directories the walk met and could not read (no permission, an I/O
+// error, a file that changed while it was read), whatever their name or
+// content: a verdict must never rest on their absence. VisitUnread is
+// called for each, dir set for a directory whose contents could not be
+// listed. The walk records each as a coverage gap.
+type UnreadVisitor interface {
+	VisitUnread(path string, dir bool)
+}
+
+// Forgetter is implemented by a Scan that keeps what it was shown by
+// path. When a path comes round again in a docker export (rootfs:), where
+// the last entry is the file, as a file, directory or link, Forget is
+// called before the new entry is handed out, so nothing of the earlier one
+// survives, nor of what was found inside it ("path!/member"). It is not
+// called while a hard link names the path: the link keeps the earlier
+// file. A registry or docker-archive image is flattened top layer first,
+// each path once.
+type Forgetter interface {
+	Forget(path string)
+}
+
+// HeadVisitor is implemented by a Scan that wants to see the first bytes
+// of every file the walk meets, read in full or not: a record of files
+// it does not need to read (a runtime download inside an image) without
+// the cost of reading them.
+type HeadVisitor interface {
+	VisitHead(path string, head []byte)
 }
 
 // ErrNotApplicable is what a Prober returns when the address does not run

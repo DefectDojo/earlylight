@@ -163,7 +163,7 @@ func Text(w io.Writer, r *Report, o Options) {
 			fmt.Fprintf(w, "   %d cleared finding(s) hidden: proven fixed, or copies provably not used (use --show-cleared)\n", hidden)
 		}
 		if len(t.Skipped) > 0 {
-			fmt.Fprintf(w, "   NOTE: %d item(s) were not scanned (%d coverage gaps, the rest deliberate exclusions or test fixtures); they are not covered by this result", len(t.Skipped), t.Gaps())
+			fmt.Fprintf(w, "   NOTE: %d item(s) were not scanned (%d coverage gaps, the rest deliberate exclusions or test fixtures); they are not covered by this result", t.SkippedPaths(), t.Gaps())
 			if o.ShowSkipped {
 				fmt.Fprintln(w, ":")
 				for _, s := range t.Skipped {

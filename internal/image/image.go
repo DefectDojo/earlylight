@@ -11,7 +11,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
@@ -20,6 +19,9 @@ import (
 type Opened struct {
 	// FS is the final filesystem as a tar stream, whiteouts applied.
 	FS io.ReadCloser
+	// Unresolved lists, once FS has been read to its end, the paths whose
+	// content the layers do not settle (see flatten): not read.
+	Unresolved func() []string
 	// Digest is the image manifest digest.
 	Digest string
 	// Platform is the platform that was opened, when known.
@@ -62,7 +64,7 @@ func opened(img v1.Image) (*Opened, error) {
 			}
 		}
 	}
-	o.FS = mutate.Extract(img)
+	o.FS, o.Unresolved = flatten(img)
 	return o, nil
 }
 
