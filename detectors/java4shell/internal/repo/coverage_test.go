@@ -350,3 +350,48 @@ func TestRPMGaps(t *testing.T) {
 		t.Errorf("an rpm query reported as an install: %+v", f)
 	}
 }
+
+// Round 2, items 3 and 4: the build after a patch number is carried, so
+// build 1 of a fixed release (17.0.21.1.1, 27.0.1.1.3, 17.0.21.1+1) is not
+// read as fixed; a six-number rpm version is not settled.
+func TestBuildOfFixedRelease(t *testing.T) {
+	res := scan(t, tree(t, map[string]string{
+		"Dockerfile": strings.Join([]string{
+			"FROM amazoncorretto:17.0.21.1.1",
+			"FROM amazoncorretto:27.0.1.1.3",
+			"FROM sapmachine:17.0.21.1.1",
+			"FROM openjdk:17.0.21.1.1",
+			"FROM amazoncorretto:17.0.21.1.2",
+			"RUN dnf install -y java-17-amazon-corretto-17.0.21.1.1-1",
+			"RUN dnf install -y java-17-openjdk-17.0.21.1.2.3-1.el9",
+			"RUN dnf install -y java-17-amazon-corretto-headless-17.0.21+9-1.amzn2023.1",
+		}, "\n") + "\n",
+		"a/.tool-versions": "java corretto-17.0.21.1.1\n",
+		"a/.sdkmanrc":      "java=17.0.21.1.1-amzn\n",
+		".github/workflows/ci.yml": "jobs:\n  a:\n    steps:\n" +
+			"      - uses: actions/setup-java@v5\n        with:\n          distribution: temurin\n          java-version: 17.0.21.1+1\n" +
+			"      - uses: actions/setup-java@v5\n        with:\n          distribution: corretto\n          java-version: 17.0.21.1+1\n" +
+			"      - uses: actions/setup-java@v5\n        with:\n          distribution: temurin\n          java-version: 17.0.21.1+2\n",
+	}))
+	checkAll(t, res, []want{
+		{"Dockerfile", 1, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 2, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 3, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 4, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 6, RulePackage, StatusVulnerable},
+		{"Dockerfile", 7, RulePackage, StatusUnknown},
+		{"Dockerfile", 8, RulePackage, StatusVulnerable},
+		{"a/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"a/.sdkmanrc", 1, RuleJavaPin, StatusVulnerable},
+		{".github/workflows/ci.yml", 7, RuleJavaPin, StatusVulnerable},
+		{".github/workflows/ci.yml", 11, RuleJavaPin, StatusVulnerable},
+	})
+	for _, l := range []struct {
+		file string
+		line int
+	}{{"Dockerfile", 5}, {".github/workflows/ci.yml", 15}} {
+		if f, ok := find(res, l.file, l.line); ok {
+			t.Errorf("%s:%d, a fixed build, reported: %+v", l.file, l.line, f)
+		}
+	}
+}

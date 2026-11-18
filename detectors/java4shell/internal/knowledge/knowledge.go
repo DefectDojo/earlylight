@@ -350,6 +350,18 @@ func Judge(v Version) (Status, string) {
 	if !ok {
 		return Unknown, fmt.Sprintf("Java %s is not in this detector's release data", ver)
 	}
+	// After a patch number (the fourth, small), a fifth number is a build:
+	// 17.0.21.1.1 is 17.0.21.1 build 1 (Corretto, SapMachine and Red Hat
+	// write it so), which can predate the fix of 17.0.21.1.
+	if len(v.Nums) >= 5 && v.Nums[3] <= maxPatch {
+		if len(v.Nums) > 5 {
+			return Unknown, fmt.Sprintf("Java %s has more numbers than a Java version and a build: what it names is not known", ver)
+		}
+		if v.Build < 0 {
+			v.Build = v.Nums[4]
+		}
+		v.Nums = v.Nums[:4]
+	}
 	if l.Introduced != nil {
 		c := Compare(v.Nums, l.Introduced)
 		if c == 0 && v.SelfBuilt {

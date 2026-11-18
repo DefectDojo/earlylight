@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -322,7 +323,15 @@ var versionInText = regexp.MustCompile(`(\d{1,3}(?:\.\d{1,9}){0,5})`)
 // its line has no fix at all.
 func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendor string) {
 	tv := TagVersion{Text: verText, Exact: strings.Count(verText, ".") >= 2, OpenJDKBuild: -1}
-	for _, p := range strings.Split(verText, ".") {
+	nums := verText
+	if base, b, ok := strings.Cut(verText, "+"); ok {
+		// setup-java 17.0.21.1+1: OpenJDK's build.
+		nums = base
+		if n, err := strconv.Atoi(b); err == nil && n >= 0 {
+			tv.OpenJDKBuild = n
+		}
+	}
+	for _, p := range strings.Split(nums, ".") {
 		n := 0
 		fmt.Sscanf(p, "%d", &n)
 		tv.Nums = append(tv.Nums, n)
@@ -474,6 +483,9 @@ func (s *scanner) asdfValue(rel string, line int, value, source string) {
 // (21.0.5.11.1: Java 21.0.5, build 11) and, since the out-of-band releases,
 // the OpenJDK patch number there (21.0.13.1.2: Java 21.0.13.1, build 2).
 // OpenJDK patch numbers are small, so a fourth number above 3 is a build.
+//
+// A fifth number after a patch number is kept: 17.0.21.1.1 is build 1 of
+// 17.0.21.1, which predates the fix.
 func CorrettoJava(ver string) string {
 	parts := strings.Split(ver, ".")
 	if len(parts) >= 4 {
@@ -482,7 +494,6 @@ func CorrettoJava(ver string) string {
 		if n > 3 {
 			return strings.Join(parts[:3], ".")
 		}
-		return strings.Join(parts[:4], ".")
 	}
 	return ver
 }
@@ -587,7 +598,11 @@ func (s *scanner) setupJava(rel string, v *yaml.Node, dist string, text []string
 		return
 	}
 	before := len(s.findings)
-	s.judgeVersion(rel, v.Line, 0, m, "actions/setup-java", dist)
+	judged := m
+	if b, ok := strings.CutPrefix(ver, m+"+"); ok && b != "" && strings.Trim(b, "0123456789") == "" {
+		judged = ver // the build decides at a fixed release's boundary
+	}
+	s.judgeVersion(rel, v.Line, 0, judged, "actions/setup-java", dist)
 	if len(s.findings) == before {
 		s.movingSetupJava(rel, v, m, dist)
 		return
@@ -779,7 +794,7 @@ var (
 	installRE = regexp.MustCompile(`\b(?:apt-get|apt|apk|dnf|yum|microdnf|tdnf|zypper)\b(?:\s+-{1,2}[\w=./:-]+)*\s+(?:install|add|in)\b`)
 	aptJava   = regexp.MustCompile(`\b(openjdk-(\d{1,2})-(?:jre|jdk)(?:-headless)?)\b(=([^\s;&|]+))?`)
 	apkJava   = regexp.MustCompile(`\b(openjdk(\d{1,2})(?:-jre|-jdk|-jre-headless|-jmods)?)(?:([=~><]+)([^\s;&|]+))?`)
-	rpmJava   = regexp.MustCompile(`\b(java-(\d{1,2})-(openjdk|amazon-corretto)(?:-headless|-devel|-jdk)?)(?:-(\d[\w.:*?-]*))?`)
+	rpmJava   = regexp.MustCompile(`\b(java-(\d{1,2})-(openjdk|amazon-corretto)(?:-headless|-devel|-jdk)?)(?:-(\d[\w.:*?+~-]*))?`)
 	// rpmLatest is Fedora's and EPEL's java-latest-openjdk: the newest
 	// release the distribution carries, named by no release.
 	rpmLatest = regexp.MustCompile(`^java-latest-openjdk(?:-headless|-devel|-jmods)?(?:-\d[\w.:*?-]*)?$`)
@@ -1056,6 +1071,8 @@ func pinnedVersion(h pkgHit) string {
 	up = strings.ReplaceAll(up, "_p", "+")
 	switch {
 	case h.vendor == "corretto":
+		// Without the rpm or deb release: 17.0.21+9-1.amzn2023.1.
+		up, _, _ = strings.Cut(up, "-")
 		up = CorrettoJava(up)
 	case h.mgr == "rpm":
 		// Red Hat and Fedora append the build: 17.0.21.0.9 is 17.0.21+9.
@@ -1131,11 +1148,11 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 		props["current"] = h.ver
 		v, _ := knowledge.Parse(up)
 		st, why := knowledge.Judge(v)
-		if st == knowledge.Fixed && h.mgr == "rpm" && h.vendor == "distribution" && rpmNumbers(h.ver) == 4 {
-			// Red Hat and Fedora write five numbers; a fourth number from
-			// another rpm distribution (openEuler's 17.0.21.2) may be a
-			// build, not a patch release.
-			st, why = knowledge.Unknown, fmt.Sprintf("%s has four numbers: outside Red Hat's five-number scheme the fourth may be a build number, not the OpenJDK patch release", h.ver)
+		if st == knowledge.Fixed && h.mgr == "rpm" && h.vendor == "distribution" && rpmNumbers(h.ver) != 5 {
+			// Red Hat and Fedora write five numbers; another count
+			// (openEuler's 17.0.21.2, a six-number version) may hold a
+			// build where the patch release would be.
+			st, why = knowledge.Unknown, fmt.Sprintf("%s does not have Red Hat's five numbers: its fourth number may be a build, not the OpenJDK patch release", h.ver)
 		}
 		if st == knowledge.Unknown {
 			s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown, Reason: why, Props: props,
