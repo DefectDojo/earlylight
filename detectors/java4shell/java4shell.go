@@ -136,12 +136,20 @@ func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
 }
 
 // VisitOverLimit records a JVM settings file over the limit as a coverage
-// gap: an option in it can undo a mitigation the scan would report. The
-// other files with a limit are deliberate exclusions: no verdict is cleared
-// on them (a runtime is cleared only by its VM library and release file),
-// and an os-release, package database, start script or crash log that
-// large is not a real one.
+// gap: an option in it can undo a mitigation the scan would report. A
+// start script not read keeps a mitigation from being reported when the
+// container's command runs it. The other files with a limit are deliberate
+// exclusions: no verdict is cleared on them (a runtime is cleared only by
+// its VM library and release file).
 func (s *scan) VisitOverLimit(p string, _ int64) []engine.Skip {
+	// The last entry for a path wins (a tar can hold several).
+	delete(s.scripts, p)
+	if base := path.Base(p); !hsErr.MatchString(base) && p != "/etc/os-release" && p != "/usr/lib/os-release" &&
+		len(s.unreadScripts) < maxScripts {
+		// Its head is not known here: it may be a start script, which
+		// keeps a mitigation from being reported for the command it runs.
+		s.unreadScripts[p] = true
+	}
 	if jvm.SettingKind(p) == "" {
 		return nil
 	}
@@ -212,7 +220,7 @@ const (
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
 	return &scan{kind: kind, releases: map[string]jvm.Release{}, badReleases: map[string]string{},
-		kept: map[string][]byte{}, lists: map[string][]byte{}, scripts: map[string]map[string]bool{}}
+		kept: map[string][]byte{}, lists: map[string][]byte{}, scripts: map[string]map[string]bool{}, unreadScripts: map[string]bool{}}
 }
 
 type scan struct {
@@ -228,8 +236,10 @@ type scan struct {
 	dropped     int
 	keptBytes   int
 	archives    []string // runtime downloads seen by name, not read
-	optionFiles int      // settings files that set JVM options
-	plainUnits  int      // systemd units that set none
+	// unreadScripts may be start scripts and were not read.
+	unreadScripts map[string]bool
+	optionFiles   int // settings files that set JVM options
+	plainUnits    int // systemd units that set none
 	// limits records the caps this target reached; a capped scan clears
 	// nothing.
 	limits []string
@@ -331,6 +341,10 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			s.keptBytes += len(f.Data)
 		}
 	}
+	delete(s.unreadScripts, f.Path)
+	if isScript(f.Data) && len(f.Data) > maxScript && len(s.unreadScripts) < maxScripts {
+		s.unreadScripts[f.Path] = true // read as a settings file or package database only
+	}
 	if isScript(f.Data) && len(f.Data) <= maxScript {
 		vars := map[string]bool{}
 		for _, n := range jvm.ScriptVars {
@@ -386,13 +400,14 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		}
 	}
 	in := assess.Input{
-		Libraries:   s.libs,
-		Releases:    s.releases,
-		BadReleases: s.badReleases,
-		Settings:    s.settings,
-		Owners:      owners,
-		Resolve:     res.resolve,
-		Scripts:     s.scripts,
+		Libraries:     s.libs,
+		Releases:      s.releases,
+		BadReleases:   s.badReleases,
+		Settings:      s.settings,
+		Owners:        owners,
+		Resolve:       res.resolve,
+		Scripts:       s.scripts,
+		UnreadScripts: s.unreadScripts,
 	}
 	if s.kind == engine.Image {
 		in.Env = ctx.Env()

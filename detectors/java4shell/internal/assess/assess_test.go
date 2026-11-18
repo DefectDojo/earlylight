@@ -275,3 +275,21 @@ func TestSymlinkLoopResolve(t *testing.T) {
 	in := Input{Libraries: []*jvm.Library{vulnLib(t, temurin)}, Resolve: loop, Env: []string{}, Command: []string{"java", "-XX:UseAVX=2"}}
 	_ = one(t, in)
 }
+
+// Round-2 review finding 6: a start script the command runs that was not
+// read can pass an option that undoes a mitigation: not mitigated.
+func TestMitigationWithUnreadStartScript(t *testing.T) {
+	in := Input{Libraries: []*jvm.Library{vulnLib(t, temurin)}, Env: []string{"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics", "JAVA_OPTS=-XX:+UseBASE64Intrinsics"},
+		Command: []string{"/entrypoint.sh"}}
+	if f := one(t, in); f.Status != Mitigated {
+		t.Fatalf("read nothing that passes JAVA_OPTS: %+v", f)
+	}
+	in.UnreadScripts = map[string]bool{"/entrypoint.sh": true}
+	if f := one(t, in); f.Status != Vulnerable || !strings.Contains(f.Reason, "/entrypoint.sh was not read") {
+		t.Errorf("an unread entrypoint: %+v", f)
+	}
+	in.Command = []string{"/usr/bin/other"}
+	if f := one(t, in); f.Status != Mitigated {
+		t.Errorf("an unread script the command does not run: %+v", f)
+	}
+}

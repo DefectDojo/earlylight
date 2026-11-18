@@ -74,6 +74,9 @@ type Input struct {
 	Env     []string
 	Command []string
 	Scripts map[string]map[string]bool
+	// UnreadScripts are files that may be start scripts and were not read
+	// (larger than the scan reads): what they pass to java is unknown.
+	UnreadScripts map[string]bool
 	// Owners maps installed files to the OS package that installed them.
 	Owners map[string]Package
 	// Resolve follows symbolic links within the target.
@@ -236,7 +239,7 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 			bs, bwhy := knowledge.JudgeBackport(v)
 			f.Release = bs
 			if bs == knowledge.Vulnerable {
-				if ok, how := mitigation(in, env, root, v.Feature(), &f); ok {
+				if ok, how := mitigation(in, env, root, v.Feature(), &f); ok && unreadCommandScript(in) == "" {
 					f.Mitigation = how
 					return f.set(Mitigated, bwhy+"; "+how, what+" carries a backported AVX-512 VBMI Base64 decoder without the fix, mitigated by its JVM options until it is updated")
 				}
@@ -262,6 +265,10 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		kwhy += " (judged by the release file: no HotSpot version line was found in the VM library)"
 	}
 	if ok, how := mitigation(in, env, root, v.Feature(), &f); ok {
+		if u := unreadCommandScript(in); u != "" {
+			return f.set(Vulnerable, kwhy+"; "+how+", but the container's start script "+u+" was not read (larger than the scan reads) and can pass an option that undoes it",
+				what+" is vulnerable to Java4Shell")
+		}
 		f.Mitigation = how
 		return f.set(Mitigated, kwhy+"; "+how, what+" is vulnerable to Java4Shell, mitigated by its JVM options until it is updated")
 	}
@@ -475,6 +482,24 @@ func javaHomeIs(in Input, env map[string]string, root string) bool {
 		}
 	}
 	return false
+}
+
+// unreadCommandScript is a script the container's command runs that was
+// not read, or "".
+func unreadCommandScript(in Input) string {
+	for _, w := range in.Command {
+		p := w
+		if in.Resolve != nil {
+			p = in.Resolve(w)
+		}
+		if in.UnreadScripts[p] {
+			return p
+		}
+		if in.UnreadScripts[w] {
+			return w
+		}
+	}
+	return ""
 }
 
 // scriptVarsOf lists the script variables the container's command passes

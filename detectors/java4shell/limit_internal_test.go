@@ -182,3 +182,22 @@ func TestOverLimitGaps(t *testing.T) {
 		}
 	}
 }
+
+// A script over the limit is remembered as unread, and of several entries
+// for one path the last decides.
+func TestUnreadScripts(t *testing.T) {
+	s := (&Detector{}).NewScan(engine.Image).(*scan)
+	s.VisitOverLimit("/entrypoint.sh", 300<<10)
+	s.VisitOverLimit("/etc/os-release", 300<<10)
+	if !s.unreadScripts["/entrypoint.sh"] || s.unreadScripts["/etc/os-release"] {
+		t.Fatalf("unread %v", s.unreadScripts)
+	}
+	s.Visit(engine.File{Path: "/entrypoint.sh", Data: []byte("#!/bin/sh\nexec java $JAVA_OPTS -jar /app.jar\n")})
+	if s.unreadScripts["/entrypoint.sh"] || !s.scripts["/entrypoint.sh"]["JAVA_OPTS"] {
+		t.Errorf("read after unread: unread %v scripts %v", s.unreadScripts, s.scripts)
+	}
+	s.VisitOverLimit("/entrypoint.sh", 300<<10)
+	if !s.unreadScripts["/entrypoint.sh"] || s.scripts["/entrypoint.sh"] != nil {
+		t.Errorf("unread after read: unread %v scripts %v", s.unreadScripts, s.scripts)
+	}
+}
