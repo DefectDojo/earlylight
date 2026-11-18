@@ -187,6 +187,7 @@ func (c *targetCtx) Aliases(p string) []string {
 // walker hands one target's files to every scan.
 type walker struct {
 	dets    []Detector
+	ids     []string // each detector's ID
 	scans   []Scan
 	ctx     *targetCtx
 	lim     archive.Limits
@@ -231,6 +232,7 @@ func newWalker(dets []Detector, kind TargetKind, t *Target, opts Options) *walke
 			continue
 		}
 		w.dets = append(w.dets, d)
+		w.ids = append(w.ids, d.Manifest().ID)
 		w.scans = append(w.scans, d.NewScan(kind))
 		if d.Manifest().Archives {
 			w.members = true
@@ -312,7 +314,7 @@ func (w *walker) limit(p string, head []byte, exe bool, readers []Reader, limite
 	w.limited = p
 	read, unlimited := false, false
 	var most int64
-	var by []string
+	var capped []int // the detectors that want it, each with a limit
 	for i := range w.dets {
 		l := fileLimit{wants: readers[i] == nil || readers[i].Wants(p, head, exe)}
 		if limiters[i] != nil {
@@ -326,14 +328,24 @@ func (w *walker) limit(p string, head []byte, exe bool, readers []Reader, limite
 		default:
 			read = true
 			most = max(most, l.bytes)
-			by = append(by, w.dets[i].Manifest().ID)
+			capped = append(capped, i)
 		}
 	}
-	if !read || unlimited {
+	switch {
+	case !read || unlimited:
 		return read, source.Limit{}
+	case len(capped) == 1:
+		return true, source.Limit{Bytes: most, Name: ownLimit(most, w.ids[capped[0]])}
 	}
-	return true, source.Limit{Bytes: most, By: strings.Join(by, " and ")}
+	by := make([]string, len(capped))
+	for k, i := range capped {
+		by[k] = fmt.Sprintf("%s (%d bytes)", w.ids[i], w.limits[i].bytes)
+	}
+	return true, source.Limit{Bytes: most, Name: "the limits of " + strings.Join(by, " and ")}
 }
+
+// ownLimit names one detector's limit, for the record.
+func ownLimit(n int64, id string) string { return fmt.Sprintf("the %d-byte limit of %s", n, id) }
 
 // over reports whether f is over scan i's own limit, which keeps it from
 // that detector.
@@ -376,7 +388,7 @@ func (w *walker) send(f File, skip func(int) bool) {
 		if w.over(i, f) {
 			if w.limits[i].wants {
 				w.t.Skipped = append(w.t.Skipped, source.Skip{Path: f.Path, Excluded: true,
-					Reason: fmt.Sprintf("excluded: larger than the %d-byte limit of %s for this file (%d bytes); not checked by it", w.limits[i].bytes, w.dets[i].Manifest().ID, len(f.Data))})
+					Reason: fmt.Sprintf("excluded: larger than %s for this file (%d bytes); not checked by it", ownLimit(w.limits[i].bytes, w.ids[i]), len(f.Data))})
 			}
 			continue
 		}

@@ -52,7 +52,7 @@ func limit64K(p string) int64 {
 func ownSkips(t *Target) []source.Skip {
 	var out []source.Skip
 	for _, s := range t.Skipped {
-		if strings.Contains(s.Reason, "-byte limit of") {
+		if strings.Contains(s.Reason, "-byte limit of") || strings.Contains(s.Reason, "limits of") {
 			out = append(out, s)
 		}
 	}
@@ -120,6 +120,18 @@ func TestLimiterWithAnotherReader(t *testing.T) {
 	tg = ScanFS([]Detector{ds, db}, root, Options{AsRoot: true})
 	if len(*small.seen) != 0 || len(*big.seen) != 1 || len(ownSkips(tg)) != 1 || !strings.Contains(ownSkips(tg)[0].Reason, "t-cap1k") {
 		t.Errorf("small saw %v, big saw %v, skipped %+v", *small.seen, *big.seen, tg.Skipped)
+	}
+}
+
+// A file over the limits of two detectors names both.
+func TestLimiterTwoLimits(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 100<<10)})
+	_, ds := capped("t-two1k", osRelease, func(string) int64 { return 1 << 10 })
+	_, db := capped("t-two64k", osRelease, limit64K)
+	tg := ScanFS([]Detector{ds, db}, root, Options{AsRoot: true})
+	want := "excluded: larger than the limits of t-two1k (1024 bytes) and t-two64k (65536 bytes) for this file (102400 bytes)"
+	if len(tg.Skipped) != 1 || tg.Skipped[0].Reason != want {
+		t.Errorf("skipped %+v", tg.Skipped)
 	}
 }
 

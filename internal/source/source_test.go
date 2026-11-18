@@ -64,7 +64,7 @@ func FuzzTar(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		Tar(bytes.NewReader(data), Options{MaxFileSize: 1 << 20}, func(File) error { return nil })
 		// With a reader's own limit, nothing larger is ever handed out.
-		limited := Options{MaxFileSize: 1 << 20, Read: func(string, []byte, bool) (bool, Limit) { return true, Limit{Bytes: 100, By: "t"} }}
+		limited := Options{MaxFileSize: 1 << 20, Read: func(string, []byte, bool) (bool, Limit) { return true, Limit{Bytes: 100, Name: "t"} }}
 		Tar(bytes.NewReader(data), limited, func(f File) error {
 			if len(f.Data) > 100 {
 				t.Errorf("%s: %d bytes over a 100-byte limit", f.Path, len(f.Data))
@@ -83,9 +83,9 @@ func TestTarOwnLimit(t *testing.T) {
 		MaxFileSize: 12,
 		Read: func(p string, _ []byte, _ bool) (bool, Limit) {
 			if p == "/big" {
-				return true, Limit{Bytes: 100, By: "t"} // above MaxFileSize: MaxFileSize applies
+				return true, Limit{Bytes: 100, Name: "t"} // above MaxFileSize: MaxFileSize applies
 			}
-			return true, Limit{Bytes: 4, By: "java4shell"}
+			return true, Limit{Bytes: 4, Name: "the 4-byte limit of java4shell"}
 		},
 	}
 	skips, _, err := Tar(bytes.NewReader(data), opts, func(f File) error { read = append(read, f.Path); return nil })
@@ -110,7 +110,9 @@ func TestDirOwnLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	var read []string
-	skips, n, err := Dir(root, Options{Read: func(string, []byte, bool) (bool, Limit) { return true, Limit{Bytes: 4096, By: "t"} }},
+	skips, n, err := Dir(root, Options{Read: func(string, []byte, bool) (bool, Limit) {
+		return true, Limit{Bytes: 4096, Name: "the 4096-byte limit of t"}
+	}},
 		func(f File) error { read = append(read, f.Path); return nil })
 	if err != nil || n != 1 || len(read) != 0 || len(skips) != 1 || !skips[0].Excluded ||
 		skips[0].Reason != "excluded: larger than the 4096-byte limit of t for this file (5000 bytes)" {
@@ -133,7 +135,7 @@ func TestTarOwnLimitNeverReads(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	skips, _, err := Tar(pr, Options{MaxFileSize: 256 << 20, Read: func(string, []byte, bool) (bool, Limit) { return true, Limit{Bytes: 64 << 10, By: "t"} }},
+	skips, _, err := Tar(pr, Options{MaxFileSize: 256 << 20, Read: func(string, []byte, bool) (bool, Limit) { return true, Limit{Bytes: 64 << 10, Name: "t"} }},
 		func(File) error { t.Error("visited"); return nil })
 	runtime.ReadMemStats(&after)
 	if err != nil || len(skips) != 1 || !skips[0].Excluded {

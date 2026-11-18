@@ -79,8 +79,9 @@ var ContainerStorage = []string{"/var/lib/docker/", "/var/lib/containerd/", "/va
 type Limit struct {
 	// Bytes is the most read of the file; 0 or less means MaxFileSize.
 	Bytes int64
-	// By names who set it, for the record ("java4shell").
-	By string
+	// Name says whose limit it is, for the record: "the 65536-byte limit
+	// of java4shell".
+	Name string
 }
 
 // bound is the most read of a file: the reader's own limit when it is below
@@ -93,12 +94,12 @@ func (o Options) bound(l Limit) (int64, bool) {
 }
 
 // tooLarge is the record of a file over the limit that applies to it.
-func tooLarge(abs string, size, most int64, own bool, by string, reading bool) Skip {
+func tooLarge(abs string, size, most int64, own bool, name string, reading bool) Skip {
 	switch {
 	case own && reading:
-		return Skip{Path: abs, Reason: fmt.Sprintf("excluded: larger than the %d-byte limit of %s for this file, found while reading", most, by), Excluded: true}
+		return Skip{Path: abs, Reason: fmt.Sprintf("excluded: larger than %s for this file, found while reading", name), Excluded: true}
 	case own:
-		return Skip{Path: abs, Reason: fmt.Sprintf("excluded: larger than the %d-byte limit of %s for this file (%d bytes)", most, by, size), Excluded: true}
+		return Skip{Path: abs, Reason: fmt.Sprintf("excluded: larger than %s for this file (%d bytes)", name, size), Excluded: true}
 	case reading:
 		return Skip{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes) while reading", most)}
 	}
@@ -225,7 +226,7 @@ func readOne(osPath, abs string, fi fs.FileInfo, opts Options, visit Visitor, sk
 	}
 	most, own := opts.bound(lim)
 	if most > 0 && fi.Size() > most {
-		*skips = append(*skips, tooLarge(abs, fi.Size(), most, own, lim.By, false))
+		*skips = append(*skips, tooLarge(abs, fi.Size(), most, own, lim.Name, false))
 		return nil
 	}
 	// Enforce the limit while reading: some files (FUSE mounts) report size 0
@@ -241,7 +242,7 @@ func readOne(osPath, abs string, fi fs.FileInfo, opts Options, visit Visitor, sk
 	}
 	data := append(head, rest...)
 	if most > 0 && int64(len(data)) > most {
-		*skips = append(*skips, tooLarge(abs, 0, most, own, lim.By, true))
+		*skips = append(*skips, tooLarge(abs, 0, most, own, lim.Name, true))
 		return nil
 	}
 	return visit(File{Path: abs, Data: data, Executable: exe})
@@ -300,7 +301,7 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 		}
 		most, own := opts.bound(lim)
 		if most > 0 && h.Size > most {
-			skips = append(skips, tooLarge(abs, h.Size, most, own, lim.By, false))
+			skips = append(skips, tooLarge(abs, h.Size, most, own, lim.Name, false))
 			continue
 		}
 		var rr io.Reader = tr
@@ -313,7 +314,7 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 		}
 		data := append(head, rest...)
 		if most > 0 && int64(len(data)) > most {
-			skips = append(skips, tooLarge(abs, 0, most, own, lim.By, true))
+			skips = append(skips, tooLarge(abs, 0, most, own, lim.Name, true))
 			continue
 		}
 		if err := visit(File{Path: abs, Data: data, Executable: exe}); err != nil {
