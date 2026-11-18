@@ -78,6 +78,9 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 	}
 	props["current"] = tv.Text
 	st, why := JudgeTag(tv)
+	if fam.GraalVM {
+		st, why = graalTag(tv, st, why)
+	}
 	switch st {
 	case knowledge.Unknown:
 		s.add(Finding{Rule: RuleNotChecked, File: r.File, Line: r.Line, Level: "note", Status: StatusUnknown, Pull: img, ref: &r,
@@ -88,6 +91,17 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 		return
 	}
 	feature := tv.Nums[0]
+	if fam.GraalVM {
+		f := Finding{Rule: RuleImagePin, File: r.File, Line: r.Line, Level: "error", Status: StatusVulnerable, Reason: why, ref: &r, Props: props,
+			Message: fmt.Sprintf("image %s holds %s for Java %s, without the Java4Shell fix", img, fam.Vendor, tv.Text),
+			Fix:     graalFix(feature, "")}
+		if mit != "" {
+			f.Status, f.Reason = StatusMitigated, why+"; "+mit
+			f.Message += ", mitigated by its JVM options until it is updated"
+		}
+		s.add(f)
+		return
+	}
 	f := Finding{Rule: RuleImagePin, File: r.File, Line: r.Line, Level: "error", Status: StatusVulnerable, Reason: why, ref: &r, Props: props,
 		Message: fmt.Sprintf("image %s holds %s Java %s, without the Java4Shell fix", img, fam.Vendor, tv.Text)}
 	if fx := knowledge.FixedVersion(feature); fx != "" {

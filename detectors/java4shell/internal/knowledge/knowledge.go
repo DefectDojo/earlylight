@@ -23,7 +23,7 @@ const BugRef = "JDK-8393212, inferred to be this CVE's fix"
 // Checked is the date the release data was last checked: every "as of"
 // statement (a vendor or distribution had not published a fix) is as of
 // this date.
-const Checked = "2026-11-17"
+const Checked = "2026-11-18"
 
 // Dates the release data rests on.
 const (

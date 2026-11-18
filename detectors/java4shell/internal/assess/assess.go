@@ -58,6 +58,9 @@ type Finding struct {
 	Mitigation     string           `json:"mitigation,omitempty"`
 	MitigatedFor   []string         `json:"mitigated_for,omitempty"` // partial mitigations (one service)
 	Release        knowledge.Status `json:"release_status,omitempty"`
+	// GraalVM is a GraalVM JDK (HotSpot with JVMCI): fixed only at a
+	// published fixed GraalVM build.
+	GraalVM bool `json:"graalvm,omitempty"`
 }
 
 // Input is everything one target gives.
@@ -188,6 +191,8 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		}
 	}
 	f.VM = lib.VMName
+	f.GraalVM = knowledge.IsGraalVM(lib.JREVersion) || knowledge.IsGraalVM(lib.VMVersion) ||
+		hasRel && (rel["GRAALVM_VERSION"] != "" || knowledge.IsGraalVM(rel.Version()))
 	if openj9 {
 		f.VM = "OpenJ9"
 	}
@@ -218,7 +223,11 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		}
 		return f.set(Unknown, why, what+": Java version unknown")
 	}
-	ks, kwhy := knowledge.Judge(v)
+	judgeVersion, judgeBackport := knowledge.Judge, knowledge.JudgeBackport
+	if f.GraalVM {
+		judgeVersion, judgeBackport = knowledge.JudgeGraalVM, knowledge.JudgeBackportGraalVM
+	}
+	ks, kwhy := judgeVersion(v)
 	f.Release = ks
 	read := lib.HotSpot() // the stub names are only meaningful in a HotSpot library that was read
 	if !read && ks != knowledge.Vulnerable {
@@ -233,7 +242,7 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	switch ks {
 	case knowledge.NotAffected:
 		if read && lib.VBMIStubs {
-			bs, bwhy := knowledge.JudgeBackport(v)
+			bs, bwhy := judgeBackport(v)
 			f.Release = bs
 			if bs == knowledge.Vulnerable {
 				if ok, how := mitigation(in, env, root, v.Feature(), &f); ok {
@@ -515,7 +524,9 @@ func fixText(f Finding, v knowledge.Version, ok bool) string {
 		interim = " The JVM options keep the vulnerable decoder from running until then; keep them until it is updated."
 	}
 	target := "a Java release with the fix (17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later on the same update)"
-	if ok && v.Feature() < 17 {
+	if f.GraalVM {
+		target = fmt.Sprintf("a GraalVM build with the fix once Oracle or the GraalVM project publishes one (none had been as of %s), or a JDK release with the fix (17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1)", knowledge.Checked)
+	} else if ok && v.Feature() < 17 {
 		// A backported decoder (Oracle's Java 8 Performance Pack).
 		target = fmt.Sprintf("a build of Java %d from the same vendor with the fix (none was known on %s), or one without the backported AVX-512 decoder", v.Feature(), knowledge.Checked)
 	} else if ok {

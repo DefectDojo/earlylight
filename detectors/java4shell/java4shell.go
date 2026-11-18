@@ -423,7 +423,10 @@ func finding(x assess.Finding) engine.Finding {
 		sort.Strings(x.MitigatedFor)
 		facts["mitigated_only_for"] = strings.Join(x.MitigatedFor, ",")
 	}
-	if fx := fixedFor(x.Version); fx != "" {
+	if x.GraalVM {
+		// GraalVM's fixed builds are numbered its own way: none was known.
+		facts["graalvm"] = "yes"
+	} else if fx := fixedFor(x.Version); fx != "" {
 		facts["fixed_in"] = fx
 	}
 	method := "vm-library"

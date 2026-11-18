@@ -338,6 +338,10 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 	if vendor != "" {
 		props["vendor"] = vendor
 	}
+	if isGraal(vendor) {
+		s.graalVersion(rel, line, tv, st, why, source, props)
+		return
+	}
 	if fx := knowledge.FixedVersion(tv.Nums[0]); fx != "" {
 		props["fixed_in"] = fx
 	}
@@ -421,7 +425,13 @@ func (s *scanner) sdkmanrc(rel, text string) {
 		if vendor == "" {
 			vendor = m[2]
 		}
-		if strings.Contains(m[1], ".r") || m[2] == "grl" || (m[2] == "graalce" || m[2] == "graal" || m[2] == "nik" || m[2] == "mandrel") && strings.Count(m[1], ".") < 2 {
+		if isGraal(m[2]) {
+			if g, java, ok := graalNamed(m[1]); ok {
+				s.graalOwn(rel, i+1, g, java, strings.TrimSpace(strings.SplitN(l, "=", 2)[1]), ".sdkmanrc")
+				continue
+			}
+		}
+		if strings.Contains(m[1], ".r") || m[2] == "grl" || isGraal(m[2]) && strings.Count(m[1], ".") < 2 {
 			// GraalVM 22.3.r17 and the like: GraalVM's numbers.
 			s.ownNumbers(rel, i+1, strings.TrimSpace(strings.SplitN(l, "=", 2)[1]), ".sdkmanrc")
 			continue
@@ -439,6 +449,13 @@ func (s *scanner) asdfValue(rel string, line int, value, source string) {
 	m := asdfJava.FindStringSubmatch(value)
 	if m == nil {
 		return
+	}
+	switch m[1] {
+	case "graalvm", "mandrel":
+		if g, java, ok := graalNamed(value); ok {
+			s.graalOwn(rel, line, g, java, value, source)
+			return
+		}
 	}
 	switch m[1] {
 	case "zulu", "graalvm", "mandrel", "jetbrains":

@@ -74,3 +74,65 @@ jobs:
 		t.Logf("skip %+v", s)
 	}
 }
+
+func TestGraalVMRepo(t *testing.T) {
+	root := tree(t, map[string]string{
+		"a/.sdkmanrc":      "java=22.3.1.r17-grl\n",
+		"b/.sdkmanrc":      "java=22.3.0.r17-grl\n",
+		"c/.sdkmanrc":      "java=22.3.r17-grl\n",
+		"d/.sdkmanrc":      "java=22.3.1.r19-grl\n",
+		"e/.sdkmanrc":      "java=22.3.1.r11-grl\n",
+		"f/.sdkmanrc":      "java=21.0.13.1-graal\n",
+		"g/.sdkmanrc":      "java=21.0.13-graal\n",
+		"h/.sdkmanrc":      "java=21.0.2-graalce\n",
+		"i/.sdkmanrc":      "java=23.1.5.r21-mandrel\n",
+		"j/.sdkmanrc":      "java=25.0.5.1-graalce\n",
+		"a/.tool-versions": "java graalvm-22.3.1+java17\n",
+		"b/.tool-versions": "java oracle-graalvm-21.0.13.1\n",
+		"c/.tool-versions": "java graalvm-community-17.0.9\n",
+		"d/.tool-versions": "java graalvm-22.3.0+java11\n",
+		"Dockerfile": strings.Join([]string{
+			"FROM container-registry.oracle.com/graalvm/jdk:21.0.13",
+			"FROM container-registry.oracle.com/graalvm/jdk:21.0.13.1",
+			"FROM container-registry.oracle.com/graalvm/jdk:21",
+			"FROM ghcr.io/graalvm/jdk-community:21.0.2",
+			"FROM ghcr.io/graalvm/native-image-community:17.0.9-ol9",
+			"FROM container-registry.oracle.com/graalvm/native-image:17.0.21.0.3",
+			"FROM ghcr.io/graalvm/graalvm-ce:22.3.3",
+		}, "\n") + "\n",
+	})
+	res := scan(t, root)
+	checkAll(t, res, []want{
+		{"a/.sdkmanrc", 1, RuleJavaPin, StatusVulnerable},
+		{"c/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"d/.sdkmanrc", 1, RuleLine, StatusVulnerable},
+		{"f/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"g/.sdkmanrc", 1, RuleJavaPin, StatusVulnerable},
+		{"h/.sdkmanrc", 1, RuleJavaPin, StatusVulnerable},
+		{"i/.sdkmanrc", 1, RuleJavaPin, StatusVulnerable},
+		{"j/.sdkmanrc", 1, RuleNotChecked, StatusUnknown},
+		{"a/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"b/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"c/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"Dockerfile", 1, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 2, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 3, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 4, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 5, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 6, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 7, RuleNotChecked, StatusUnknown},
+	})
+	for _, file := range []string{"b/.sdkmanrc", "e/.sdkmanrc", "d/.tool-versions"} {
+		if f, ok := find(res, file, 1); ok {
+			t.Errorf("%s: GraalVM for a release without the decoder reported: %+v", file, f)
+		}
+	}
+	for _, f := range res.Findings {
+		if f.Status == StatusVulnerable && (!strings.Contains(f.Reason+f.Fix, "GraalVM") || f.Fixable) {
+			t.Errorf("%s:%d: a GraalVM finding must name GraalVM and not offer an edit: %+v", f.File, f.Line, f)
+		}
+		if f.Rule == RuleNotChecked && f.File == "Dockerfile" && f.Pull == "" {
+			t.Errorf("Dockerfile:%d: an unknown image is not pulled", f.Line)
+		}
+	}
+}
