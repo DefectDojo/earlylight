@@ -36,6 +36,7 @@ func (s *scanner) dockerfile(rel string, b []byte) {
 		if in.Onbuild && in.Cmd != "run" {
 			continue
 		}
+		s.copyFrom(rel, in, stages, globals, cur)
 		switch in.Cmd {
 		case "from", "label", "expose", "healthcheck", "stopsignal", "maintainer", "arg", "user", "workdir", "shell":
 		default:
@@ -123,6 +124,46 @@ func (s *scanner) dockerfile(rel string, b []byte) {
 					cur.nginxOrg = true
 				}
 				s.packages(rel, in.Line, t, cur)
+			}
+		}
+	}
+}
+
+// copyFrom judges the images COPY --from and RUN --mount=...,from= take
+// files from: an nginx binary copied out of an image is that image's.
+// fix does not edit them.
+func (s *scanner) copyFrom(rel string, in refs.Instruction, stages map[string]*stage, globals map[string]string, cur *stage) {
+	for _, fl := range in.Flags {
+		var img string
+		switch {
+		case strings.HasPrefix(fl, "--from="):
+			img = strings.TrimPrefix(fl, "--from=")
+		case strings.HasPrefix(fl, "--mount="):
+			for _, kv := range strings.Split(strings.TrimPrefix(fl, "--mount="), ",") {
+				if v, ok := strings.CutPrefix(kv, "from="); ok {
+					img = v
+				}
+			}
+		}
+		if img == "" || stages[strings.ToLower(img)] != nil || strings.Trim(img, "0123456789") == "" {
+			continue
+		}
+		vars := globals
+		if cur != nil {
+			vars = cur.vars
+		}
+		img = expandVars(img, vars)
+		if strings.Contains(img, "$") {
+			s.skips = append(s.skips, Skip{File: rel, Line: in.Line, Reason: fmt.Sprintf("%s takes files from %s, which this file does not resolve: not checked for nginx", strings.ToUpper(in.Cmd), refs.CleanText(img, 80))})
+			continue
+		}
+		before := len(s.findings)
+		s.image(&refs.Ref{File: rel, Line: in.Line, Kind: refs.KindDockerfile, Context: strings.ToUpper(in.Cmd) + " --from", Text: img, Image: img})
+		for k := before; k < len(s.findings); k++ {
+			f := &s.findings[k]
+			if f.Fixable {
+				f.Fixable, f.edit = false, nil
+				f.Fix = "Change the image this " + strings.ToUpper(in.Cmd) + " takes files from by hand. " + f.Fix
 			}
 		}
 	}
@@ -236,11 +277,17 @@ func parsePkg(tool, w string) (pkg, bool) {
 			if p, ok := nginxPackages[name]; ok {
 				return pkg{name: name, product: p, op: op, ver: strings.Trim(w[i+len(op):], "'\"")}, true
 			}
+			if p := sidePackage(name); p != "" {
+				return pkg{name: name, product: p}, true
+			}
 			return pkg{}, false
 		}
 	}
 	name := cleanName(w)
 	if p, ok := nginxPackages[name]; ok {
+		return pkg{name: name, product: p}, true
+	}
+	if p := sidePackage(name); p != "" {
 		return pkg{name: name, product: p}, true
 	}
 	if tool == "dnf" || tool == "dnf5" || tool == "yum" || tool == "microdnf" || tool == "tdnf" || tool == "?" {
@@ -252,6 +299,20 @@ func parsePkg(tool, w string) (pkg, bool) {
 		}
 	}
 	return pkg{}, false
+}
+
+// sidePackage names packages that bring an nginx this scan does not
+// judge: modules that depend on the nginx they extend, certbot's nginx
+// plugin, Angie PRO (numbered on its own).
+func sidePackage(name string) string {
+	switch {
+	case strings.HasPrefix(name, "libnginx-mod-"), strings.HasPrefix(name, "nginx-module-"), strings.HasPrefix(name, "nginx-mod-"),
+		name == "python3-certbot-nginx", name == "certbot-nginx":
+		return "module"
+	case name == "angie-pro" || strings.HasPrefix(name, "angie-pro-"):
+		return "angie-pro"
+	}
+	return ""
 }
 
 func cleanName(n string) string {
@@ -301,6 +362,16 @@ func (s *scanner) judgePackage(rel string, line int, tool string, p pkg, st *sta
 	}
 	f := Finding{Rule: RulePackage, File: rel, Line: line, Level: "error", Props: props}
 	switch {
+	case p.product == "module":
+		f.Rule, f.Level, f.Status = RuleNotChecked, "note", knowledge.Unknown
+		f.Reason = "the nginx it goes with is installed as a dependency, at a release this file does not show"
+		f.Message = fmt.Sprintf("installs %s, which goes with an nginx installed as its dependency or elsewhere: that nginx is not checked here", p.name)
+		f.Fix = "Check the nginx this installs (nginx -v) or read the image that is built: 1.31.9 or 1.30.7 has the fix."
+	case p.product == "angie-pro":
+		f.Rule, f.Level, f.Status = RuleNotChecked, "note", knowledge.Unknown
+		f.Reason = "Angie PRO's releases are numbered on their own, and none was checked"
+		f.Message = "installs " + p.name + " (Angie PRO): its status for the HTTP/2 pair is not known"
+		f.Fix = "Check Angie PRO's advisories for CVE-2026-123007 and CVE-2026-123633."
 	case p.product == "nginx-plus":
 		f.Rule, f.Level, f.Status = RuleNotChecked, "note", knowledge.Unknown
 		f.Message = "installs NGINX Plus (" + p.name + "), whose release the Dockerfile does not show"

@@ -152,7 +152,7 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 			return nil
 		}
 		if !d.Type().IsRegular() {
-			if d.Type()&fs.ModeSymlink != 0 && k == "nginx-conf" {
+			if d.Type()&fs.ModeSymlink != 0 {
 				res.Skips = append(res.Skips, Skip{File: rel, Reason: "a symbolic link, which is not followed: not checked"})
 			}
 			return nil
@@ -433,6 +433,13 @@ func splitImage(image string) (repo, tag, digest string) {
 func (s *scanner) image(r *refs.Ref) {
 	fam, ok := Classify(r.Image)
 	if !ok {
+		if NginxShaped(r.Image) {
+			s.add(Finding{Rule: RuleNotChecked, File: r.File, Line: r.Line, Level: "note", Status: knowledge.Unknown,
+				Reason:  "an image that may hold nginx, from a repository whose tags the detector does not read",
+				Message: fmt.Sprintf("%s may hold nginx (a mirror, or a product built on nginx or OpenResty): not judged from its name; it is read from its registry unless the run is offline", r.Image),
+				Fix:     "Read the image (earlylight scan image " + r.Image + ").",
+				Props:   map[string]string{"image": r.Image, "context": r.Context}, Pull: r.Image, Platform: r.Platform, ref: r})
+		}
 		return
 	}
 	repoName, tag, digest := splitImage(r.Image)

@@ -59,6 +59,24 @@ func Classify(image string) (Family, bool) {
 	return Family{}, false
 }
 
+// NginxShaped reports an image whose name says it may hold nginx though
+// it is not a family the detector reads tags of: a mirror
+// (registry.example.com/nginx, cgr.dev/chainguard/nginx), an nginx-based
+// product (Tengine, Kong, APISIX).
+func NginxShaped(image string) bool {
+	ref, err := name.ParseReference(image, name.WeakValidation)
+	if err != nil {
+		return false
+	}
+	repo := ref.Context().RepositoryStr()
+	last := repo[strings.LastIndexByte(repo, '/')+1:]
+	switch last {
+	case "tengine", "kong", "kong-gateway", "apisix", "openresty", "angie":
+		return true
+	}
+	return strings.Contains(last, "nginx")
+}
+
 // Tag is what a tag says.
 type Tag struct {
 	// Version is the release the tag names, "" for a moving tag.

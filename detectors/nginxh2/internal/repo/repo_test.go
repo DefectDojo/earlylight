@@ -208,8 +208,10 @@ func TestPackages(t *testing.T) {
 	}
 	one(t, res, "Dockerfile", 17, RulePackage, knowledge.Vulnerable) // heredoc
 	one(t, res, "Dockerfile", 23, RuleNotChecked, knowledge.Unknown) // base distribution unknown
-	if fs := at(res, "Dockerfile", 25); len(fs) != 0 {
-		t.Errorf("not server packages: %+v", fs)
+	// nginx-common and nginxify install no server; the module brings one
+	// in as its dependency (review 2, finding 9).
+	if fs := at(res, "Dockerfile", 25); len(fs) != 1 || fs[0].Props["package"] != "libnginx-mod-stream" {
+		t.Errorf("packages without a server, and a module: %+v", fs)
 	}
 	opaque := 0
 	for _, s := range res.Skips {
@@ -450,5 +452,51 @@ func TestR3Deployment(t *testing.T) {
 		if got := f.Props["deployment"] != ""; got != c.want {
 			t.Errorf("%s:%d deployment %q, want %v", c.file, c.line, f.Props["deployment"], c.want)
 		}
+	}
+}
+
+// Review 2, finding 9: nothing nginx-shaped is passed over in silence.
+func TestR9NeverSilent(t *testing.T) {
+	root := tree(t, map[string]string{
+		"Dockerfile": strings.Join([]string{
+			"FROM registry.example.com/nginx:1.31.8",                   // 1
+			"FROM cgr.dev/chainguard/nginx:1.31.8",                     // 2
+			"FROM axizdkr/tengine:latest",                              // 3
+			"FROM kong:3.9",                                            // 4
+			"FROM debian:12",                                           // 5
+			"COPY --from=nginx:1.31.8 /usr/sbin/nginx /usr/sbin/nginx", // 6
+			"RUN apt-get install -y libnginx-mod-http-lua python3-certbot-nginx nginx-module-njs", // 7
+			"RUN apt-get install -y angie-pro", // 8
+		}, "\n") + "\n",
+		"real/compose.yaml": "services:\n  web:\n    image: nginx:1.31.8\n",
+	})
+	if err := os.Symlink("real/compose.yaml", filepath.Join(root, "compose.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("Dockerfile", filepath.Join(root, "Dockerfile.prod")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Scan(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []int{1, 2, 3, 4} {
+		if f := one(t, res, "Dockerfile", line, RuleNotChecked, knowledge.Unknown); f.Pull == "" {
+			t.Errorf("line %d is not read from its registry: %+v", line, f)
+		}
+	}
+	if f := one(t, res, "Dockerfile", 6, RuleImage, knowledge.Vulnerable); f.Fixable {
+		t.Errorf("COPY --from is not edited by fix: %+v", f)
+	}
+	if fs := at(res, "Dockerfile", 7); len(fs) != 3 {
+		t.Errorf("module packages: %+v", fs)
+	}
+	one(t, res, "Dockerfile", 8, RuleNotChecked, knowledge.Unknown)
+	skipped := map[string]bool{}
+	for _, s := range res.Skips {
+		skipped[s.File] = true
+	}
+	if !skipped["compose.yaml"] || !skipped["Dockerfile.prod"] {
+		t.Errorf("symbolic links not recorded: %+v", res.Skips)
 	}
 }
