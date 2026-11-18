@@ -329,11 +329,8 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 				code = max(code, 1)
 				continue
 			}
-			ch, already, err := repo.Plan(ctx, dir, f, opts)
-			switch {
-			case already:
-				continue
-			case err != nil:
+			ch, err := repo.Plan(ctx, dir, f, opts)
+			if err != nil {
 				fmt.Fprintf(stdout, "not fixed  %s  %s\n", where, repo.Printable(err.Error()))
 				code = max(code, 1)
 				continue

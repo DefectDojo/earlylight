@@ -119,9 +119,9 @@ func TestFixRoundTrip(t *testing.T) {
 		if f.Level == "note" {
 			continue
 		}
-		ch, already, err := Plan(ctx, root, f, Options{})
-		if already || err != nil {
-			t.Fatalf("%s:%d %s: %v %v", f.File, f.Line, f.Rule, already, err)
+		ch, err := Plan(ctx, root, f, Options{})
+		if err != nil {
+			t.Fatalf("%s:%d %s: %v", f.File, f.Line, f.Rule, err)
 		}
 		if err := Apply(root, ch); err != nil {
 			t.Fatal(err)
@@ -153,7 +153,7 @@ func TestPlanDeclines(t *testing.T) {
 	if len(fs) != 1 || fs[0].Fixable {
 		t.Fatalf("alpine:latest offline should be reported but not fixable: %+v", fs)
 	}
-	if _, _, err := Plan(context.Background(), root, fs[0], Options{}); err == nil {
+	if _, err := Plan(context.Background(), root, fs[0], Options{}); err == nil {
 		t.Fatal("planned an edit with no branch")
 	} else if _, ok := IsDeclined(err); !ok {
 		t.Fatalf("not a decline: %v", err)
@@ -166,12 +166,12 @@ func TestPlanDeclines(t *testing.T) {
 	}
 	// A file changed after the scan is not edited.
 	write(t, root, "Dockerfile", "FROM alpine\nRUN apk add openssh-server-pam\n")
-	if _, _, err := Plan(context.Background(), root, fs[0], opts); err == nil {
+	if _, err := Plan(context.Background(), root, fs[0], opts); err == nil {
 		t.Fatal("edited a changed line")
 	}
 	// A word that only moved is found again.
 	write(t, root, "Dockerfile", "FROM alpine\nRUN apk add  openssh-server\n")
-	if ch, _, err := Plan(context.Background(), root, fs[0], opts); err != nil || !strings.Contains(ch.Edits[0].New, "apk add  'openssh-server>=10.3_p1-r2'") {
+	if ch, err := Plan(context.Background(), root, fs[0], opts); err != nil || !strings.Contains(ch.Edits[0].New, "apk add  'openssh-server>=10.3_p1-r2'") {
 		t.Fatalf("moved word: %v %+v", err, ch)
 	}
 	// A failed resolution leaves it unchecked.

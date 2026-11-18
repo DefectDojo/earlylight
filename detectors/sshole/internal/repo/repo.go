@@ -523,6 +523,11 @@ func expand(s string, args map[string]string) string {
 		if v, ok := args[name]; ok && v != "" {
 			return v
 		}
+		if sm[2] == "" {
+			// Unresolved: kept as written, so the image is not known
+			// (an empty name would read as scratch, nothing to check).
+			return m
+		}
 		return sm[2]
 	})
 }

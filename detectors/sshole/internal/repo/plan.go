@@ -41,14 +41,15 @@ func IsDeclined(err error) (*Declined, bool) {
 // Plan builds the edit for a finding the scan reported at file:line with
 // rule and, for apk findings, props["package"]. It rescans the edited file
 // in memory and accepts the edit only when that finding is gone and nothing
-// new appeared. already is true when the finding is no longer there.
-func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, bool, error) {
+// new appeared. A line that is no longer there declines: the file changed
+// since the scan, and the finding is not checked again here.
+func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, error) {
 	if !f.Fixable || f.edit == nil && len(f.newFiles) == 0 {
-		return nil, false, &Declined{Reason: f.Fix}
+		return nil, &Declined{Reason: f.Fix}
 	}
 	for p, data := range f.newFiles {
 		if err := checkNewPath(root, p, data); err != nil {
-			return nil, false, &Declined{Reason: err.Error() + "; add the fix by hand"}
+			return nil, &Declined{Reason: err.Error() + "; add the fix by hand"}
 		}
 	}
 	if f.edit == nil {
@@ -56,12 +57,12 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 	}
 	b, err := readFile(root, f.File)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	lines := strings.Split(string(b), "\n")
 	e := *f.edit
 	if e.Line < 1 || e.Line > len(lines) {
-		return nil, true, nil
+		return nil, notChecked("line %d is past the end of %s, which changed since the scan", e.Line, f.File)
 	}
 	line := strings.TrimSuffix(lines[e.Line-1], "\r")
 	if e.Col < 0 || e.Col+len(e.Old) > len(line) || line[e.Col:e.Col+len(e.Old)] != e.Old {
@@ -69,7 +70,7 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 		// the one finding that is still the same word, or decline.
 		now, err := scanOne(ctx, root, f.File, opts, b)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		var match *Edit
 		n := 0
@@ -80,7 +81,7 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 			}
 		}
 		if n != 1 {
-			return nil, false, &Declined{Reason: fmt.Sprintf("%s:%d no longer reads as scanned", f.File, e.Line)}
+			return nil, &Declined{Reason: fmt.Sprintf("%s:%d no longer reads as scanned", f.File, e.Line)}
 		}
 		e = *match
 	}
@@ -101,24 +102,24 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 	}
 	before, err := scanOne(ctx, root, f.File, opts, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	after, err := scanOne(ctx, root, f.File, o, o.Overlay[f.File])
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if count(after, f.Rule, f.Line) >= count(before, f.Rule, f.Line) {
-		return nil, false, &Declined{Reason: "the edit did not clear the finding; change it by hand"}
+		return nil, &Declined{Reason: "the edit did not clear the finding; change it by hand"}
 	}
 	if len(after) > len(before) {
-		return nil, false, &Declined{Reason: "the edit raised a new finding; change it by hand"}
+		return nil, &Declined{Reason: "the edit raised a new finding; change it by hand"}
 	}
-	return ch, false, nil
+	return ch, nil
 }
 
 // planNewFiles plans a fix that only adds files, checked by rescanning the
 // finding's file with the files in place.
-func planNewFiles(ctx context.Context, root string, f Finding, opts Options) (*Change, bool, error) {
+func planNewFiles(ctx context.Context, root string, f Finding, opts Options) (*Change, error) {
 	o := opts
 	o.Overlay = map[string][]byte{}
 	for p, data := range f.newFiles {
@@ -126,42 +127,49 @@ func planNewFiles(ctx context.Context, root string, f Finding, opts Options) (*C
 	}
 	before, err := scanOne(ctx, root, f.File, opts, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	after, err := scanOne(ctx, root, f.File, o, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if count(after, f.Rule, f.Line) >= count(before, f.Rule, f.Line) {
-		return nil, false, &Declined{Reason: "the added files did not clear the finding; add the fix by hand"}
+		return nil, &Declined{Reason: "the added files did not clear the finding; add the fix by hand"}
 	}
-	return &Change{File: f.File, Summary: summary(f), NewFiles: f.newFiles}, false, nil
+	return &Change{File: f.File, Summary: summary(f), NewFiles: f.newFiles}, nil
 }
 
 func scanOne(ctx context.Context, root, file string, opts Options, data []byte) ([]Finding, error) {
+	fs, _, err := scanFile(ctx, root, file, opts, data)
+	return fs, err
+}
+
+// scanFile is scanOne that also returns the other files the rescan needed
+// and could not read: a Yocto finding joins files across the tree.
+func scanFile(ctx context.Context, root, file string, opts Options, data []byte) ([]Finding, []Skip, error) {
 	s := &scanner{ctx: ctx, root: root, opts: opts, bases: map[string]baseInfo{}}
 	if data == nil {
 		var err error
 		if data, err = readFile(root, file); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	switch kindOf(file) {
 	case "dockerfile":
-		return s.dockerfile(file, string(data)), nil
+		return s.dockerfile(file, string(data)), nil, nil
 	case "shell":
-		return s.script(file, string(data)), nil
+		return s.script(file, string(data)), nil, nil
 	case "yaml":
-		return s.yaml(file, string(data)), nil
+		return s.yaml(file, string(data)), nil, nil
 	case "sshd_config":
-		return s.sshdConfig(file, string(data)), nil
+		return s.sshdConfig(file, string(data)), nil, nil
 	case "build":
 		// A Yocto finding needs the whole tree (TCLIBC and bbappends live
 		// in other files): rescan it, keeping this file's findings.
 		if s.yoctoNeedsTree(file) {
 			res, err := Scan(ctx, root, opts)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			var out []Finding
 			for _, f := range res.Findings {
@@ -169,12 +177,21 @@ func scanOne(ctx context.Context, root, file string, opts Options, data []byte) 
 					out = append(out, f)
 				}
 			}
-			return out, nil
+			var unread []Skip
+			for _, sk := range res.Skips {
+				if kindOf(sk.File) == "build" {
+					unread = append(unread, sk)
+				}
+			}
+			if res.Truncated {
+				unread = append(unread, Skip{File: "the source tree", Reason: "too many files to walk"})
+			}
+			return out, unread, nil
 		}
 		s.build(file, string(data))
-		return s.finishBuild(), nil
+		return s.finishBuild(), nil, nil
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 func count(fs []Finding, rule string, line int) int {
@@ -281,15 +298,22 @@ func Printable(s string) string {
 }
 
 // Find rescans one file and returns the finding with this rule at this
-// line. spec, when not empty, picks between several on the line: the apk
-// spec or the text the finding's message quotes. gone is true when the file
-// has no such finding any more.
+// line. message, when not empty, picks between several on the line: the apk
+// spec or the text the finding's message quotes. gone is true only when
+// this rescan checked what the scan reported and the finding is not there:
+// a not-checked finding, a file or base image that cannot be read this
+// time, or a line past the end of the file declines with "rescan to
+// confirm" instead.
 func Find(ctx context.Context, root, file string, line int, rule, message string, opts Options) (f *Finding, gone bool, err error) {
-	fs, err := scanOne(ctx, root, file, opts, nil)
+	data, err := readFile(root, file)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, true, nil
+		if errors.Is(err, os.ErrNotExist) && rule != RuleNotChecked {
+			return nil, true, nil // the file is deleted, and its findings with it
 		}
+		return nil, false, notChecked("%s could not be read (%v), so it is not checked", file, err)
+	}
+	fs, unread, err := scanFile(ctx, root, file, opts, data)
+	if err != nil {
 		return nil, false, err
 	}
 	var at []Finding
@@ -325,15 +349,42 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 			return nil, false, &Declined{Reason: fmt.Sprintf("line %d of %s no longer has this finding and the file has %d like it; rescan and fix the new findings", line, file, len(moved))}
 		}
 	}
-	switch len(at) {
-	case 0:
-		return nil, true, nil
-	case 1:
+	if len(at) > 0 {
+		// Several identical findings on one line: the first; the rest
+		// come back on the next scan.
 		return &at[0], false, nil
 	}
-	// Several identical findings on one line: the first; the rest come
-	// back on the next scan.
-	return &at[0], false, nil
+	// Not there. That is "gone" only when the scan checked it and this
+	// rescan checked the same again.
+	switch {
+	case rule == RuleNotChecked:
+		now := ""
+		for _, g := range fs {
+			if g.Line == line && g.Level != "note" {
+				now = fmt.Sprintf(", and line %d now has %s (%s)", line, g.Rule, g.Message)
+				break
+			}
+		}
+		return nil, false, notChecked("%s:%d was not checked when it was scanned%s", file, line, now)
+	case len(unread) > 0:
+		return nil, false, notChecked("%s could not be read this time (%s), so %s is not checked", unread[0].File, unread[0].Reason, file)
+	case line > len(strings.Split(string(data), "\n")):
+		return nil, false, notChecked("line %d is past the end of %s, which changed since the scan", line, file)
+	case rule == RulePin || rule == RuleUnpinned || rule == RuleEOL || rule == RuleBuild:
+		// These depend on the base image or the C library: a not-checked
+		// finding on the line means this rescan could not judge it.
+		for _, g := range fs {
+			if g.Line == line && g.Rule == RuleNotChecked {
+				return nil, false, notChecked("line %d of %s is not checked this time (%s)", line, file, g.Message)
+			}
+		}
+	}
+	return nil, true, nil
+}
+
+// notChecked declines a finding Find cannot confirm as gone.
+func notChecked(format string, args ...any) error {
+	return &Declined{Reason: fmt.Sprintf(format, args...) + "; rescan to confirm"}
 }
 
 // WriteNewFiles writes files a change adds, refusing symbolic links on
