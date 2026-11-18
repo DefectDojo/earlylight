@@ -15,10 +15,12 @@ var fuzzNames = []string{".nvmrc", ".tool-versions", "mise.toml", "package.json"
 	"poetry.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Pipfile.lock", "Gemfile", "Gemfile.lock", "pom.xml",
 	"build.gradle.kts", "gradle.lockfile", "libs.versions.toml", "Cargo.lock", "go.mod", "packages.lock.json", "compose.yaml"}
 
-// Hostile file content never panics the scan or a plan, and a plan only
-// ever edits the file the finding names.
+// Hostile file content never panics the scan or a plan, a finding the scan
+// just reported never plans as already fixed, and a plan only ever edits
+// the file the finding names.
 func FuzzPins(f *testing.F) {
 	for _, s := range []string{"20\n", "FROM node:24.22.0-slim\n", "{\"engines\":{\"node\":\"20.x\"}}", "pycurl==7.48.0\n",
+		"\ufeff{\"sdk\": {/* \"version\": \"8.0.1\" */ \"version\": \"8.0.415\"}} // \"https://x\"\n",
 		"jobs:\n  a:\n    strategy:\n      matrix:\n        n: [20]\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.n }}\n"} {
 		for i := range fuzzNames {
 			f.Add(uint8(i), s)
@@ -37,7 +39,12 @@ func FuzzPins(f *testing.F) {
 			return
 		}
 		for _, fd := range res.Findings {
-			ch, _, err := pins.Plan(context.Background(), dir, fd.File, fd.Line, fd.Rule, fd.Props)
+			ch, already, err := pins.Plan(context.Background(), dir, fd.File, fd.Line, fd.Rule, fd.Props)
+			if already {
+				// The file has not changed since the scan: a finding it
+				// just reported is never already fixed.
+				t.Fatalf("%s:%d %s %v, just reported, plans as already fixed", fd.File, fd.Line, fd.Rule, fd.Props)
+			}
 			if err != nil || ch == nil {
 				continue
 			}

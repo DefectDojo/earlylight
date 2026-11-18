@@ -155,9 +155,9 @@ func TestPlanUnparseableJSON(t *testing.T) {
 	}
 }
 
-// A finding whose line is past the end of the file, or whose line now pins
-// another release without the fix, is not fixed: the file changed since
-// the scan.
+// A finding whose line is past the end of a file that still pins another
+// release without the fix, or whose line now pins one, is not fixed: the
+// file changed since the scan.
 func TestPlanStaleLine(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, map[string]string{"Dockerfile": "FROM alpine:3.22 AS a\nRUN true\nFROM node:24.22.0 AS b\n"})
@@ -166,10 +166,10 @@ func TestPlanStaleLine(t *testing.T) {
 	write(t, root, map[string]string{"Dockerfile": "FROM node:24.21.0\n"})
 	ch, already, err := plan(root, f)
 	mustDecline(t, "past the end", ch, already, err)
-	// Cut short, nothing left to pin: the line still is not there to check.
+	// Cut short, nothing left to pin: read in full, the pin is gone.
 	write(t, root, map[string]string{"Dockerfile": "FROM alpine:3.22\n"})
 	ch, already, err = plan(root, f)
-	mustDecline(t, "past the end, no pin", ch, already, err)
+	mustBeGone(t, "past the end, no pin", ch, already, err)
 
 	write(t, root, map[string]string{".nvmrc": "22.23.1\n"})
 	only(t, root, pins.RuleNode)
@@ -245,4 +245,189 @@ func TestPlanCheckedAndGone(t *testing.T) {
 	f.Line = 0
 	ch, already, err = plan(root, f)
 	mustBeGone(t, ".nvmrc line 0", ch, already, err)
+}
+
+// Removing the pin's line is a fix wherever the line sat, the last line
+// included, as long as nothing of that rule is left in the file.
+func TestPlanRemovedLastLine(t *testing.T) {
+	for _, c := range []struct{ file, body, now, rule string }{
+		{"tools/.tool-versions", "python 3.13.1\nnodejs 22.23.1\n", "python 3.13.1\n", pins.RuleNode},
+		{"requirements.txt", "requests==2.32.3\npycurl==7.48.0\n", "requests==2.32.3\n", pins.RuleDependency},
+		{".nvmrc", "22.23.1\n", "", pins.RuleNode},
+		{"Dockerfile", "FROM alpine:3.22 AS a\nRUN true\nFROM node:24.22.0 AS b\n", "FROM alpine:3.22 AS a\nRUN true\n", pins.RuleNode},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.body})
+		f := only(t, root, c.rule)
+		write(t, root, map[string]string{c.file: c.now})
+		ch, already, err := plan(root, f)
+		mustBeGone(t, c.file+" last line removed", ch, already, err)
+	}
+}
+
+// A line 0 finding (the scan did not know the line) is not gone while the
+// file pins any release of that rule without the fix.
+func TestPlanLineZeroStillPinned(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string]string{".nvmrc": "22.23.2\n"})
+	f := pins.Finding{File: ".nvmrc", Line: 0, Rule: pins.RuleNode, Props: map[string]string{"current": "22.23.1", "source": "nvmrc"}}
+	ch, already, err := plan(root, f)
+	mustDecline(t, "line 0, another vulnerable release", ch, already, err)
+}
+
+// Plan reads a path in any form the scan would have cleaned to the same file.
+func TestPlanPathForms(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string]string{
+		"Dockerfile":       "FROM node:24.22.0\n",
+		"svc/compose.yaml": "services:\n  web:\n    image: node:24.22.0\n",
+		".nvmrc":           "22.23.1\n",
+	})
+	for _, c := range []struct {
+		file string
+		line int
+	}{{"./Dockerfile", 1}, {"svc/../Dockerfile", 1}, {"svc//compose.yaml", 3}, {"./svc/compose.yaml", 3}, {"./.nvmrc", 1}} {
+		ch, already, err := pins.Plan(context.Background(), root, c.file, c.line, pins.RuleNode, nil)
+		if already {
+			t.Errorf("%s: an untouched vulnerable pin reads as already fixed (change %+v, err %v)", c.file, ch, err)
+		}
+	}
+	ch, _, err := pins.Plan(context.Background(), root, "./.nvmrc", 1, pins.RuleNode, nil)
+	if err != nil || ch == nil || ch.File != ".nvmrc" {
+		t.Errorf("./.nvmrc: change %+v, err %v", ch, err)
+	}
+}
+
+// A file whose directory was deleted is deleted. What cannot be read never
+// names the checkout's absolute path.
+func TestPlanDirectoryDeleted(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string]string{"svc/.nvmrc": "22.23.1\n"})
+	f := only(t, root, pins.RuleNode)
+	os.RemoveAll(filepath.Join(root, "svc"))
+	ch, already, err := plan(root, f)
+	mustBeGone(t, "directory removed", ch, already, err)
+
+	long := strings.Repeat("a", 300) + "/.nvmrc" // the directory name is too long to look up
+	ch, already, err = pins.Plan(context.Background(), root, long, 1, pins.RuleNode, nil)
+	mustDecline(t, "name too long", ch, already, err)
+	if err != nil && strings.Contains(err.Error(), root) {
+		t.Errorf("the message names the absolute path: %v", err)
+	}
+	_, _, err = pins.Plan(context.Background(), filepath.Join(root, "nope"), ".nvmrc", 1, pins.RuleNode, nil)
+	if err == nil || strings.Contains(err.Error(), root) {
+		t.Errorf("missing root: %v", err)
+	}
+}
+
+// Which skips hold back "already fixed": one on the whole file, or one on
+// the finding's own line. A skip on another line of the file is about
+// another pin, and is reported on its own.
+func TestPlanSkipScope(t *testing.T) {
+	digest := "FROM node@sha256:" + strings.Repeat("a", 64)
+	root := t.TempDir()
+	write(t, root, map[string]string{"Dockerfile": digest + " AS a\nFROM node:24.22.0 AS b\n"})
+	f := only(t, root, pins.RuleNode)
+	if f.Line != 2 {
+		t.Fatalf("%+v", f)
+	}
+	// Fixed; the digest-only stage on line 1 is still not checked.
+	write(t, root, map[string]string{"Dockerfile": digest + " AS a\nFROM node:24.22.1 AS b\n"})
+	ch, already, err := plan(root, f)
+	mustBeGone(t, "skip on another line", ch, already, err)
+	// Line 2 itself is digest only now.
+	write(t, root, map[string]string{"Dockerfile": "FROM alpine:3.22 AS a\n" + digest + " AS b\n"})
+	ch, already, err = plan(root, f)
+	mustDecline(t, "skip on the finding's line", ch, already, err)
+	if d, ok := pins.IsDeclined(err); ok && !strings.Contains(d.Reason, "line 2") {
+		t.Errorf("the decline does not name the line: %q", d.Reason)
+	}
+	// A line 0 finding is held back by a skip on any line.
+	g := f
+	g.Line = 0
+	ch, already, err = plan(root, g)
+	mustDecline(t, "line 0 with a skip in the file", ch, already, err)
+	// The finding's line is past the end now: a skip on any line of the
+	// file may be where its pin went.
+	write(t, root, map[string]string{"Dockerfile": digest + " AS b\n"})
+	ch, already, err = plan(root, f)
+	mustDecline(t, "past the end with a skip in the file", ch, already, err)
+	// A skip on the whole file holds back every finding in it.
+	write(t, root, map[string]string{"package.json": "{\n  \"volta\": {\n    \"node\": \"24.22.0\"\n  }\n}\n"})
+	v := only(t, root, pins.RuleNode)
+	write(t, root, map[string]string{"package.json": "{\n  \"volta\": {\n    \"node\": \"24.22.1\"\n  }\n}\n,"})
+	ch, already, err = plan(root, v)
+	mustDecline(t, "skip on the whole file", ch, already, err)
+}
+
+// global.json may carry comments and a byte-order mark, which the .NET SDK
+// accepts; package.json and packages.lock.json may start with a byte-order
+// mark. They are read, not reported as not checked.
+func TestJSONCommentsAndBOM(t *testing.T) {
+	ctx := context.Background()
+	bom := "\ufeff"
+	for _, c := range []struct {
+		file, body string
+		line       int
+		rule, want string
+	}{
+		{"global.json", bom + "{\n  // pinned for the build agents, see https://example.com/x\n  \"sdk\": {\n    /* \"version\": \"8.0.100\" */ \"version\": \"8.0.415\",\n    \"rollForward\": \"disable\"\n  }\n}\n",
+			4, pins.RuleDotnet, `    /* "version": "8.0.100" */ "version": "8.0.427",`},
+		{"app/package.json", bom + "{\n  \"volta\": {\n    \"node\": \"24.22.0\"\n  }\n}\n", 3, pins.RuleNode, `    "node": "24.22.1"`},
+		{"svc/packages.lock.json", bom + depsRepo["svc/packages.lock.json"], 0, pins.RuleDotnet, ""},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.body})
+		res, err := pins.Scan(ctx, root, nil, pins.Options{})
+		if err != nil || len(res.Skips) != 0 || len(res.Findings) != 1 || res.Findings[0].Rule != c.rule {
+			t.Errorf("%s: %v findings %+v skips %+v", c.file, err, res.Findings, res.Skips)
+			continue
+		}
+		f := res.Findings[0]
+		if c.line != 0 && f.Line != c.line {
+			t.Errorf("%s: line %d, want %d", c.file, f.Line, c.line)
+		}
+		if c.want == "" {
+			continue
+		}
+		ch, _, err := plan(root, f)
+		if err != nil || ch == nil || ch.Edits[0].New[0] != c.want {
+			t.Errorf("%s: change %+v, err %v", c.file, ch, err)
+		}
+	}
+	// Fixed, or without an sdk key, a commented global.json is clean.
+	for _, body := range []string{"{\n  // fixed\n  \"sdk\": { \"version\": \"8.0.427\" }\n}\n", "/* tools only */ { \"msbuild-sdks\": {} }\n"} {
+		root := t.TempDir()
+		write(t, root, map[string]string{"global.json": body})
+		res, err := pins.Scan(ctx, root, nil, pins.Options{})
+		if err != nil || len(res.Skips) != 0 || len(res.Findings) != 0 {
+			t.Errorf("%q: %v %+v", body, err, res)
+		}
+	}
+}
+
+// A lockfile that is not read says why: not JSON, JSON of another shape, or
+// a lockfile version the scan does not read.
+func TestLockfileSkipReasons(t *testing.T) {
+	for _, c := range []struct{ file, body, want string }{
+		{"package-lock.json", "{\"packages\": {", "not valid JSON: unexpected end"},
+		{"package-lock.json", "{\"packages\": []}", "not the expected shape"},
+		{"package-lock.json", "{\"lockfileVersion\": 1, \"dependencies\": {\"iltorb\": {\"version\": \"2.4.5\"}}}", "lockfileVersion 1"},
+		{"packages.lock.json", "{\"dependencies\": []}", "not the expected shape"},
+		{"Pipfile.lock", "{\"default\": [", "not valid JSON: unexpected end"},
+		{"Pipfile.lock", "{\"default\": []}", "not the expected shape"},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.body})
+		res, err := pins.Scan(context.Background(), root, nil, pins.Options{})
+		if err != nil || len(res.Skips) != 1 || !strings.Contains(res.Skips[0].Reason, c.want) {
+			t.Errorf("%s %q: %v skips %+v, want a reason with %q", c.file, c.body, err, res.Skips, c.want)
+		}
+	}
+	// A lockfile with nothing in it is read, not skipped.
+	root := t.TempDir()
+	write(t, root, map[string]string{"package-lock.json": "{\"name\": \"x\", \"lockfileVersion\": 3, \"packages\": {}}"})
+	if res, err := pins.Scan(context.Background(), root, nil, pins.Options{}); err != nil || len(res.Skips) != 0 {
+		t.Errorf("empty lockfile: %v %+v", err, res.Skips)
+	}
 }

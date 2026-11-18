@@ -476,7 +476,7 @@ func (s *scanner) walk() ([]string, error) {
 	err := filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			rel, _ := filepath.Rel(s.root, p)
-			s.skips = append(s.skips, Skip{File: filepath.ToSlash(rel), Reason: "could not be read: " + clean(err.Error(), 200)})
+			s.skips = append(s.skips, Skip{File: filepath.ToSlash(rel), Reason: "could not be read: " + clean(errText(err), 200)})
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -526,13 +526,17 @@ func (s *scanner) read(rel string) ([]byte, bool) {
 	}
 	p, err := refs.SafePath(s.root, rel)
 	if err != nil {
-		s.skips = append(s.skips, Skip{File: rel, Reason: clean(err.Error(), 200)})
+		// A directory on the way that is not there: the file is not
+		// there either.
+		if !errors.Is(err, fs.ErrNotExist) {
+			s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(errText(err), 200)})
+		}
 		return nil, false
 	}
 	fi, err := os.Lstat(p)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(err.Error(), 200)})
+			s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(errText(err), 200)})
 		}
 		return nil, false
 	}
@@ -545,13 +549,13 @@ func (s *scanner) read(rel string) ([]byte, bool) {
 	}
 	f, err := os.Open(p)
 	if err != nil {
-		s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(err.Error(), 200)})
+		s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(errText(err), 200)})
 		return nil, false
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, s.opts.maxSize()+1))
 	if err != nil {
-		s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(err.Error(), 200)})
+		s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(errText(err), 200)})
 		return nil, false
 	}
 	s.files++
@@ -572,6 +576,12 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 	}
 	if !ok {
 		return
+	}
+	// The JSON readers see comments and a byte-order mark as spaces, so
+	// every line and column stays where it is in the file.
+	text := b
+	if isJSON(rel) {
+		b = jsonText(b)
 	}
 	switch k {
 	case kindNvmrc:
@@ -600,7 +610,7 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 		s.netlify(rel, b)
 	}
 	if textCandidate(rel) {
-		s.textPatterns(rel, b)
+		s.textPatterns(rel, text)
 	}
 	if dependencyFile(rel) {
 		s.dependencies(rel, b)
@@ -715,7 +725,7 @@ func (s *scanner) mise(rel string, b []byte) {
 func (s *scanner) packageJSON(rel string, b []byte) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		s.skips = append(s.skips, Skip{File: rel, Reason: "not valid JSON: " + clean(err.Error(), 200)})
+		s.skips = append(s.skips, Skip{File: rel, Reason: jsonProblem(err)})
 		return
 	}
 	// Each field is read on its own: an old-style "engines" array or any
@@ -1037,4 +1047,68 @@ func ImageUpgrade(image string) (string, string, bool) {
 		return "", "", false
 	}
 	return base[:i] + ":" + strings.Replace(ref.Tag, j.current, up, 1), kind, true
+}
+
+func isJSON(rel string) bool {
+	return strings.HasSuffix(strings.ToLower(rel), ".json") || path.Base(rel) == "Pipfile.lock"
+}
+
+// jsonText returns b with a leading byte-order mark and // and /* */
+// comments outside strings replaced by spaces, line breaks kept: global.json
+// may carry comments, and a file saved by some Windows editors starts with a
+// byte-order mark. Lines and byte columns are unchanged.
+func jsonText(b []byte) []byte {
+	out := append([]byte(nil), b...)
+	if bytes.HasPrefix(out, []byte("\xef\xbb\xbf")) {
+		copy(out, "   ")
+	}
+	blank := func(from, to int) {
+		for k := from; k < to; k++ {
+			if out[k] != '\n' && out[k] != '\r' {
+				out[k] = ' '
+			}
+		}
+	}
+	for i := 0; i < len(out); i++ {
+		switch out[i] {
+		case '"':
+			for i++; i < len(out) && out[i] != '"' && out[i] != '\n'; i++ {
+				if out[i] == '\\' {
+					i++
+				}
+			}
+		case '/':
+			if i+1 >= len(out) {
+				break
+			}
+			switch out[i+1] {
+			case '/':
+				e := bytes.IndexByte(out[i:], '\n')
+				if e < 0 {
+					e = len(out) - i
+				}
+				blank(i, i+e)
+				i += e - 1
+			case '*':
+				e := bytes.Index(out[i+2:], []byte("*/"))
+				end := len(out)
+				if e >= 0 {
+					end = i + 2 + e + 2
+				}
+				blank(i, end)
+				i = end - 1
+			}
+		}
+	}
+	return out
+}
+
+// jsonProblem says why a JSON file was not read: not JSON, or JSON of
+// another shape than the reader expects.
+func jsonProblem(err error) string {
+	var te *json.UnmarshalTypeError
+	if errors.As(err, &te) {
+		return "not the expected shape: " + clean(err.Error(), 200)
+	}
+	return "not valid JSON: " + clean(err.Error(), 200)
 }

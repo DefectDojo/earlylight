@@ -2,8 +2,12 @@ package pins
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/DefectDojo/earlylight/internal/refs"
@@ -38,18 +42,24 @@ var planRules = map[string]bool{RuleNode: true, RuleDotnet: true, RuleBun: true,
 // the current one has, on the same base OS. It writes nothing.
 //
 // already is true only when the rescan read the file in full and the pin is
-// gone from it, or the file was deleted. A finding that was not checked, or
-// cannot be checked again now (the file is unreadable, too large or does not
-// parse, the line is past its end, the line pins another release without the
-// fix), declines with "rescan to confirm".
+// gone from it, or the file (or its directory) was deleted. A finding that
+// was not checked, or cannot be checked again now, declines with "rescan to
+// confirm": the file is unreadable, too large or does not parse; its line
+// was not checked (a skip on that line); its line pins another release
+// without the fix; or it has no line any more (line 0, or past the end of
+// the file) and the file still pins a release of that rule without the fix
+// or has a skip on any line.
 func Plan(ctx context.Context, root, file string, line int, rule string, props map[string]string) (*Change, bool, error) {
+	// The path as the scan writes it: ./Dockerfile and svc/../Dockerfile
+	// are Dockerfile, or the pins found in it would not match.
+	file = strings.TrimPrefix(path.Clean(filepath.ToSlash(file)), "./")
 	if !planRules[rule] {
 		return nil, false, notChecked("%s:%d was not checked for the %s fix (%s), and a plan does not check it", file, line, CVE, clean(rule, 60))
 	}
 	if fi, err := os.Stat(root); err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("the repository root cannot be read: %s", errText(err))
 	} else if !fi.IsDir() {
-		return nil, false, fmt.Errorf("%s is not a directory", root)
+		return nil, false, errors.New("the repository root is not a directory")
 	}
 	// The file as the scan reads it: what it cannot read says nothing about
 	// the pin.
@@ -57,7 +67,7 @@ func Plan(ctx context.Context, root, file string, line int, rule string, props m
 	now, ok := probe.read(file)
 	if !ok {
 		if len(probe.skips) > 0 {
-			return nil, false, notChecked("%s was not read: %s", file, probe.skips[0].Reason)
+			return nil, false, notChecked("%s was not read: %s", file, scrub(root, probe.skips[0].Reason))
 		}
 		if p, err := refs.SafePath(root, file); err == nil {
 			if _, err := os.Lstat(p); err == nil {
@@ -75,7 +85,7 @@ func Plan(ctx context.Context, root, file string, line int, rule string, props m
 		return nil, false, err
 	}
 	if !found {
-		if err := unchecked(before, file, line, rule, now); err != nil {
+		if err := unchecked(root, before, file, line, rule, now); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -179,29 +189,72 @@ func scanPins(ctx context.Context, root string, files []string, opts Options) (*
 
 // unchecked explains why a pin the rescan did not find is still not known to
 // be gone, or returns nil when the rescan checked the place it was.
-func unchecked(s *scanner, file string, line int, rule string, content []byte) error {
-	if len(s.skips) > 0 {
-		// Not read in full this time (too large, not parseable, an
-		// unresolved reference): nothing is known about the pin.
-		return notChecked("%s was not read: %s", s.skips[0].File, s.skips[0].Reason)
-	}
+//
+// Two cases cannot be told apart from a fix, and read as gone: a pin that
+// moved to another line and changed to another release without the fix, in
+// a file that did not get shorter (it looks like a second pin that was
+// always there), and a path that never held the pin (a wrong path, a
+// renamed file, a file no reader handles), which looks like a deleted file.
+func unchecked(root string, s *scanner, file string, line int, rule string, content []byte) error {
 	n := strings.Count(string(content), "\n")
 	if len(content) > 0 && content[len(content)-1] != '\n' {
 		n++
 	}
-	if line > n {
-		return notChecked("line %d is past the end of %s, which changed since the scan", line, file)
+	// Without its line (line 0, or a line past the end of a file that got
+	// shorter) the finding may be anywhere in the file now.
+	lost := line == 0 || line > n
+	for _, sk := range s.skips {
+		switch {
+		case sk.Line == 0:
+			// Not read in full this time (too large, not parseable):
+			// nothing is known about the pin.
+			return notChecked("%s was not read: %s", sk.File, scrub(root, sk.Reason))
+		case sk.File == file && (lost || sk.Line == line):
+			// That line (an unresolved reference, an image pinned by
+			// digest only) was not checked. A skip on another line is
+			// about another pin, which is reported on its own.
+			return notChecked("line %d of %s was not checked: %s", sk.Line, sk.File, scrub(root, sk.Reason))
+		}
 	}
 	for _, q := range s.pins {
-		if q.file == file && q.line == line && q.prod.rule() == rule {
-			what := q.prod.name()
-			if q.dep != nil {
-				what = q.dep.name
-			}
+		if q.file != file || q.prod.rule() != rule {
+			continue
+		}
+		what := q.prod.name()
+		if q.dep != nil {
+			what = q.dep.name
+		}
+		switch {
+		case q.line == line:
 			return notChecked("line %d of %s still pins %s %s, without the fix", line, file, what, q.j.current)
+		case line == 0:
+			return notChecked("%s still pins %s %s on line %d, without the fix, and the finding names no line", file, what, q.j.current, q.line)
+		case line > n:
+			return notChecked("line %d is past the end of %s, which still pins %s %s on line %d, without the fix", line, file, what, q.j.current, q.line)
 		}
 	}
 	return nil
+}
+
+// errText is err without the absolute path a file system error carries.
+func errText(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
+}
+
+// scrub removes the checkout's absolute path from a reason.
+func scrub(root, s string) string {
+	for _, r := range []string{root, filepath.Clean(root)} {
+		if r == "" || r == "." {
+			continue
+		}
+		s = strings.ReplaceAll(s, r+string(filepath.Separator), "")
+		s = strings.ReplaceAll(s, r, ".")
+	}
+	return s
 }
 
 // choose finds the pin a finding names. found is false when the file no
