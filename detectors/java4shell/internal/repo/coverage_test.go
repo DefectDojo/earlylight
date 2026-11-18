@@ -579,3 +579,46 @@ func TestBuildsCarried(t *testing.T) {
 		}
 	}
 }
+
+// Round 3, item 4: Java package files and patterns no reader knows are not
+// checked; vendor file names carry the Java version.
+func TestVendorPackageFiles(t *testing.T) {
+	lines := []string{
+		"FROM registry.access.redhat.com/ubi9/ubi",
+		"RUN rpm -ivh /tmp/jdk-17.0.9_linux-x64_bin.rpm",                                 // 2 Oracle
+		"RUN rpm -ivh /tmp/zulu17.46.19-ca-jdk17.0.9-linux.x86_64.rpm",                   // 3
+		"RUN rpm -ivh /tmp/temurin-17-jdk-17.0.13.0.0.11-2.x86_64.rpm",                   // 4
+		"RUN dnf install -y temurin-17-jdk-17.0.13.0.0.11-2",                             // 5
+		"RUN rpm -ivh /tmp/bellsoft-jdk17.0.9+11-linux-amd64.rpm",                        // 6
+		"RUN rpm -ivh /tmp/sapmachine-jdk-17.0.9-1.x86_64.rpm",                           // 7
+		"RUN rpm -ivh /tmp/jdk.rpm",                                                      // 8
+		"RUN rpm -ivh /tmp/jdk*.rpm",                                                     // 9
+		"RUN rpm -ivh /tmp/zulu*.rpm",                                                    // 10
+		"RUN rpm -ivh /tmp/temurin-*.rpm",                                                // 11
+		"RUN rpm -ivh /rpms/*",                                                           // 12
+		"RUN dnf install -y java-17-openjdk-17.0.2?.0.9-1.el9",                           // 13
+		"RUN rpm --reinstall /tmp/java-17-openjdk-headless-17.0.21.0.9-1.el9.x86_64.rpm", // 14
+		"RUN rpm -ivh /tmp/jdk-21.0.13.1_linux-x64_bin.rpm",                              // 15 not cleared
+		"RUN rpm -ivh /tmp/epel-release-latest-9.noarch.rpm /tmp/nginx-*.rpm",            // 16
+	}
+	res := scan(t, tree(t, map[string]string{"Dockerfile": strings.Join(lines, "\n") + "\n"}))
+	checkAll(t, res, []want{
+		{"Dockerfile", 2, RulePackage, StatusVulnerable},
+		{"Dockerfile", 3, RulePackage, StatusVulnerable},
+		{"Dockerfile", 4, RulePackage, StatusVulnerable},
+		{"Dockerfile", 5, RulePackage, StatusVulnerable},
+		{"Dockerfile", 6, RulePackage, StatusVulnerable},
+		{"Dockerfile", 7, RulePackage, StatusVulnerable},
+		{"Dockerfile", 8, RulePackage, StatusUnknown},
+		{"Dockerfile", 9, RulePackage, StatusUnknown},
+		{"Dockerfile", 10, RulePackage, StatusUnknown},
+		{"Dockerfile", 11, RulePackage, StatusUnknown},
+		{"Dockerfile", 12, RulePackage, StatusUnknown},
+		{"Dockerfile", 13, RulePackage, StatusUnknown},
+		{"Dockerfile", 14, RulePackage, StatusVulnerable},
+		{"Dockerfile", 15, RulePackage, StatusUnknown},
+	})
+	if f, ok := find(res, "Dockerfile", 16); ok {
+		t.Errorf("non-Java files reported: %+v", f)
+	}
+}
