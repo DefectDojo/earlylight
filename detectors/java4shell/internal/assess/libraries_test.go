@@ -72,3 +72,34 @@ func TestOpenJ9LibrariesAreOneVM(t *testing.T) {
 		t.Errorf("OpenJ9 runtime: %s (%s)", f.Status, f.Reason)
 	}
 }
+
+// Final review B3: the string OPENJ9_JAVA_OPTIONS in a library without a
+// version line does not make a runtime OpenJ9 on its own. It needs a second
+// witness: an OpenJ9 VM library (libj9vm) in the runtime, or a release file
+// that names OpenJ9.
+func TestOpenJ9NeedsTwoWitnesses(t *testing.T) {
+	const root = "/opt/jdk"
+	redirector := func() *jvm.Library {
+		return lib(t, root+"/lib/server/libjvm.so", testlib.Lib{Extra: "OPENJ9_JAVA_OPTIONS"})
+	}
+	for _, c := range []struct {
+		name    string
+		libs    []*jvm.Library
+		release []string
+		want    Status
+	}{
+		{"the string alone", []*jvm.Library{redirector()}, nil, Unknown},
+		{"the string under a HotSpot release file", []*jvm.Library{redirector()}, []string{"JAVA_VERSION", "21.0.13", "IMPLEMENTOR", "Eclipse Adoptium"}, Unknown},
+		{"the string under a fixed release file", []*jvm.Library{redirector()}, []string{"JAVA_VERSION", "21.0.13.1"}, Unknown},
+		{"with a release file that names OpenJ9", []*jvm.Library{redirector()}, []string{"JAVA_VERSION", "21.0.13", "JVM_VARIANT", "Openj9"}, NotAffected},
+		{"with an OpenJ9 VM library", []*jvm.Library{redirector(), lib(t, root+"/lib/default/libj9vm29.so", testlib.Lib{})}, nil, NotAffected},
+	} {
+		in := Input{Libraries: c.libs, Releases: map[string]jvm.Release{}}
+		if c.release != nil {
+			in.Releases[root] = rel(t, c.release...)
+		}
+		if f := one(t, in); f.Status != c.want {
+			t.Errorf("%s: %s, want %s (%s)", c.name, f.Status, c.want, f.Reason)
+		}
+	}
+}

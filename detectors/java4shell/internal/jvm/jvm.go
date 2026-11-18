@@ -47,6 +47,10 @@ type Library struct {
 	VBMIStubs bool `json:"vbmi_stubs"`
 	// OpenJ9 is true for an OpenJ9 VM library or redirector.
 	OpenJ9 bool `json:"openj9,omitempty"`
+	// Redirector is true when only the redirector's string says so: the
+	// file is not named as an OpenJ9 VM library. One string is not proof;
+	// the verdict asks for a second witness.
+	Redirector bool `json:"openj9_redirector,omitempty"`
 	// Variant is the VM directory: server, client, minimal, zero, j9vm...
 	Variant string `json:"variant,omitempty"`
 }
@@ -111,8 +115,11 @@ func Inspect(p string, data []byte) (*Library, bool) {
 	// OpenJ9: its VM library by name, or its lib/server redirector, which
 	// has no HotSpot version line, no HotSpot decoder stubs and names
 	// OPENJ9_JAVA_OPTIONS.
-	if IsOpenJ9Name(base) || l.VMName == "" && !l.VBMIStubs && bytes.Contains(b, []byte("OPENJ9_JAVA_OPTIONS")) {
+	switch {
+	case IsOpenJ9Name(base):
 		l.OpenJ9 = true
+	case l.VMName == "" && !l.VBMIStubs && bytes.Contains(b, []byte("OPENJ9_JAVA_OPTIONS")):
+		l.OpenJ9, l.Redirector = true, true
 	}
 	return l, true
 }

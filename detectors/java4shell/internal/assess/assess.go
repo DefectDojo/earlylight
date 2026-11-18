@@ -261,16 +261,22 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	// OpenJ9 only from an OpenJ9 library (by name, or the redirector with
 	// no HotSpot version line and no decoder stubs): the release file's
 	// JVM_VARIANT alone does not decide it.
+	// A library that only carries the redirector's string needs a second
+	// witness: an OpenJ9 VM library by name, or the release file.
 	relJ9 := hasRel && rel.OpenJ9()
-	openj9, stubs := false, false
+	named, redirector, stubs := false, false, false
 	for _, l := range libs {
-		if l.OpenJ9 {
-			openj9 = true
+		switch {
+		case l.Redirector:
+			redirector = true
+		case l.OpenJ9:
+			named = true
 		}
 		if l.VBMIStubs {
 			stubs = true
 		}
 	}
+	openj9 := named || redirector && relJ9
 
 	// The version: the VM library's own, the release file's otherwise.
 	verText, from := "", ""
@@ -310,6 +316,9 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	case openj9:
 		return f.set(NotAffected, "an OpenJ9 VM: the vulnerable decoder is HotSpot code that OpenJ9 does not contain",
 			what+" runs the OpenJ9 VM, not HotSpot")
+	case lib.Redirector:
+		return f.set(Unknown, "the VM library has no HotSpot version line and names OPENJ9_JAVA_OPTIONS, as OpenJ9's redirector does, but the runtime holds no OpenJ9 VM library (libj9vm) and its release file does not name OpenJ9: one string does not show which VM it is",
+			what+": not shown to be OpenJ9 or HotSpot")
 	case len(lib.Archs) == 0 || len(lib.Archs) == 1 && lib.Archs[0] == jvm.Other:
 		return f.set(Unknown, "the VM library's CPU architecture could not be read", what+": CPU architecture unknown")
 	case !lib.Has(jvm.X8664):
