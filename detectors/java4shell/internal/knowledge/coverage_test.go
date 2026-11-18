@@ -224,3 +224,29 @@ func TestGraalVMRound2(t *testing.T) {
 		}
 	}
 }
+
+// Round 3, item 1: a six-number version (Dragonwell 21.0.8.0.8.9, Red Hat
+// 17.0.9.0.9.1, Kona 17.0.21.0.3.b1) is judged by its update first; the
+// extra numbers only keep it from reading fixed.
+func TestSixNumbers(t *testing.T) {
+	for v, want := range map[string]Status{
+		"21.0.8.0.8.9":   Vulnerable,
+		"17.0.6.0.6.9":   Vulnerable,
+		"25.0.5.0.5.8":   Vulnerable,
+		"17.0.9.0.9.1":   Vulnerable,
+		"17.0.5.0.5.9":   NotAffected,
+		"21.0.13.1.2.3":  Unknown, // would read fixed
+		"21.0.13.1.1.3":  Vulnerable,
+		"21.0.14.0.1.2":  Unknown,
+		"21.0.13.0.3.1":  Vulnerable,
+		"17.0.21.1.2.99": Unknown,
+	} {
+		p, ok := Parse(v)
+		if !ok {
+			t.Fatalf("Parse(%s)", v)
+		}
+		if st, why := Judge(p); st != want {
+			t.Errorf("Judge(%s) = %s (%s), want %s", v, st, why, want)
+		}
+	}
+}

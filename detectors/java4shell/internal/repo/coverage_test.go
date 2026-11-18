@@ -514,3 +514,23 @@ func TestVersionNamesAndUnsettled(t *testing.T) {
 		{".github/workflows/ci.yml", 7, RuleNotChecked, StatusUnknown},
 	})
 }
+
+// Round 3, item 1: Dragonwell's six-number releases are vulnerable.
+func TestDragonwell(t *testing.T) {
+	res := scan(t, tree(t, map[string]string{
+		"a/.tool-versions": "java dragonwell-21.0.8.0.8.9\n",
+		"b/.tool-versions": "java dragonwell-17.0.6.0.6.9\n",
+		"c/.tool-versions": "java dragonwell-25.0.5.0.5.8\n",
+		"mise.toml":        "[tools]\njava = \"dragonwell-21.0.8.0.8.9\"\n",
+		"a/.sdkmanrc":      "java=17.0.21.0.3.b1-kona\n",
+		"Dockerfile":       "FROM registry.access.redhat.com/ubi9/ubi\nRUN dnf install -y java-17-openjdk-17.0.9.0.9.1-2.el9\n",
+	}))
+	checkAll(t, res, []want{
+		{"a/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"b/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"c/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"mise.toml", 2, RuleJavaPin, StatusVulnerable},
+		{"a/.sdkmanrc", 1, RuleJavaPin, StatusVulnerable},
+		{"Dockerfile", 2, RulePackage, StatusVulnerable},
+	})
+}

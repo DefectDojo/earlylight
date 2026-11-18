@@ -355,7 +355,16 @@ func Judge(v Version) (Status, string) {
 	// write it so), which can predate the fix of 17.0.21.1.
 	if len(v.Nums) >= 5 && v.Nums[3] <= maxPatch {
 		if len(v.Nums) > 5 {
-			return Unknown, fmt.Sprintf("Java %s has more numbers than a Java version and a build: what it names is not known", ver)
+			// More numbers (Dragonwell's 21.0.8.0.8.9, a Red Hat
+			// 17.0.9.0.9.1): the update and build still decide, but what
+			// the extra numbers name is not known, so it never reads fixed.
+			w := v
+			w.Nums = v.Nums[:5]
+			st, why := Judge(w)
+			if st == Fixed {
+				return Unknown, fmt.Sprintf("Java %s has more numbers than a Java version and a build: what it names is not known", ver)
+			}
+			return st, why
 		}
 		if v.Build < 0 {
 			v.Build = v.Nums[4]
