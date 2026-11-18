@@ -53,10 +53,10 @@ const about = " HotSpot's AVX-512 VBMI Base64 decoder (x86-64, JDK 18 and later,
 	" characters (64 'A' then '=' is enough), so a Java program that decodes untrusted Base64 (tokens, headers," +
 	" certificates, JSON) can have its heap corrupted once the decoder is compiled: pre-authentication remote code" +
 	" execution was shown on default Keycloak, Jira, Confluence, Artifactory, Jenkins and PingFederate. It runs on CPUs" +
-	" with AVX-512F, AVX-512BW, AVX-512 VBMI and BMI2 (Intel server CPUs from Ice Lake on and some client CPUs, not Alder" +
-	" Lake or Raptor Lake; AMD Zen 4 and later; common on cloud instances). Fixed in OpenJDK 17.0.21.1, 21.0.13.1, 25.0.5.1" +
-	" and 27.0.1.1 (by JDK-8393212, the change the public descriptions of the CVE match); Java 18 to 20, 22 to 24" +
-	" and 26 received no fix. Oracle GraalVM for JDK 17 and 21 and GraalVM Enterprise Edition 21.3 are affected too, with no" +
+	" with AVX-512F, AVX-512BW, AVX-512 VBMI and BMI2 (going by GCC's CPU tables: Intel Xeon from Ice Lake on except the" +
+	" E-core Xeon 6, and the client Cannon Lake, Ice Lake, Tiger Lake and Rocket Lake, not Alder Lake or later; AMD Zen 4" +
+	" and Zen 5). Fixed in OpenJDK 17.0.21.1, 21.0.13.1, 25.0.5.1 and 27.0.1.1 (by JDK-8393212, the change the public" +
+	" descriptions of the CVE match); Java 18 to 20, 22 to 24 and 26 received no fix. Oracle GraalVM for JDK 17 and 21 and GraalVM Enterprise Edition 21.3 are affected too, with no" +
 	" fixed GraalVM build known yet. -XX:-UseBASE64Intrinsics (or, on x86-64 only, -XX:UseAVX=2) keeps the decoder from being" +
 	" generated until the runtime is updated."
 
