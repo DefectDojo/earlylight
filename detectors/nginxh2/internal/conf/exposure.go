@@ -43,9 +43,9 @@ type Exposure struct {
 var proxyDirectives = map[string]bool{"proxy_pass": true, "grpc_pass": true, "fastcgi_pass": true, "uwsgi_pass": true, "scgi_pass": true, "memcached_pass": true}
 
 type listen struct {
-	port      string
+	port       string
 	ssl, http2 bool
-	where     string
+	where      string
 }
 
 type server struct {

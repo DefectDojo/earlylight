@@ -154,7 +154,7 @@ func TestScanBelowRoot(t *testing.T) {
 func TestTemplates(t *testing.T) {
 	s := &source{kept: map[string][]byte{
 		"/etc/nginx/templates/default.conf.template": []byte("server { listen ${PORT} ssl http2; }"),
-		"/srv/t/x.conf.tpl":                           []byte("server { listen 1 ssl http2; }"),
+		"/srv/t/x.conf.tpl":                          []byte("server { listen 1 ssl http2; }"),
 	}}
 	s.templates(nil)
 	if _, ok, _ := s.Read("/etc/nginx/conf.d/default.conf"); !ok {
