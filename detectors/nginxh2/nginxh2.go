@@ -538,6 +538,14 @@ func (s *source) Glob(pattern string) ([]string, bool) {
 			}
 		}
 	}
+	// Symbolic links match too (sites-enabled/default ->
+	// ../sites-available/default); Read follows them, and one that leads
+	// nowhere the scan read is reported as not read.
+	for p := range s.links {
+		if ok, _ := path.Match(pattern, p); ok {
+			add(p)
+		}
+	}
 	// A directory reached through a symbolic link: match its target's
 	// files under the linked name.
 	if dir := path.Dir(pattern); !strings.ContainsAny(dir, "*?[") {

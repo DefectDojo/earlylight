@@ -223,8 +223,10 @@ func portOf(a string) string {
 		return a
 	}
 	if i := strings.LastIndexByte(a, ']'); i >= 0 {
-		a = a[i+1:]
-		return strings.TrimPrefix(a, ":")
+		if p := strings.TrimPrefix(a[i+1:], ":"); p != "" {
+			return p
+		}
+		return "80"
 	}
 	if i := strings.LastIndexByte(a, ':'); i >= 0 {
 		return a[i+1:]
