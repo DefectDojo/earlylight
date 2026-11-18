@@ -63,6 +63,14 @@ func FuzzTar(f *testing.F) {
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		Tar(bytes.NewReader(data), Options{MaxFileSize: 1 << 20}, func(File) error { return nil })
+		// With a reader's own limit, nothing larger is ever handed out.
+		limited := Options{MaxFileSize: 1 << 20, Read: func(string, []byte, bool) (bool, Limit) { return true, Limit{Bytes: 100, By: "t"} }}
+		Tar(bytes.NewReader(data), limited, func(f File) error {
+			if len(f.Data) > 100 {
+				t.Errorf("%s: %d bytes over a 100-byte limit", f.Path, len(f.Data))
+			}
+			return nil
+		})
 	})
 }
 
