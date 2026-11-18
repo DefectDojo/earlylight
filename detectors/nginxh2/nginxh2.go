@@ -928,15 +928,17 @@ func posixClasses(p string) (string, error) {
 		if i < 0 {
 			return p, nil
 		}
-		j := strings.Index(p[i:], ":]")
+		// The closing ":]" is looked for after the opening "[:", so "[:]"
+		// does not close on itself.
+		j := strings.Index(p[i+2:], ":]")
 		if j < 0 {
 			return "", path.ErrBadPattern
 		}
-		r, ok := classRanges[p[i+2:i+j]]
+		r, ok := classRanges[p[i+2:i+2+j]]
 		if !ok {
 			return "", path.ErrBadPattern
 		}
-		p = p[:i] + r + p[i+j+2:]
+		p = p[:i] + r + p[i+2+j+2:]
 	}
 }
 

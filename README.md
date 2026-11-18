@@ -157,6 +157,9 @@ go test ./detectors/nginxh2/internal/conf -run '^$' -fuzz '^FuzzParse$' -fuzztim
 go test ./detectors/nginxh2/internal/ngx -run '^$' -fuzz '^FuzzInspect$' -fuzztime 60s
 go test ./detectors/nginxh2/internal/ngx -run '^$' -fuzz '^FuzzVersions$' -fuzztime 60s
 go test ./detectors/nginxh2/internal/repo -run '^$' -fuzz '^FuzzScanText$' -fuzztime 60s
+go test ./detectors/nginxh2 -run '^$' -fuzz '^FuzzSource$' -fuzztime 60s
+go test ./detectors/nginxh2/internal/assess -run '^$' -fuzz '^FuzzStart$' -fuzztime 60s
+go test ./detectors/nginxh2/internal/pkgdb -run '^$' -fuzz '^FuzzDatabases$' -fuzztime 60s
 govulncheck ./...
 python3 parity/parity.py path/to/emudhra-scan path/to/earlylight
 python3 parity/php.py path/to/php2shell-scan ./php2shell-scan ./earlylight path/to/emudhra-scan cases.json
