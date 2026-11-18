@@ -132,6 +132,13 @@ const (
 	maxHsErrs  = 64
 	maxLibs    = 4096
 	maxSetting = 1 << 20
+	// Caps on what one target can make the detector keep: an image layer
+	// of many small files compresses to almost nothing.
+	maxReleases  = 4096
+	maxSettings  = 4096
+	maxLists     = 512
+	maxScripts   = 8192
+	maxKeptTotal = 128 << 20
 )
 
 // NewScan starts a filesystem or image scan.
@@ -151,6 +158,19 @@ type scan struct {
 	scripts     map[string]map[string]bool
 	crashes     []crash
 	dropped     int
+	keptBytes   int
+	// limits records the caps this target reached; a capped scan clears
+	// nothing.
+	limits []string
+}
+
+func (s *scan) limit(what string) {
+	for _, l := range s.limits {
+		if l == what {
+			return
+		}
+	}
+	s.limits = append(s.limits, what)
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
@@ -170,6 +190,10 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		return nil
 	case base == "release":
 		if !archive.IsExecutable(f.Data) {
+			if len(s.releases)+len(s.badReleases) >= maxReleases {
+				s.limit(fmt.Sprintf("more than %d release files", maxReleases))
+				return nil
+			}
 			if r, ok := jvm.ParseRelease(f.Data); ok {
 				s.releases[path.Dir(f.Path)] = r
 			} else if len(f.Data) > 64<<10 && bytes.Contains(f.Data[:min(len(f.Data), 4096)], []byte("JAVA_VERSION")) {
@@ -184,15 +208,35 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		return nil
 	}
 	if k := jvm.SettingKind(f.Path); k != "" && len(f.Data) <= maxSetting {
-		if st, ok := jvm.ReadSetting(f.Path, f.Data); ok {
+		if len(s.settings) >= maxSettings {
+			s.limit(fmt.Sprintf("more than %d files that set JVM options", maxSettings))
+		} else if st, ok := jvm.ReadSetting(f.Path, f.Data); ok {
 			s.settings = append(s.settings, st)
 		}
 	}
 	if keep(f.Path) && len(f.Data) <= maxKept {
 		if assess.IsDpkgList(f.Path) {
-			s.lists[strings.TrimSuffix(path.Base(f.Path), ".list")] = f.Data
+			// Only the lines owners are looked up by.
+			var b []byte
+			for _, l := range bytes.Split(f.Data, []byte("\n")) {
+				if bytes.HasSuffix(l, []byte("/libjvm.so")) || bytes.HasSuffix(l, []byte("/release")) {
+					b = append(append(b, l...), '\n')
+				}
+			}
+			switch {
+			case len(s.lists) >= maxLists:
+				s.limit(fmt.Sprintf("more than %d dpkg file lists of Java packages", maxLists))
+			case s.keptBytes+len(b) > maxKeptTotal:
+				s.limit(fmt.Sprintf("more than %d MiB of package data", maxKeptTotal>>20))
+			default:
+				s.lists[strings.TrimSuffix(path.Base(f.Path), ".list")] = b
+				s.keptBytes += len(b)
+			}
+		} else if s.keptBytes+len(f.Data) > maxKeptTotal {
+			s.limit(fmt.Sprintf("more than %d MiB of package data", maxKeptTotal>>20))
 		} else {
 			s.kept[f.Path] = f.Data
+			s.keptBytes += len(f.Data)
 		}
 	}
 	if isScript(f.Data) && len(f.Data) <= maxScript {
@@ -203,7 +247,11 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			}
 		}
 		if len(vars) > 0 {
-			s.scripts[f.Path] = vars
+			if len(s.scripts) >= maxScripts {
+				s.limit(fmt.Sprintf("more than %d start scripts that pass JVM options", maxScripts))
+			} else {
+				s.scripts[f.Path] = vars
+			}
 		}
 	}
 	return nil
@@ -219,6 +267,9 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		ctx.Annotate("java4shell_crash_logs", s.crashes)
 	}
 	if len(s.libs) == 0 {
+		if len(s.limits) > 0 {
+			ctx.Problem("java4shell: the scan reached its limit on " + strings.Join(s.limits, " and ") + " for one target")
+		}
 		return nil
 	}
 	links, _ := ctx.Links()
@@ -253,9 +304,18 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		in.Command = ctx.Command()
 	}
 	cpu, haveCPU := thisCPU()
+	capped := ""
+	if len(s.limits) > 0 {
+		capped = "the scan reached its limit on " + strings.Join(s.limits, " and ") + " for one target, so package owners and JVM options may be missing: nothing is cleared"
+		ctx.Problem("java4shell: " + capped)
+	}
 	var out []engine.Finding
 	for _, x := range assess.Run(in) {
 		f := finding(x)
+		if capped != "" && f.Verdict.Cleared() {
+			f.Verdict, f.Reason = engine.Unknown, f.Reason+"; but "+capped
+			f.CVEs = []engine.CVEResult{{ID: knowledge.CVE, Verdict: f.Verdict, Reason: f.Reason}}
+		}
 		if haveCPU && s.kind == engine.Filesystem && x.Status == assess.Vulnerable {
 			f.Facts["scanner_cpu_runs_it"] = yes(cpu.Affected)
 		}
