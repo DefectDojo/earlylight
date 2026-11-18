@@ -56,6 +56,9 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 	if mit != "" {
 		props["mitigation"] = mit
 	}
+	if s.redHatRef(r, img, props, mit) {
+		return
+	}
 	fam, tag, ok := FamilyOf(img)
 	if !ok {
 		if Javaish(img) {

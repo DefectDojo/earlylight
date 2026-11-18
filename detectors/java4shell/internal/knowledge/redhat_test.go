@@ -1,0 +1,78 @@
+package knowledge
+
+import "testing"
+
+func TestCompareRPM(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{
+		{"17.0.21.0.9-1.el9", "17.0.21.0.9-1.el9", 0},
+		{"17.0.21.0.9-2.el9", "17.0.21.0.9-1.el9", 1},
+		{"17.0.21.0.9-1.el9", "17.0.21.0.10-1.el9", -1},
+		{"17.0.21.0.9-1.el9_6", "17.0.21.0.9-1.el9", 1},
+		{"1:17.0.21.0.9-1.el9", "17.0.21.0.9-2.el9", 1},
+		{"17.0.21.1.2-1.el9", "17.0.21.0.9-9.el9", 1},
+		{"1.0~rc1-1", "1.0-1", -1},
+		{"1.0a-1", "1.0-1", 1},
+		{"1.010-1", "1.9-1", 1},
+		{"1.0-1.el9", "1.0-1.el10", -1},
+	} {
+		if got := CompareRPM(c.a, c.b); got != c.want {
+			t.Errorf("CompareRPM(%s, %s) = %d, want %d", c.a, c.b, got, c.want)
+		}
+		if got := CompareRPM(c.b, c.a); got != -c.want {
+			t.Errorf("CompareRPM(%s, %s) = %d, want %d", c.b, c.a, got, -c.want)
+		}
+	}
+}
+
+func TestRedHatTable(t *testing.T) {
+	// Empty today: Red Hat had published no fixed build.
+	if len(RedHatFixed) != 0 {
+		t.Fatalf("RedHatFixed has entries; update this test and FACTS.md: %+v", RedHatFixed)
+	}
+	if _, _, known := JudgeRedHat("java-17-openjdk-headless", "17.0.21.0.9-1.el9"); known {
+		t.Error("a build was judged from an empty table")
+	}
+	saved := RedHatFixed
+	t.Cleanup(func() { RedHatFixed = saved })
+	RedHatFixed = []RedHatFix{{Package: "java-17-openjdk", EL: 9, EVR: "1:17.0.21.0.9-2.el9", Advisory: "RHSA-2026:0000"}}
+	for _, c := range []struct {
+		name, evr string
+		want      Status
+		known     bool
+	}{
+		{"java-17-openjdk-headless", "17.0.21.0.9-1.el9", Vulnerable, true},
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-1.el9", Vulnerable, true},
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-2.el9", Fixed, true},
+		// An install path or a dnf argument omits the epoch: compared without it.
+		{"java-17-openjdk-headless", "17.0.21.0.9-2.el9", Fixed, true},
+		{"java-17-openjdk", "1:17.0.21.0.9-3.el9_7", Fixed, true},
+		{"java-17-openjdk-devel", "1:17.0.21.0.9-2.el9", Fixed, true},
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-9.el8", "", false}, // no RHEL 8 entry
+		{"java-21-openjdk-headless", "1:21.0.13.0.9-1.el9", "", false},
+		{"java-17-openjdk-headless", "17.0.21.0.9-1.fc41", "", false}, // not Red Hat
+		{"java-17-amazon-corretto-headless", "17.0.21.0.9-1.el9", "", false},
+	} {
+		st, why, known := JudgeRedHat(c.name, c.evr)
+		if known != c.known || known && (st != c.want || why == "") {
+			t.Errorf("JudgeRedHat(%s, %s) = %s %v (%s), want %s %v", c.name, c.evr, st, known, why, c.want, c.known)
+		}
+	}
+}
+
+func TestRPMUpstream(t *testing.T) {
+	for in, want := range map[string]string{
+		"17.0.21.0.9-1.el9":   "17.0.21.0+9",
+		"1:17.0.21.1.1-1.el9": "17.0.21.1+1",
+		"21.0.13.1.2-1.el9":   "21.0.13.1+2",
+		"17.0.21.0.3-1.el9":   "17.0.21.0+3",
+		"17.0.21-1.el9":       "17.0.21",
+		"17.0.21.1-1":         "17.0.21.1",
+	} {
+		if got := RPMUpstream(in); got != want {
+			t.Errorf("RPMUpstream(%s) = %s, want %s", in, got, want)
+		}
+	}
+}

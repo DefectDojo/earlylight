@@ -103,10 +103,10 @@ func Run(in Input) []Finding {
 	env := jvm.EnvMap(in.Env)
 	var out []Finding
 	for _, r := range roots {
-		out = append(out, withFix(judge(in, env, r, byRoot[r])))
+		out = append(out, withFix(redHat(judge(in, env, r, byRoot[r]))))
 	}
 	for _, l := range loose {
-		out = append(out, withFix(judge(in, env, path.Dir(l.Path), []*jvm.Library{l})))
+		out = append(out, withFix(redHat(judge(in, env, path.Dir(l.Path), []*jvm.Library{l}))))
 	}
 	return out
 }
@@ -275,6 +275,28 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		return f.set(Mitigated, kwhy+"; "+how, what+" is vulnerable to Java4Shell, mitigated by its JVM options until it is updated")
 	}
 	return f.set(Vulnerable, kwhy, what+" is vulnerable to Java4Shell")
+}
+
+// redHat applies Red Hat's backport table to a runtime its rpm installed:
+// a fixed Red Hat build keeps the upstream version in its VM library, so
+// only the rpm release shows the fix.
+func redHat(f Finding) Finding {
+	if f.Package == nil || f.Package.Manager != "rpm" || f.VersionFrom != "vm-library" || f.Status != Vulnerable && f.Status != Mitigated {
+		return f
+	}
+	st, why, known := knowledge.JudgeRedHat(f.Package.Name, f.Package.Version)
+	if !known || st != knowledge.Fixed {
+		return f
+	}
+	// The VM library has to be the update the rpm packages.
+	up, ok := knowledge.Parse(knowledge.RPMUpstream(f.Package.Version))
+	v, vok := knowledge.Parse(f.Version)
+	if !ok || !vok || len(up.Nums) < 3 || len(v.Nums) < 3 || knowledge.Compare(up.Nums[:3], v.Nums[:3]) != 0 {
+		return f
+	}
+	f.Release, f.Mitigation, f.MitigatedFor = knowledge.Fixed, "", nil
+	return f.set(Fixed, why+"; its VM library reads Java "+f.Version+", the update Red Hat backported the fix into",
+		describe(f, v, true)+" has Red Hat's backported Java4Shell fix (judged by its rpm release)")
 }
 
 func (f Finding) set(s Status, reason, msg string) Finding {
@@ -540,6 +562,15 @@ func fixText(f Finding, v knowledge.Version, ok bool) string {
 	case f.Product != "":
 		return fmt.Sprintf("Upgrade %s to a release that bundles %s; its own runtime is not updated by the operating system's Java packages.%s", f.Product, target, interim)
 	case f.Package != nil:
+		if pkg, el, ok := knowledge.RedHatPackage(f.Package.Name, f.Package.Version); ok {
+			if fx, ok := knowledge.RedHatFixFor(pkg, el); ok {
+				evr := fx.EVR
+				if i := strings.IndexByte(evr, ':'); i >= 0 {
+					evr = evr[i+1:]
+				}
+				target = fmt.Sprintf("Red Hat's build %s or later (%s)", evr, fx.Advisory)
+			}
+		}
 		return fmt.Sprintf("Update the %s package to %s: %s (%s).%s", f.Package.Name, target, upgradeLine(*f.Package), distroStatus(*f.Package), interim)
 	case f.JLinked:
 		return fmt.Sprintf("Rebuild this jlink image from a JDK at %s.%s", target, interim)

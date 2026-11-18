@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/jvm"
+	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
 )
 
@@ -101,5 +102,52 @@ func TestGraalVMRuntime(t *testing.T) {
 		if c.want != NotAffected && (!strings.Contains(f.Reason, "GraalVM") || !strings.Contains(f.Fix, "GraalVM")) {
 			t.Errorf("%s: reason or fix does not name GraalVM:\n%s\n%s", c.name, f.Reason, f.Fix)
 		}
+	}
+}
+
+// Red Hat's layout: /usr/lib/jvm/java-17-openjdk-<version>-<release>.<arch>,
+// the rpm named by its install path; the VM library reads the upstream
+// version (17.0.21+9-LTS) whatever Red Hat backports.
+func TestRedHatRuntime(t *testing.T) {
+	const el9 = "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-1.el9.x86_64"
+	run := func(root, ver string) Finding {
+		return one(t, Input{
+			Libraries: []*jvm.Library{lib(t, root+"/lib/server/libjvm.so", testlib.Lib{Version: ver, VBMI: true})},
+			Releases:  map[string]jvm.Release{root: rel(t, "JAVA_VERSION", "17.0.21", "JAVA_RUNTIME_VERSION", ver, "IMPLEMENTOR", "Red Hat, Inc.")},
+		})
+	}
+	f := run(el9, "17.0.21+9-LTS")
+	if f.Status != Vulnerable || f.Package == nil || f.Package.Name != "java-17-openjdk-headless" || f.Package.Version != "17.0.21.0.9-1.el9" {
+		t.Fatalf("RHEL 9 rpm: %s %+v (%s)", f.Status, f.Package, f.Reason)
+	}
+	if !strings.Contains(f.Fix, "Red Hat had published no fixed") || !strings.Contains(f.Fix, "dnf upgrade java-17-openjdk-headless") {
+		t.Errorf("fix text: %s", f.Fix)
+	}
+
+	saved := knowledge.RedHatFixed
+	t.Cleanup(func() { knowledge.RedHatFixed = saved })
+	knowledge.RedHatFixed = []knowledge.RedHatFix{{Package: "java-17-openjdk", EL: 9, EVR: "1:17.0.21.0.9-2.el9", Advisory: "RHSA-2026:0000"}}
+	if f := run(el9, "17.0.21+9-LTS"); f.Status != Vulnerable || !strings.Contains(f.Fix, "17.0.21.0.9-2.el9") {
+		t.Errorf("older than the listed build: %s (%s) fix %s", f.Status, f.Reason, f.Fix)
+	}
+	fixed := "/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-2.el9.x86_64"
+	if f := run(fixed, "17.0.21+9-LTS"); f.Status != Fixed || !strings.Contains(f.Reason, "Red Hat") || f.Fix != "" {
+		t.Errorf("listed build: %s (%s) fix %q", f.Status, f.Reason, f.Fix)
+	}
+	if f := run("/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-3.el9_7.x86_64", "17.0.21+9-LTS"); f.Status != Fixed {
+		t.Errorf("later build: %s (%s)", f.Status, f.Reason)
+	}
+	// The VM library must be the update the rpm names: a path that says
+	// 17.0.21 over a 17.0.13 VM library proves nothing.
+	if f := run("/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-2.el9.x86_64", "17.0.13+11-LTS"); f.Status != Vulnerable {
+		t.Errorf("mismatched VM library: %s (%s)", f.Status, f.Reason)
+	}
+	// No RHEL 8 entry: judged by the VM library.
+	if f := run("/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-9.el8.x86_64", "17.0.21+9-LTS"); f.Status != Vulnerable {
+		t.Errorf("RHEL 8: %s (%s)", f.Status, f.Reason)
+	}
+	// Not Red Hat: Fedora is not in the table.
+	if f := run("/usr/lib/jvm/java-17-openjdk-17.0.21.0.9-9.fc41.x86_64", "17.0.21+9"); f.Status != Vulnerable {
+		t.Errorf("Fedora: %s (%s)", f.Status, f.Reason)
 	}
 }

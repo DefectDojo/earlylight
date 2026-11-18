@@ -3,6 +3,8 @@ package repo
 import (
 	"strings"
 	"testing"
+
+	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
 )
 
 // The five-part releases the OpenJDK advisory names as the last affected
@@ -134,5 +136,77 @@ func TestGraalVMRepo(t *testing.T) {
 		if f.Rule == RuleNotChecked && f.File == "Dockerfile" && f.Pull == "" {
 			t.Errorf("Dockerfile:%d: an unknown image is not pulled", f.Line)
 		}
+	}
+}
+
+func TestRedHatRepo(t *testing.T) {
+	files := map[string]string{
+		"Dockerfile": strings.Join([]string{
+			"FROM registry.access.redhat.com/ubi9/openjdk-17:1.20",
+			"FROM registry.access.redhat.com/ubi9/openjdk-17:latest",
+			"FROM registry.access.redhat.com/ubi9/openjdk-21-runtime:1.20-2.1729089285",
+			"FROM registry.redhat.io/ubi9/openjdk-25",
+			"FROM registry.access.redhat.com/ubi8/openjdk-11",
+			"FROM registry.access.redhat.com/ubi8/openjdk-8-runtime:1.20",
+			"FROM registry.access.redhat.com/ubi9/openjdk-17-runtime@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}, "\n") + "\n",
+		"Dockerfile.pkg": strings.Join([]string{
+			"FROM registry.access.redhat.com/ubi9/ubi-minimal",
+			"RUN microdnf install -y java-17-openjdk-headless && microdnf clean all",
+			"RUN dnf install -y java-21-openjdk-devel",
+			"RUN dnf install -y java-17-openjdk-headless-17.0.21.0.9-1.el9",
+			"RUN dnf install -y java-17-openjdk-headless-1:17.0.21.1.1-1.el9.x86_64",
+			"RUN yum install -y java-11-openjdk-headless",
+		}, "\n") + "\n",
+	}
+	res := scan(t, tree(t, files))
+	checkAll(t, res, []want{
+		{"Dockerfile", 1, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 2, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 3, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 4, RuleImagePin, StatusVulnerable},
+		{"Dockerfile", 7, RuleNotChecked, StatusUnknown},
+		{"Dockerfile.pkg", 2, RulePackage, StatusVulnerable},
+		{"Dockerfile.pkg", 3, RulePackage, StatusVulnerable},
+		{"Dockerfile.pkg", 4, RulePackage, StatusVulnerable},
+		{"Dockerfile.pkg", 5, RulePackage, StatusVulnerable}, // 17.0.21.1 build 1 predates the fix (build 2)
+	})
+	for _, l := range []int{5, 6} {
+		if f, ok := find(res, "Dockerfile", l); ok {
+			t.Errorf("Dockerfile:%d: Java 8 or 11 image reported: %+v", l, f)
+		}
+	}
+	if f, ok := find(res, "Dockerfile.pkg", 6); ok {
+		t.Errorf("java-11 package reported: %+v", f)
+	}
+	for _, f := range res.Findings {
+		if !strings.Contains(f.Reason, "Red Hat") {
+			t.Errorf("%s:%d: the reason does not give Red Hat's status: %s", f.File, f.Line, f.Reason)
+		}
+		if f.Rule == RuleNotChecked && f.Pull == "" {
+			t.Errorf("%s:%d: a UBI image that has to be read is not pulled", f.File, f.Line)
+		}
+		if f.Fixable {
+			t.Errorf("%s:%d: offers an edit", f.File, f.Line)
+		}
+	}
+
+	// Once Red Hat lists a fixed build, a moving UBI tag or an unpinned
+	// install may get it: only the image can tell.
+	saved := knowledge.RedHatFixed
+	t.Cleanup(func() { knowledge.RedHatFixed = saved })
+	knowledge.RedHatFixed = []knowledge.RedHatFix{{Package: "java-17-openjdk", EL: 9, EVR: "1:17.0.21.0.9-2.el9", Advisory: "RHSA-2026:0000"},
+		{Package: "java-21-openjdk", EL: 9, EVR: "1:21.0.13.0.9-2.el9", Advisory: "RHSA-2026:0001"}}
+	files["Dockerfile.pkg"] += "RUN dnf install -y java-17-openjdk-headless-17.0.21.0.9-2.el9\n"
+	res = scan(t, tree(t, files))
+	checkAll(t, res, []want{
+		{"Dockerfile", 2, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 3, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 4, RuleImagePin, StatusVulnerable}, // no java-25 entry
+		{"Dockerfile.pkg", 2, RulePackage, StatusUnknown},
+		{"Dockerfile.pkg", 4, RulePackage, StatusVulnerable},
+	})
+	if f, ok := find(res, "Dockerfile.pkg", 7); ok {
+		t.Errorf("the listed fixed build reported: %+v", f)
 	}
 }

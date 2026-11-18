@@ -1011,8 +1011,12 @@ func pinnedVersion(h pkgHit) string {
 		up = up[i+1:]
 	}
 	up = strings.ReplaceAll(up, "_p", "+")
-	if h.vendor == "corretto" {
+	switch {
+	case h.vendor == "corretto":
 		up = CorrettoJava(up)
+	case h.mgr == "rpm":
+		// Red Hat and Fedora append the build: 17.0.21.0.9 is 17.0.21+9.
+		up = knowledge.RPMUpstream(h.ver)
 	}
 	v, ok := knowledge.Parse(up)
 	if !ok || len(v.Nums) < 3 {
@@ -1055,14 +1059,28 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 	if fx == "" {
 		fx = "a release with the fix"
 	}
+	if st, why, ok := redHatPin(h); ok {
+		props["current"] = h.ver
+		if st == knowledge.Vulnerable {
+			s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "error", Status: StatusVulnerable, Reason: why,
+				Message: fmt.Sprintf("pins %s to %s, without the Java4Shell fix", h.name, h.ver),
+				Fix:     rpmFix(h.name),
+				Props:   props})
+		}
+		return
+	}
 	if up := pinnedVersion(h); up != "" {
 		props["current"] = h.ver
 		v, _ := knowledge.Parse(up)
 		if st, why := knowledge.Judge(v); st == knowledge.Vulnerable {
+			fix := fmt.Sprintf("Pin %s to a package of Java %s or later once %s publishes it, then rebuild. Until then set ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics in this stage.", h.name, fx, who)
+			if h.mgr == "rpm" && h.vendor == "distribution" {
+				why += "; " + knowledge.RedHatStatus()
+				fix = rpmFix(h.name)
+			}
 			s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "error", Status: StatusVulnerable, Reason: why,
 				Message: fmt.Sprintf("pins %s to %s, without the Java4Shell fix", h.name, h.ver),
-				Fix:     fmt.Sprintf("Pin %s to a package of Java %s or later once %s publishes it, then rebuild. Until then set ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics in this stage.", h.name, fx, who),
-				Props:   props})
+				Fix:     fix, Props: props})
 		}
 		return
 	}
@@ -1080,6 +1098,15 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 	if h.ver != "" {
 		what = "with a version range (" + h.op + h.ver + ")"
 	}
+	published, rhFixed := redHatPublished(h.name)
+	switch {
+	case h.mgr == "rpm" && h.vendor == "distribution" && rhFixed:
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown, Props: props,
+			Reason:  fmt.Sprintf("Red Hat published fixed builds (%s): an image built after that gets one, one built or cached before does not", published),
+			Message: fmt.Sprintf("installs %s %s: whether the image has the Java4Shell fix depends on when it was built", h.name, what),
+			Fix:     fmt.Sprintf("Rebuild without the layer cache and check that %s is Red Hat's fixed build or later.", h.name)})
+		return
+	}
 	switch h.vendor {
 	case "corretto", "sapmachine":
 		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown, Props: props,
@@ -1092,7 +1119,12 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 			Message: fmt.Sprintf("installs %s %s: not checked for the Java4Shell fix", h.name, what),
 			Fix:     fmt.Sprintf("Check that %s's package is Java %s or later, then rebuild.", who, fx)})
 	default:
-		reason := fmt.Sprintf("Debian, Ubuntu and Alpine had published no %s package with the fix as of %s (Red Hat's status was not checked), so a build today installs a release without it", fx, knowledge.Checked)
+		reason := fmt.Sprintf("Debian, Ubuntu and Alpine had published no %s package with the fix as of %s, so a build today installs a release without it", fx, knowledge.Checked)
+		fix := fmt.Sprintf("Rebuild once %s publishes Java %s or later and check the installed version; until then set ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics in this stage.", who, fx)
+		if h.mgr == "rpm" && h.vendor == "distribution" {
+			reason = fmt.Sprintf("%s, and Debian, Ubuntu and Alpine no %s package with the fix (other rpm distributions such as Fedora and SUSE were not checked), so a build today installs a release without it", knowledge.RedHatStatus(), fx)
+			fix = rpmFix(h.name)
+		}
 		msg := fmt.Sprintf("installs %s %s: it gets whatever the distribution has, which had no Java4Shell fix yet", h.name, what)
 		if h.vendor == "temurin" {
 			reason = fmt.Sprintf("Eclipse Temurin had published no %s release as of %s, so a build today installs a release without it", fx, knowledge.Checked)
@@ -1101,8 +1133,7 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 		if h.feature == 0 {
 			msg = fmt.Sprintf("installs %s, the distribution's default OpenJDK (17 or later on current Debian and Ubuntu releases), which had no Java4Shell fix yet", h.name)
 		}
-		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "warning", Status: StatusVulnerable, Reason: reason, Message: msg, Props: props,
-			Fix: fmt.Sprintf("Rebuild once %s publishes Java %s or later and check the installed version; until then set ENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics in this stage.", who, fx)})
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "warning", Status: StatusVulnerable, Reason: reason, Message: msg, Props: props, Fix: fix})
 	}
 }
 
