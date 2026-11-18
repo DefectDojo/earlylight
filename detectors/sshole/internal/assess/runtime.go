@@ -14,16 +14,33 @@ type Startup struct {
 	Command []string
 	// Scripts are the image's shell scripts ("#!" files), by path.
 	Scripts map[string][]byte
-	// Unread are scripts that were not read (larger than the scan reads):
-	// one that runs at start can start sshd with any settings.
-	Unread map[string]bool
+	// Unread are scripts that were not read (over a size limit, or
+	// unreadable): one that runs at start can start sshd with any
+	// settings. UnreadDirs could not be listed; UnreadAll stands for more
+	// unread files than were recorded.
+	Unread     map[string]bool
+	UnreadDirs []string
+	UnreadAll  bool
+}
+
+// inUnreadDir is the directory that was not listed that holds p, or "".
+func (s Startup) inUnreadDir(p string) string {
+	for _, d := range s.UnreadDirs {
+		if p == d || strings.HasPrefix(p, strings.TrimSuffix(d, "/")+"/") {
+			return d
+		}
+	}
+	return ""
 }
 
 // unreadStart lists the scripts that run at start and were not read: the
 // command's own script, one a start script names, and those in the init
 // directories.
 func (s Startup) unreadStart(resolve func(string) (string, bool), scripts []script) []string {
-	if len(s.Unread) == 0 {
+	if s.UnreadAll {
+		return []string{"more files than the scan records"}
+	}
+	if len(s.Unread) == 0 && len(s.UnreadDirs) == 0 {
 		return nil
 	}
 	var out []string
@@ -43,22 +60,24 @@ func (s Startup) unreadStart(resolve func(string) (string, bool), scripts []scri
 				}
 			}
 		}
-		if s.Unread[r] && !seen[r] {
+		if !strings.HasPrefix(r, "/") {
+			for _, d := range pathDirs {
+				if s.inUnreadDir(d+r) != "" {
+					r = d + r
+					break
+				}
+			}
+		}
+		if d := s.inUnreadDir(r); d != "" {
+			r = d // a script in a directory that was not listed
+		}
+		if (s.Unread[r] || s.inUnreadDir(r) != "") && !seen[r] {
 			seen[r] = true
 			out = append(out, r)
 		}
 	}
-	c := s.Command
-	for len(c) > 1 && isWrapper(path.Base(c[0])) {
-		c = c[1:]
-	}
-	if len(c) > 0 {
-		add(c[0])
-		for _, w := range c[1:] {
-			if strings.HasPrefix(w, "/") {
-				add(w)
-			}
-		}
+	for _, w := range s.Command {
+		add(w)
 	}
 	for _, sc := range scripts {
 		for _, m := range absPathRE.FindAllString(sc.text, -1) {
@@ -69,6 +88,14 @@ func (s Startup) unreadStart(resolve func(string) (string, bool), scripts []scri
 		for _, d := range initDirs {
 			if strings.HasPrefix(p, d) {
 				add(p)
+			}
+		}
+	}
+	for _, u := range s.UnreadDirs {
+		for _, d := range initDirs {
+			// An init directory that was not listed, or one inside it.
+			if strings.HasPrefix(d, strings.TrimSuffix(u, "/")+"/") || strings.HasPrefix(u+"/", d) {
+				add(u)
 			}
 		}
 	}
@@ -114,23 +141,20 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 		}
 	}
 	if len(s.Command) > 0 {
+		// Every word of the command that names a script: wrappers take
+		// arguments of their own ("tini --", "gosu USER", "su-exec USER"),
+		// so the script is not always the first word after them.
 		c := s.Command
-		for len(c) > 1 && isWrapper(path.Base(c[0])) {
-			c = c[1:]
-		}
-		if isShell(path.Base(c[0])) {
-			for i := 1; i < len(c); i++ {
-				if c[i] == "-c" && i+1 < len(c) {
-					out = append(out, script{where: "the container command", text: c[i+1]})
-					break
-				}
-				if strings.HasPrefix(c[i], "/") {
-					add(c[i])
-					break
+		for i, w := range c {
+			if isShell(path.Base(w)) {
+				for j := i + 1; j < len(c); j++ {
+					if c[j] == "-c" && j+1 < len(c) {
+						out = append(out, script{where: "the container command", text: c[j+1]})
+						break
+					}
 				}
 			}
-		} else {
-			add(c[0])
+			add(w)
 		}
 		// One level of scripts the command's scripts name.
 		for _, sc := range append([]script(nil), out...) {
@@ -157,14 +181,6 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 type script struct{ where, text string }
 
 var absPathRE = regexp.MustCompile(`/[A-Za-z0-9_./-]+`)
-
-func isWrapper(b string) bool {
-	switch b {
-	case "tini", "dumb-init", "su-exec", "gosu", "env", "exec", "catatonit", "s6-svscan":
-		return true
-	}
-	return false
-}
 
 func isShell(b string) bool {
 	switch b {

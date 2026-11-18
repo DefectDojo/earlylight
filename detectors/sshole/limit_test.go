@@ -1,8 +1,10 @@
 package sshole_test
 
 import (
+	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,5 +247,169 @@ func TestIncludeOverLimitOnDisk(t *testing.T) {
 	padded(t, root, "etc/ssh/sshd_config.d/50-site.conf", []byte("UsePAM no\n"), maxKept+1)
 	if v, _ := sshVerdict(t, "--root", root, filepath.Join(root, "usr")); v.Cleared() {
 		t.Errorf("an include over the limit on disk: %s", v)
+	}
+}
+
+// unreadable makes p unreadable, or skips the test when that cannot be
+// done (running as root).
+func unreadable(t *testing.T, p string) {
+	t.Helper()
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(p, 0o755) })
+	if f, err := os.Open(p); err == nil {
+		f.Close()
+		t.Skip("running as root: permissions do not keep a file unread")
+	}
+}
+
+// Round-3 review finding 1: an include, a start script or an init
+// directory the scan could not read keeps a PAM server from being cleared,
+// and an unreadable login shell still exists.
+func TestUnreadableNeverClears(t *testing.T) {
+	for _, c := range []struct{ name, rel, text, lock string }{
+		{"an include", "etc/ssh/sshd_config.d/50-site.conf", "UsePAM no\n", ""},
+		{"an include directory", "etc/ssh/sshd_config.d/50-site.conf", "UsePAM no\n", "etc/ssh/sshd_config.d"},
+		{"a start script", "etc/cont-init.d/10-sshd", "#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n", ""},
+		{"an init directory", "etc/cont-init.d/10-sshd", "#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n", "etc/cont-init.d"},
+	} {
+		root := pamRoot(t)
+		write(t, root, c.rel, []byte(c.text), 0o644)
+		lock := c.lock
+		if lock == "" {
+			lock = c.rel
+		}
+		unreadable(t, filepath.Join(root, lock))
+		if v, code := sshVerdict(t, "--as-root", root); v.Cleared() || code == 0 {
+			t.Errorf("%s not readable: %s exit %d", c.name, v, code)
+		}
+	}
+	verdict := func(lock bool) string {
+		root := alpineRoot(t, "10.0_p1-r10")
+		write(t, root, "etc/passwd", []byte("root:x:0:0:root:/root:/bin/sh\nalice:x:1000:1000::/home/alice:/bin/sh\nbob:x:1001:1001::/home/bob:/usr/local/bin/menu\n"), 0o644)
+		write(t, root, "usr/local/bin/menu", []byte("#!/bin/sh\nexec /bin/sh\n"), 0o755)
+		if lock {
+			unreadable(t, filepath.Join(root, "usr/local/bin/menu"))
+		}
+		fs, _, _ := scanExit(t, "--detector", "sshole", "--as-root", root)
+		return string(fs[0].Verdict) + "/" + fs[0].Severity
+	}
+	if a, b := verdict(false), verdict(true); a != b {
+		t.Errorf("a login shell that cannot be read: %s, one that can: %s", b, a)
+	}
+}
+
+// tarOf writes root and then extra entries (path, content) to a rootfs tar.
+func tarOf(t *testing.T, root string, extra ...[2]string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+		if err != nil || p == root {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		h, _ := tar.FileInfoHeader(fi, "")
+		if fi.Mode()&os.ModeSymlink != 0 {
+			h.Linkname, _ = os.Readlink(p)
+		}
+		h.Name = filepath.ToSlash(rel)
+		if err := tw.WriteHeader(h); err != nil {
+			return err
+		}
+		if fi.Mode().IsRegular() {
+			b, _ := os.ReadFile(p)
+			tw.Write(b)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range extra {
+		tw.WriteHeader(&tar.Header{Name: e[0], Mode: 0o755, Size: int64(len(e[1])), Typeflag: tar.TypeReg})
+		tw.Write([]byte(e[1]))
+	}
+	tw.Close()
+	p := filepath.Join(t.TempDir(), "rootfs.tar")
+	if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Round-3 review finding 2: of two image entries for a start script, the
+// last is the file, whatever the first was.
+func TestDuplicateStartScript(t *testing.T) {
+	root := pamRoot(t)
+	const p = "etc/cont-init.d/10-sshd"
+	for _, c := range []struct {
+		name          string
+		first, second string
+		want          engine.Verdict
+	}{
+		{"a script that turns PAM off, then plain text", "#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n", "not a script\n", engine.Inactive},
+		{"a harmless script, then one that turns PAM off", "#!/bin/sh\ntrue\n", "#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n", engine.Vulnerable},
+		{"one over the limit, then a harmless one", "#!/bin/sh\n" + strings.Repeat("#", maxScript), "#!/bin/sh\ntrue\n", engine.Inactive},
+	} {
+		img := tarOf(t, root, [2]string{p, c.first}, [2]string{p, c.second})
+		fs, _, _ := scanImage(t, img)
+		if len(fs) != 1 || fs[0].Verdict != c.want {
+			t.Errorf("%s: %+v", c.name, fs)
+		}
+	}
+}
+
+const maxScript = 256 << 10
+
+func scanImage(t *testing.T, img string) ([]engine.Finding, []struct {
+	Path     string `json:"path"`
+	Excluded bool   `json:"excluded"`
+}, int) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	code := cli.Run(cfg, []string{"scan", "image", "--format", "json", "--detector", "sshole", "rootfs:" + img}, &out, &errb)
+	var r struct {
+		Targets []struct {
+			Error    string           `json:"error"`
+			Findings []engine.Finding `json:"findings"`
+			Skipped  []struct {
+				Path     string `json:"path"`
+				Excluded bool   `json:"excluded"`
+			} `json:"skipped"`
+		} `json:"targets"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil || len(r.Targets) != 1 || r.Targets[0].Error != "" {
+		t.Fatalf("%v %+v\n%s", err, r, errb.String())
+	}
+	return r.Targets[0].Findings, r.Targets[0].Skipped, code
+}
+
+// Round-3 review finding 4: a start script that kept the verdict unknown
+// is a coverage gap, with one record that does not contradict another.
+func TestUnreadStartScriptIsAGap(t *testing.T) {
+	root := pamRoot(t)
+	padded(t, root, "etc/cont-init.d/10-sshd", []byte("#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n"), 307200)
+	fs, skipped, _ := scanExit(t, "--detector", "sshole", "--as-root", root)
+	var recs []bool
+	for _, s := range skipped {
+		if s.Path == "/etc/cont-init.d/10-sshd" {
+			recs = append(recs, s.Excluded)
+		}
+	}
+	if len(fs) != 1 || fs[0].Verdict != engine.Unknown || fmt.Sprint(recs) != "[false]" {
+		t.Errorf("findings %+v records %v (skipped %+v)", fs, recs, skipped)
+	}
+}
+
+// Round-3 review finding 5: a package database between 4 and 16 MiB is
+// read from disk under --root.
+func TestPackageDBFromDisk(t *testing.T) {
+	root := alpineRoot(t, "10.0_p1-r11")
+	db, _ := os.ReadFile(filepath.Join(root, "lib/apk/db/installed"))
+	padded(t, root, "lib/apk/db/installed", db, 5<<20)
+	if v, _ := sshVerdict(t, "--root", root, filepath.Join(root, "usr")); v != engine.Fixed {
+		t.Errorf("a 5 MiB apk database read from disk: %s", v)
 	}
 }

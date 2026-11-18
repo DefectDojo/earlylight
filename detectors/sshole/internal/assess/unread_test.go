@@ -54,3 +54,98 @@ func TestConfigUnread(t *testing.T) {
 		t.Errorf("all read: unread %v", c.Unread)
 	}
 }
+
+// Round-3 review finding 5: how the start command finds its scripts, read
+// or not: by PATH, through a symbolic link, and named by another script.
+func TestStartCommandLookups(t *testing.T) {
+	resolve := func(p string) (string, bool) {
+		if p == "/entrypoint" {
+			return "/usr/local/bin/real-entrypoint.sh", true
+		}
+		return p, false
+	}
+	read := map[string][]byte{
+		"/usr/local/bin/start.sh":           []byte("#!/bin/sh\nexec /opt/run.sh\n"),
+		"/usr/local/bin/real-entrypoint.sh": []byte("#!/bin/sh\nexec /usr/sbin/sshd -D\n"),
+		"/opt/run.sh":                       []byte("#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n"),
+	}
+	where := func(sc []script) string {
+		var out []string
+		for _, s := range sc {
+			out = append(out, s.where)
+		}
+		return strings.Join(out, ",")
+	}
+	for _, c := range []struct {
+		cmd  []string
+		want string
+	}{
+		{[]string{"start.sh"}, "start.sh,/opt/run.sh"},                    // PATH, then a script it names
+		{[]string{"/entrypoint"}, "/entrypoint"},                          // a symbolic link
+		{[]string{"tini", "--", "/bin/sh", "/opt/run.sh"}, "/opt/run.sh"}, // a wrapper and a shell
+	} {
+		st := Startup{Command: c.cmd, Scripts: read}
+		if got := where(st.startScripts(resolve)); got != c.want {
+			t.Errorf("%v: %s, want %s", c.cmd, got, c.want)
+		}
+	}
+
+	// The same lookups find a script that was not read.
+	for _, c := range []struct {
+		cmd    []string
+		unread string
+		dirs   []string
+		want   string
+	}{
+		{[]string{"start.sh"}, "/usr/local/bin/start.sh", nil, "/usr/local/bin/start.sh"},
+		{[]string{"/entrypoint"}, "/usr/local/bin/real-entrypoint.sh", nil, "/usr/local/bin/real-entrypoint.sh"},
+		{[]string{"start.sh"}, "/opt/run.sh", nil, "/opt/run.sh"}, // named by a script that was read
+		{[]string{"/usr/bin/other"}, "/opt/run.sh", nil, ""},      // not run at start
+		{nil, "/etc/cont-init.d/10-sshd", nil, "/etc/cont-init.d/10-sshd"},
+		{[]string{"start.sh"}, "", []string{"/usr/local/bin"}, "/usr/local/bin"}, // its directory was not listed
+		{nil, "", []string{"/etc"}, "/etc"},                                      // holds the init directories
+	} {
+		u := map[string]bool{}
+		if c.unread != "" {
+			u[c.unread] = true
+		}
+		st := Startup{Command: c.cmd, Scripts: map[string][]byte{}, Unread: u, UnreadDirs: c.dirs}
+		for p, b := range read {
+			if p != c.unread {
+				st.Scripts[p] = b
+			}
+		}
+		got := strings.Join(st.unreadStart(resolve, st.startScripts(resolve)), ",")
+		if got != c.want {
+			t.Errorf("%v with %q %v unread: %q, want %q", c.cmd, c.unread, c.dirs, got, c.want)
+		}
+	}
+	if got := (Startup{UnreadAll: true}).unreadStart(nil, nil); len(got) != 1 {
+		t.Errorf("past the record limit: %v", got)
+	}
+}
+
+// A start script behind a wrapper that takes arguments ("tini --", "gosu
+// USER") is read like one named first: one that turns PAM off is not
+// cleared.
+func TestStartScriptBehindWrapper(t *testing.T) {
+	for _, cmd := range [][]string{
+		{"/entrypoint.sh"},
+		{"tini", "--", "/entrypoint.sh"},
+		{"/sbin/tini", "-s", "--", "/entrypoint.sh"},
+		{"gosu", "app", "/entrypoint.sh"},
+	} {
+		w := newWorld("10.0p2", true, map[string]string{"/etc/ssh/sshd_config": "UsePAM yes\n"})
+		in := Input{
+			Binaries: w.binaries, Files: w.files,
+			Accounts: ParseAccounts(w.files.Read("/etc/passwd"), w.files.Read("/etc/shadow"), w.files.Read("/etc/group"), nil),
+			Resolve:  func(p string) (string, bool) { _, ok := w.files[p]; return p, ok },
+			Now:      w.now(),
+			Image:    true,
+			Startup:  Startup{Command: cmd, Scripts: map[string][]byte{"/entrypoint.sh": []byte("#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n")}},
+		}
+		if f := one(t, Run(in)); f.Status == Inactive {
+			t.Errorf("%v: %s (%s)", cmd, f.Status, f.Reason)
+		}
+	}
+}

@@ -75,6 +75,9 @@ type Finding struct {
 	AtStart []string `json:"at_start,omitempty"`
 	// Missing lists the conditions that do not hold today.
 	Missing []string `json:"missing,omitempty"`
+	// Unread lists what was not read and kept the verdict from being
+	// decided (an include, a start script).
+	Unread []string `json:"unread,omitempty"`
 }
 
 // Input is a target's evidence.
@@ -240,6 +243,7 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 		// A part of the configuration, or a start script, that was not
 		// read can turn PAM off: never clear on what was not read.
 		f.Status = Undecided
+		f.Unread = unread
 		f.Reason = fmt.Sprintf("this build uses PAM and UsePAM is yes in what was read, but %s was not read and can set UsePAM no", strings.Join(unread, ", "))
 		f.Message = fmt.Sprintf("OpenSSH %s server on musl without the *sshole fix; whether PAM checks passwords is unknown", main.Release)
 		return f, true

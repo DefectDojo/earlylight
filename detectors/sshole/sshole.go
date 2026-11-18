@@ -15,7 +15,6 @@
 package sshole
 
 import (
-	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -148,7 +147,7 @@ const (
 
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
-	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}, over: map[string]bool{}, unreadScripts: map[string]bool{}}
+	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}, over: map[string]bool{}, unreadScripts: map[string]bool{}, gaps: map[string]bool{}}
 }
 
 type scan struct {
@@ -157,11 +156,32 @@ type scan struct {
 	files       map[string][]byte
 	scripts     map[string][]byte
 	scriptBytes int
-	// over holds the files a verdict reads that were not read (over the
-	// limit or --max-file-size): present, but their content is unknown.
+	// over holds the files a verdict reads that were not read (over a size
+	// limit, or unreadable): present, but their content is unknown.
 	over map[string]bool
-	// unreadScripts are files that may be start scripts and were not read.
+	// unreadScripts are files that may be start scripts and were not
+	// read; unreadDirs directories whose contents were not listed.
+	// Past maxUnread, unreadAll stands for the rest.
 	unreadScripts map[string]bool
+	unreadDirs    []string
+	unreadAll     bool
+	// gaps are the files that kept a verdict from being decided.
+	gaps map[string]bool
+}
+
+// maxUnread bounds the unread files and directories one target records.
+const maxUnread = 1 << 16
+
+// unread records a file that was not read: its content is unknown.
+func (s *scan) unread(p string) {
+	if keep(p) {
+		s.over[p] = true
+	}
+	if len(s.unreadScripts) >= maxUnread {
+		s.unreadAll = true
+		return
+	}
+	s.unreadScripts[p] = true // its head is not known here: it may be a script
 }
 
 // VisitOverLimit records a file the scan asked for and did not get, over
@@ -171,25 +191,57 @@ type scan struct {
 // once a server is found (FinishSkips). The record here is an exclusion:
 // with no OpenSSH server in the target, none of these files matters.
 func (s *scan) VisitOverLimit(p string, _ int64) []engine.Skip {
-	// The last entry for a path wins (a tar can hold several).
-	delete(s.files, p)
-	delete(s.scripts, p)
-	if keep(p) {
-		s.over[p] = true
-	}
-	s.unreadScripts[p] = true // its head is not known here: it may be a script
+	s.unread(p)
 	return nil
 }
 
-// FinishSkips reports the files the verdict reads that were not read, as
-// coverage gaps, when an OpenSSH server was found.
+// VisitUnread records a file or directory the walk could not read, as
+// VisitOverLimit does: an include or start script in it is unknown.
+func (s *scan) VisitUnread(p string, dir bool) {
+	if !dir {
+		s.unread(p)
+		return
+	}
+	if len(s.unreadDirs) >= maxUnread {
+		s.unreadAll = true
+		return
+	}
+	s.unreadDirs = append(s.unreadDirs, p)
+}
+
+// Forget drops what was kept of p: an image names it again.
+func (s *scan) Forget(p string) {
+	delete(s.files, p)
+	if b, ok := s.scripts[p]; ok {
+		s.scriptBytes -= len(b)
+		delete(s.scripts, p)
+	}
+	delete(s.over, p)
+	delete(s.unreadScripts, p)
+	bs := s.binaries[:0]
+	for _, b := range s.binaries {
+		if b.Path != p {
+			bs = append(bs, b)
+		}
+	}
+	s.binaries = bs
+}
+
+// FinishSkips reports, when an OpenSSH server was found, the files the
+// verdict reads that were not read and the start scripts that kept a
+// verdict from being decided, as coverage gaps.
 func (s *scan) FinishSkips() []engine.Skip {
 	if len(s.binaries) == 0 {
 		return nil
 	}
 	var out []engine.Skip
 	for p := range s.over {
-		out = append(out, engine.Skip{Path: p, Reason: fmt.Sprintf("larger than the %d bytes sshole reads of a file its verdict depends on; not checked", keptLimit(p))})
+		out = append(out, engine.Skip{Path: p, Reason: "not read (over a size limit, or unreadable), and sshole's verdict depends on it; not checked"})
+	}
+	for p := range s.gaps {
+		if !s.over[p] {
+			out = append(out, engine.Skip{Path: p, Reason: "not read (over a size limit, or unreadable), and it can start sshd with other settings, so the verdict is unknown"})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
@@ -199,9 +251,6 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 	if f.Member {
 		return nil // installed servers only, not copies inside archives
 	}
-	// The last entry for a path wins (a tar can hold several).
-	delete(s.over, f.Path)
-	delete(s.unreadScripts, f.Path)
 	if isScript(f.Data) {
 		if len(f.Data) <= maxScript && s.scriptBytes+len(f.Data) <= maxScripts {
 			s.scripts[f.Path] = f.Data
@@ -209,7 +258,8 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		} else {
 			// Read for its other use (a file named like sshd_config) or
 			// past the total: not checked as a start script.
-			s.unreadScripts[f.Path] = true
+			s.unread(f.Path)
+			delete(s.over, f.Path) // read as a file the verdict reads
 		}
 	}
 	if keep(f.Path) && int64(len(f.Data)) <= keptLimit(f.Path) && !archive.IsExecutable(f.Data) {
@@ -226,7 +276,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	if len(s.binaries) == 0 {
 		return nil
 	}
-	fs := &files{kept: s.files, over: s.over, root: ctx.SystemRoot()}
+	fs := &files{kept: s.files, over: s.over, unreadDirs: s.unreadDirs, root: ctx.SystemRoot()}
 	links, _ := ctx.Links()
 	res := resolver{links: links, exists: func(p string) bool {
 		if ctx.Exists(p) {
@@ -264,10 +314,15 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Resolve:  res.resolve,
 		Branch:   branch,
 		Image:    s.kind == engine.Image,
-		Startup:  assess.Startup{Command: ctx.Command(), Scripts: s.scripts, Unread: s.unreadScripts},
+		Startup:  assess.Startup{Command: ctx.Command(), Scripts: s.scripts, Unread: s.unreadScripts, UnreadDirs: s.unreadDirs, UnreadAll: s.unreadAll},
 	})
 	out := make([]engine.Finding, 0, len(found))
 	for _, x := range found {
+		for _, p := range x.Unread {
+			if s.unreadScripts[p] || s.over[p] || fs.inUnreadDir(p) {
+				s.gaps[p] = true
+			}
+		}
 		out = append(out, finding(x))
 	}
 	return out
@@ -337,15 +392,28 @@ func yes(b bool) string {
 // root's own files from disk.
 type files struct {
 	kept map[string][]byte
-	over map[string]bool // present but larger than maxKept: Read is nil
-	root string
+	over map[string]bool // present but not read: Read is nil
+	// unreadDirs could not be listed: a pattern in one matches a file
+	// that cannot be read.
+	unreadDirs []string
+	root       string
+}
+
+// inUnreadDir reports whether p lies in a directory that was not listed.
+func (f *files) inUnreadDir(p string) bool {
+	for _, d := range f.unreadDirs {
+		if p == d || strings.HasPrefix(p, strings.TrimSuffix(d, "/")+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *files) Read(p string) []byte {
 	if b, ok := f.kept[p]; ok {
 		return b
 	}
-	if f.root == "" || f.over[p] {
+	if f.root == "" || f.over[p] || f.inUnreadDir(p) {
 		return nil
 	}
 	return f.disk(p)
@@ -437,6 +505,12 @@ func (f *files) Glob(pattern string) []string {
 	}
 	for p := range f.over {
 		match(p)
+	}
+	if f.inUnreadDir(path.Dir(pattern)) && !seen[pattern] {
+		// What it matches there is unknown: stand for it with the pattern,
+		// which Read cannot give.
+		seen[pattern] = true
+		out = append(out, pattern)
 	}
 	if f.root != "" {
 		if full, ok := f.diskPath(pattern); ok {

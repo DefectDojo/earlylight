@@ -64,19 +64,27 @@ func TestLimits(t *testing.T) {
 	}
 }
 
-// Round-2 review finding 5: of several entries for one path, the last
-// decides: an over-limit entry after a read one leaves the path unread, a
-// read entry after an over-limit one leaves it read.
-func TestDuplicateEntries(t *testing.T) {
-	const p = "/etc/ssh/sshd_config.d/50-site.conf"
+// Round-2 review finding 5, round-3 finding 2: when an image names a path
+// again, the engine has the scan forget the first entry, read or not.
+func TestForget(t *testing.T) {
+	const p = "/etc/cont-init.d/10-sshd"
 	s := (&Detector{}).NewScan(engine.Image).(*scan)
-	s.Visit(engine.File{Path: p, Data: []byte("UsePAM yes\n")})
-	s.VisitOverLimit(p, maxKept+1)
-	if _, ok := s.files[p]; ok || !s.over[p] {
-		t.Errorf("read then over: files %v over %v", s.files, s.over)
+	s.Visit(engine.File{Path: p, Data: []byte("#!/bin/sh\nexec /usr/sbin/sshd -D\n")})
+	s.Forget(p)
+	s.VisitOverLimit(p, maxScript+1)
+	if _, ok := s.scripts[p]; ok || !s.unreadScripts[p] || s.scriptBytes != 0 {
+		t.Errorf("read then over: scripts %v unread %v bytes %d", s.scripts, s.unreadScripts, s.scriptBytes)
 	}
-	s.Visit(engine.File{Path: p, Data: []byte("UsePAM yes\n")})
-	if _, ok := s.files[p]; !ok || s.over[p] || s.unreadScripts[p] {
-		t.Errorf("over then read: files %v over %v unread %v", s.files, s.over, s.unreadScripts)
+	s.Forget(p)
+	s.Visit(engine.File{Path: p, Data: []byte("#!/bin/sh\n")})
+	if _, ok := s.scripts[p]; !ok || s.unreadScripts[p] {
+		t.Errorf("over then read: scripts %v unread %v", s.scripts, s.unreadScripts)
+	}
+	const c = "/etc/ssh/sshd_config.d/50-site.conf"
+	s.Visit(engine.File{Path: c, Data: []byte("UsePAM yes\n")})
+	s.Forget(c)
+	s.VisitOverLimit(c, maxKept+1)
+	if _, ok := s.files[c]; ok || !s.over[c] {
+		t.Errorf("config read then over: files %v over %v", s.files, s.over)
 	}
 }
