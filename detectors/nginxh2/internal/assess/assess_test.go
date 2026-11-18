@@ -364,3 +364,21 @@ func TestV5OldCoreWitness(t *testing.T) {
 		t.Errorf("nginx 1.8.1: %v", st)
 	}
 }
+
+// Verification 6: an nginx call that only tests or shows the
+// configuration is not the start.
+func TestV6ShellTestCall(t *testing.T) {
+	off := mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }"}
+	run := func(text string) conf.State {
+		return byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: []string{"sh", "-c", text}}))[knowledge.Flow].State
+	}
+	if got := run("nginx -t && sed -i 's/80/443 ssl http2/' /etc/nginx/nginx.conf && nginx -g 'daemon off;'"); got != conf.Unknown {
+		t.Errorf("sed after nginx -t: %s", got)
+	}
+	if got := run("nginx -V; nginx -t -q && exec nginx -g 'daemon off;'"); got != conf.NotExposed {
+		t.Errorf("tests then the start: %s", got)
+	}
+	if got := byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: []string{"nginx", "-T"}}))[knowledge.Flow].State; got != conf.Unknown {
+		t.Errorf("a command that only tests: %s", got)
+	}
+}

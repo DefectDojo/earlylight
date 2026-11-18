@@ -90,6 +90,8 @@ func startArgs(cmd []string, launcher func(string) (bool, string)) ([]string, st
 		w := cmd[i]
 		b := path.Base(w)
 		switch {
+		case nginxNames[b] && noServe(cmd[i+1:]):
+			return nil, "the command runs nginx only to test or show it, so what serves is started elsewhere"
 		case nginxNames[b]:
 			return varArgs(cmd[i+1:])
 		case launchers[b] || strings.HasPrefix(w, "-") && i > 0 && launchers[path.Base(cmd[i-1])] || strings.Contains(w, "=") && i > 0 && path.Base(cmd[i-1]) == "env":
@@ -137,6 +139,9 @@ func shellStart(text string) ([]string, string) {
 		}
 		switch {
 		case len(ws) == 0, ws[0] == "set":
+		case nginxNames[path.Base(ws[0])] && noServe(ws[1:]):
+			// nginx -t, -T, -v, -V, -s or -h: tests, shows or signals,
+			// and does not serve; the start comes later.
 		case nginxNames[path.Base(ws[0])]:
 			return varArgs(ws[1:])
 		default:
@@ -211,6 +216,30 @@ func shellCommands(text string) ([][]string, bool) {
 	}
 	flush()
 	return append(cmds, cur), true
+}
+
+// noServe reports nginx arguments with an option that makes nginx test,
+// show its version or configuration, send a signal or print help, and
+// exit without serving.
+func noServe(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		for j := 1; j < len(a); j++ {
+			switch a[j] {
+			case 't', 'T', 'v', 'V', 's', 'h', '?':
+				return true
+			case 'p', 'c', 'e', 'g':
+				if j == len(a)-1 {
+					i++
+				}
+				j = len(a)
+			}
+		}
+	}
+	return false
 }
 
 type options struct {
