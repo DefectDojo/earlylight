@@ -217,6 +217,8 @@ type walker struct {
 	// exclusions are the exclusion records made for each scan, by path, so
 	// a gap the scan reports at the end replaces its exclusion.
 	exclusions []map[string]string
+	// linked counts the hard links that name each path.
+	linked map[string]int
 }
 
 // fileLimit is one detector's own limit on one file, and whether it asked
@@ -263,7 +265,7 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 		MaxFileSize:  opts.MaxFileSize,
 		IsExecutable: archive.IsExecutable,
 		Symlink:      func(p, t string) { w.ctx.symlinks[w.abs(p)] = t },
-		Hardlink:     func(p, t string) { w.ctx.hardlinks[w.abs(p)] = w.abs(t) },
+		Hardlink:     func(p, t string) { w.setHardlink(w.abs(p), w.abs(t)) },
 	}
 	type headScan struct {
 		id string
@@ -324,7 +326,7 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 		}
 		// A path that was a link is a file now.
 		delete(w.ctx.symlinks, abs)
-		delete(w.ctx.hardlinks, abs)
+		w.setHardlink(abs, "")
 		// The file exists whether or not any detector reads it, so Exists
 		// does not depend on which detectors ran.
 		w.ctx.seen[abs] = true
@@ -356,13 +358,30 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 // the earlier file's content (it names the file, not the path), so what
 // was found in it stays, under p.
 func (w *walker) replaced(p string) {
-	for _, t := range w.ctx.hardlinks {
-		if t == p {
-			return
-		}
+	if w.linked[p] > 0 {
+		return
 	}
 	w.forget(p)
 	delete(w.ctx.seen, p)
+}
+
+// setHardlink records that p is a hard link to t ("": p is no longer a
+// link), keeping a count of the links that name each path.
+func (w *walker) setHardlink(p, t string) {
+	if old, ok := w.ctx.hardlinks[p]; ok {
+		if w.linked[old]--; w.linked[old] <= 0 {
+			delete(w.linked, old)
+		}
+		delete(w.ctx.hardlinks, p)
+	}
+	if t == "" {
+		return
+	}
+	if w.linked == nil {
+		w.linked = map[string]int{}
+	}
+	w.ctx.hardlinks[p] = t
+	w.linked[t]++
 }
 
 // forget tells every scan to drop what it kept of p.

@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"path"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 
@@ -180,7 +179,7 @@ func (s *scan) notRead(p string) {
 // FinishSkips reports the JVM settings files not read as coverage gaps
 // when the target holds a runtime.
 func (s *scan) FinishSkips() []engine.Skip {
-	if len(s.libs) == 0 {
+	if s.libs.len() == 0 {
 		return nil
 	}
 	var out []engine.Skip
@@ -209,10 +208,17 @@ func (s *scan) Forget(p string) {
 		delete(s.releases, path.Dir(p))
 		delete(s.badReleases, path.Dir(p))
 	}
-	s.libs = slices.DeleteFunc(s.libs, func(l *jvm.Library) bool { return l.Path == p })
-	s.settings = slices.DeleteFunc(s.settings, func(st jvm.Setting) bool { return st.File == p })
-	s.crashes = slices.DeleteFunc(s.crashes, func(c crash) bool { return c.Path == p })
-	s.archives = slices.DeleteFunc(s.archives, func(a string) bool { return a == p })
+	s.libs.drop(p)
+	for _, st := range s.settings.drop(p) {
+		// Give back what it counted toward the caps.
+		if st.SetsOptions() {
+			s.optionFiles--
+		} else {
+			s.plainUnits--
+		}
+	}
+	s.crashes.drop(p)
+	s.archives.drop(p)
 }
 
 var hsErr = regexp.MustCompile(`^hs_err_pid\d{1,10}\.log$`)
@@ -232,8 +238,8 @@ const maxArchivesNoted = 256
 // reading them: the detector does not unpack archives, and a runtime that
 // is not installed is context, not a file left unscanned.
 func (s *scan) VisitHead(p string, head []byte) {
-	if len(s.archives) < maxArchivesNoted && jdkArchive.MatchString(path.Base(p)) && archive.IsArchive(head) {
-		s.archives = append(s.archives, p)
+	if s.archives.len() < maxArchivesNoted && jdkArchive.MatchString(path.Base(p)) && archive.IsArchive(head) {
+		s.archives.add(p, p)
 	}
 }
 
@@ -284,17 +290,17 @@ func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
 
 type scan struct {
 	kind        engine.TargetKind
-	libs        []*jvm.Library
+	libs        pathList[*jvm.Library]
 	releases    map[string]jvm.Release
 	badReleases map[string]string
-	settings    []jvm.Setting
+	settings    pathList[jvm.Setting]
 	kept        map[string][]byte
 	lists       map[string][]byte
 	scripts     map[string]map[string]bool
-	crashes     []crash
+	crashes     pathList[crash]
 	dropped     int
 	keptBytes   int
-	archives    []string // runtime downloads seen by name, not read
+	archives    pathList[string] // runtime downloads seen by name, not read
 	// unreadScripts may be start scripts and were not read; unreadDirs
 	// could not be listed; unreadAll stands for more than were recorded.
 	unreadScripts map[string]bool
@@ -326,11 +332,11 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 	switch {
 	case jvm.IsLibraryName(base):
 		if l, ok := jvm.Inspect(f.Path, f.Data); ok {
-			if len(s.libs) >= maxLibs {
+			if s.libs.len() >= maxLibs {
 				s.dropped++
 				return []engine.Skip{{Path: f.Path, Reason: fmt.Sprintf("more than %d Java VM libraries in one target; not checked", maxLibs)}}
 			}
-			s.libs = append(s.libs, l)
+			s.libs.add(f.Path, l)
 		}
 		return nil
 	case base == "release":
@@ -347,8 +353,8 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		}
 		return nil
 	case hsErr.MatchString(base):
-		if len(s.crashes) < maxHsErrs && len(f.Data) <= maxHsErr {
-			s.crashes = append(s.crashes, readCrash(f.Path, f.Data))
+		if s.crashes.len() < maxHsErrs && len(f.Data) <= maxHsErr {
+			s.crashes.add(f.Path, readCrash(f.Path, f.Data))
 		}
 		return nil
 	}
@@ -361,14 +367,14 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			case st.SetsOptions() && s.optionFiles >= maxSettings:
 				s.limit(fmt.Sprintf("more than %d files that set JVM options", maxSettings))
 			case st.SetsOptions():
-				s.settings = append(s.settings, st)
+				s.settings.add(f.Path, st)
 				s.optionFiles++
 			case st.Kind == "systemd" && s.plainUnits >= maxPlainUnits:
 				s.limit(fmt.Sprintf("more than %d systemd units", maxPlainUnits))
 			case st.Kind == "systemd":
 				// A unit without JVM options still replaces or extends
 				// another file of the same unit: keep it, uncounted.
-				s.settings = append(s.settings, st)
+				s.settings.add(f.Path, st)
 				s.plainUnits++
 			}
 		}
@@ -437,16 +443,16 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 			ctx.Annotate("java4shell_scanner_cpu", c)
 		}
 	}
-	if len(s.crashes) > 0 {
-		ctx.Annotate("java4shell_crash_logs", s.crashes)
+	if s.crashes.len() > 0 {
+		ctx.Annotate("java4shell_crash_logs", s.crashes.list())
 	}
-	if len(s.archives) > 0 {
-		ctx.Annotate("java4shell_runtime_archives", s.archives)
+	if s.archives.len() > 0 {
+		ctx.Annotate("java4shell_runtime_archives", s.archives.list())
 	}
 	if osr := osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]); osr != "" {
 		ctx.Annotate("java4shell_os", osr)
 	}
-	if len(s.libs) == 0 {
+	if s.libs.len() == 0 {
 		if len(s.limits) > 0 {
 			ctx.Problem("java4shell: the scan reached its limit on " + strings.Join(s.limits, " and ") + " for one target")
 		}
@@ -468,10 +474,10 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		}
 	}
 	in := assess.Input{
-		Libraries:     s.libs,
+		Libraries:     s.libs.list(),
 		Releases:      s.releases,
 		BadReleases:   s.badReleases,
-		Settings:      s.settings,
+		Settings:      s.settings.list(),
 		Owners:        owners,
 		Resolve:       res.resolve,
 		Scripts:       s.scripts,
@@ -690,4 +696,50 @@ func (s *osScan) Finish(ctx engine.TargetContext) []engine.Finding {
 		ctx.Annotate("java4shell_os", v)
 	}
 	return nil
+}
+
+// pathList keeps items in order, and drops those a path added in constant
+// time (Forget can run once per file of an image).
+type pathList[T any] struct {
+	items []T
+	gone  []bool
+	at    map[string][]int
+	live  int
+}
+
+func (l *pathList[T]) add(p string, v T) {
+	if l.at == nil {
+		l.at = map[string][]int{}
+	}
+	l.at[p] = append(l.at[p], len(l.items))
+	l.items = append(l.items, v)
+	l.gone = append(l.gone, false)
+	l.live++
+}
+
+// drop removes what p added, and returns it.
+func (l *pathList[T]) drop(p string) []T {
+	var out []T
+	for _, i := range l.at[p] {
+		if !l.gone[i] {
+			l.gone[i] = true
+			l.live--
+			out = append(out, l.items[i])
+		}
+	}
+	delete(l.at, p)
+	return out
+}
+
+func (l *pathList[T]) len() int { return l.live }
+
+// list returns the items not dropped, in the order added.
+func (l *pathList[T]) list() []T {
+	out := make([]T, 0, l.live)
+	for i, v := range l.items {
+		if !l.gone[i] {
+			out = append(out, v)
+		}
+	}
+	return out
 }

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
 	"github.com/DefectDojo/earlylight/internal/engine"
@@ -235,14 +236,14 @@ func TestForget(t *testing.T) {
 	s.Visit(engine.File{Path: "/opt/java/release", Data: testlib.Release("JAVA_VERSION", "21.0.13")})
 	s.Visit(engine.File{Path: "/var/lib/dpkg/status", Data: []byte("Package: x\n")})
 	s.Visit(engine.File{Path: "/opt/app/bin/setenv.sh", Data: []byte("JAVA_OPTS=-XX:-UseBASE64Intrinsics\n")})
-	if len(s.libs) != 1 || len(s.releases) != 1 || len(s.kept) != 1 || len(s.settings) != 1 {
-		t.Fatalf("libs %d releases %d kept %d settings %d", len(s.libs), len(s.releases), len(s.kept), len(s.settings))
+	if s.libs.len() != 1 || len(s.releases) != 1 || len(s.kept) != 1 || s.settings.len() != 1 {
+		t.Fatalf("libs %d releases %d kept %d settings %d", s.libs.len(), len(s.releases), len(s.kept), s.settings.len())
 	}
 	for _, p := range []string{"/opt/java/lib/server/libjvm.so", "/opt/java/release", "/var/lib/dpkg/status", "/opt/app/bin/setenv.sh"} {
 		s.Forget(p)
 	}
-	if len(s.libs)+len(s.releases)+len(s.kept)+len(s.settings) != 0 || s.keptBytes != 0 {
-		t.Errorf("libs %d releases %d kept %d settings %d bytes %d", len(s.libs), len(s.releases), len(s.kept), len(s.settings), s.keptBytes)
+	if s.libs.len()+len(s.releases)+len(s.kept)+s.settings.len() != 0 || s.keptBytes != 0 {
+		t.Errorf("libs %d releases %d kept %d settings %d bytes %d", s.libs.len(), len(s.releases), len(s.kept), s.settings.len(), s.keptBytes)
 	}
 }
 
@@ -264,5 +265,26 @@ func TestHardLinkKeepsRuntime(t *testing.T) {
 	tg := engine.ScanImage([]engine.Detector{&Detector{}}, "rootfs:"+p, engine.Options{})
 	if tg.Error != "" || len(tg.Findings) != 1 || tg.Findings[0].Verdict != engine.Vulnerable {
 		t.Errorf("error %q findings %+v", tg.Error, tg.Findings)
+	}
+}
+
+// Final review finding 5: forgetting a path costs what the path held: 40,000
+// units and 100,000 repeats of one stay fast.
+func TestForgetIsCheap(t *testing.T) {
+	s := (&Detector{}).NewScan(engine.Filesystem).(*scan)
+	unit := []byte("[Service]\nExecStart=/opt/app/bin/start\n")
+	for i := 0; i < 40000; i++ {
+		s.Visit(engine.File{Path: fmt.Sprintf("/etc/systemd/system/u%d.service", i), Data: unit})
+	}
+	start := time.Now()
+	for i := 0; i < 100000; i++ {
+		s.Forget("/etc/systemd/system/u0.service")
+		s.Visit(engine.File{Path: "/etc/systemd/system/u0.service", Data: unit})
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("100,000 repeats over 40,000 units took %s", d)
+	}
+	if n := s.settings.len(); n != 40000 {
+		t.Errorf("%d settings, want 40000", n)
 	}
 }

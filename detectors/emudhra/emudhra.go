@@ -10,7 +10,6 @@ package emudhra
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"time"
 
@@ -72,7 +71,7 @@ func (d *Detector) Load() error {
 
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(engine.TargetKind) engine.Scan {
-	return &scan{det: d.det, files: map[string][]byte{}, dedupe: map[string]bool{}, scanned: map[string]bool{}}
+	return &scan{det: d.det, files: map[string][]byte{}, dedupe: map[string]bool{}, scanned: map[string]bool{}, foundIn: map[string][]int{}}
 }
 
 // Probe checks the certificate chain a TLS server presents.
@@ -94,6 +93,10 @@ type scan struct {
 	files    map[string][]byte
 	dedupe   map[string]bool
 	scanned  map[string]bool // certifi bundles visited
+	// foundIn indexes findings by the file visited (members included);
+	// gone marks those a later entry for the file dropped.
+	foundIn map[string][]int
+	gone    []bool
 }
 
 // keep reports whether the assessment rules need this file's content: the
@@ -104,17 +107,17 @@ func keep(p string) bool {
 }
 
 // Forget drops what was found in p, and inside it: an image names it
-// again, and the last entry is the file.
+// again, and the last entry is the file. Findings are indexed by the file
+// they were found in, so this costs what p held, not every finding.
 func (s *scan) Forget(p string) {
 	delete(s.files, p)
 	delete(s.scanned, p)
-	in := func(q string) bool { return q == p || strings.HasPrefix(q, p+"!/") }
-	s.findings = slices.DeleteFunc(s.findings, func(x detect.Finding) bool { return in(x.Path) })
-	for k := range s.dedupe {
-		if in(k[:strings.IndexByte(k, 0)]) {
-			delete(s.dedupe, k)
-		}
+	for _, i := range s.foundIn[p] {
+		x := s.findings[i]
+		delete(s.dedupe, x.Path+"\x00"+string(x.Kind)+"\x00"+x.SPKI)
+		s.gone[i] = true
 	}
+	delete(s.foundIn, p)
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
@@ -133,7 +136,10 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			continue
 		}
 		s.dedupe[k] = true
+		outer, _, _ := strings.Cut(f.Path, "!/") // a member is forgotten with its archive
+		s.foundIn[outer] = append(s.foundIn[outer], len(s.findings))
 		s.findings = append(s.findings, x)
+		s.gone = append(s.gone, false)
 	}
 	var out []engine.Skip
 	for _, sk := range skips {
@@ -143,7 +149,13 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 }
 
 func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
-	rs := assess.Assess(s.findings, assess.Context{
+	found := make([]detect.Finding, 0, len(s.findings))
+	for i, x := range s.findings {
+		if !s.gone[i] {
+			found = append(found, x)
+		}
+	}
+	rs := assess.Assess(found, assess.Context{
 		Read:    func(p string) []byte { return s.files[p] },
 		Scanned: func(p string) bool { return s.scanned[p] },
 		Env:     ctx.Env(),

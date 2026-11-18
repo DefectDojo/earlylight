@@ -3,9 +3,12 @@ package emudhra_test
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/DefectDojo/earlylight/internal/cli"
 )
@@ -75,5 +78,57 @@ func TestCertifiNamedTwice(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := cli.Run(engine, []string{"scan", "image", "--detector", "emudhra", "--max-file-size", "4096", "rootfs:" + img}, &out, &errb); code != 1 {
 		t.Errorf("exit %d, want 1\n%s%s", code, out.String(), errb.String())
+	}
+}
+
+// Final review finding 5: forgetting a path costs what the path held, not
+// every finding kept: an image that repeats paths stays linear.
+func TestForgetIsCheap(t *testing.T) {
+	g3, err := os.ReadFile(filepath.Join(g3Bundle(t), "cacert.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	add := func(name string, body []byte) {
+		tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
+		tw.Write(body)
+	}
+	for i := 0; i < 2000; i++ {
+		add(fmt.Sprintf("certs/%d.pem", i), g3)
+	}
+	for i := 0; i < 20000; i++ {
+		add("certs/0.pem", []byte("x"))
+	}
+	tw.Close()
+	img := filepath.Join(t.TempDir(), "rootfs.tar")
+	if err := os.WriteFile(img, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	var out, errb bytes.Buffer
+	if code := cli.Run(engine, []string{"scan", "image", "--detector", "emudhra", "--format", "json", "rootfs:" + img}, &out, &errb); code != 1 {
+		t.Fatalf("exit %d %s", code, errb.String())
+	}
+	if d := time.Since(start); d > 20*time.Second {
+		t.Errorf("2,000 findings and 20,000 repeats took %s", d)
+	}
+	var r struct {
+		Targets []struct {
+			Findings []struct {
+				Path string `json:"path"`
+			} `json:"findings"`
+		} `json:"targets"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil || len(r.Targets) != 1 {
+		t.Fatalf("%v", err)
+	}
+	for _, f := range r.Targets[0].Findings {
+		if f.Path == "/certs/0.pem" {
+			t.Errorf("a finding in the replaced entry survived")
+		}
+	}
+	if n := len(r.Targets[0].Findings); n != 1999 {
+		t.Errorf("%d findings, want 1999", n)
 	}
 }
