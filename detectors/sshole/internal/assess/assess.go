@@ -432,7 +432,9 @@ func pickInvocation(invs []invocation, u []*Binary) ([]invocation, bool) {
 		return nil, false
 	}
 	for _, inv := range mine {
-		if inv.where == "the container command" {
+		// The command's own sshd line decides alone; an sh -c text the
+		// command passes as an argument is judged with the others.
+		if inv.where == "the container command" && !inv.arg {
 			return []invocation{inv}, false
 		}
 	}

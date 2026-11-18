@@ -161,13 +161,23 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 			add(w)
 			for k := n; k < len(out); k++ {
 				out[k].arg = program
+			}
+			// The program is the first word that is not a wrapper, a shell,
+			// one of their options or an assignment, whether or not it is
+			// a script that was kept: every word after it is an argument.
+			if n < len(out) || !beforeProgram(c, i) {
 				program = true
 			}
 		}
-		// One level of scripts the command's scripts name.
+		// One level of scripts the command's scripts name: as likely to run
+		// as the script that names them.
 		for _, sc := range append([]script(nil), out...) {
 			for _, m := range absPathRE.FindAllString(sc.text, -1) {
+				n := len(out)
 				add(m)
+				for k := n; k < len(out); k++ {
+					out[k].arg = sc.arg
+				}
 			}
 		}
 	}
@@ -191,6 +201,28 @@ type script struct {
 	// arg is set for a script the command names after its program: an
 	// argument, which may not run.
 	arg bool
+}
+
+// beforeProgram reports whether word i of the command can come before the
+// program it runs: a wrapper or a shell, an option, an assignment, or the
+// user su-exec and gosu take.
+func beforeProgram(c []string, i int) bool {
+	w := c[i]
+	b := path.Base(w)
+	switch b {
+	case "tini", "dumb-init", "su-exec", "gosu", "env", "exec", "catatonit":
+		return true
+	}
+	if isShell(b) || strings.HasPrefix(w, "-") || strings.Contains(w, "=") && !strings.Contains(w, "/") {
+		return true
+	}
+	if i > 0 {
+		switch path.Base(c[i-1]) {
+		case "su-exec", "gosu":
+			return true
+		}
+	}
+	return false
 }
 
 var absPathRE = regexp.MustCompile(`/[A-Za-z0-9_./-]+`)
@@ -371,7 +403,9 @@ func startupSignals(scripts []script) signals {
 		if pwOnRE.MatchString(sc.text) {
 			g.passwordOn, hit = true, true
 		}
-		if usePAMOnRE.MatchString(sc.text) {
+		// Turning PAM on lowers the verdict: only from a script that
+		// certainly runs, not one the command passes as an argument.
+		if usePAMOnRE.MatchString(sc.text) && !sc.arg {
 			g.usePAMOn, hit = true, true
 		}
 		for _, re := range starSetRE {
