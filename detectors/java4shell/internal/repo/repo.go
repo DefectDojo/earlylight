@@ -117,13 +117,20 @@ const (
 	maxFiles    = 200000
 )
 
-var skipDirs = map[string]bool{".git": true, "node_modules": true, "vendor": true, ".venv": true, "venv": true, "__pycache__": true,
-	".tox": true, "bower_components": true, ".gradle": true, "target": true, "build": true, ".idea": true}
+// skipDirs are the directories the image reference scan leaves out too
+// (version control and dependency trees). Anything else is walked: a
+// Dockerfile under build/ or vendor/ is still one the tree builds.
+var skipDirs = map[string]bool{".git": true, ".hg": true, ".svn": true, "node_modules": true, "bower_components": true}
 
 // Scan walks root.
 func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 	var res Result
 	var list []string
+	// A root that is a symbolic link is walked at its target, as the
+	// image reference scan does: WalkDir does not descend a linked root.
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			rel, _ := filepath.Rel(root, p)
@@ -139,14 +146,20 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		if !d.Type().IsRegular() {
+			// A version or build file that is a symbolic link is not
+			// followed (it can lead out of the tree): not checked. The image
+			// reference scan records its own files.
+			if k := kindOf(rel); d.Type()&fs.ModeSymlink != 0 && k != "" && k != "yaml" && k != "dockerfile" {
+				res.Skips = append(res.Skips, Skip{File: rel, Reason: "a symbolic link, which is not followed: not checked"})
+			}
+			return nil
+		}
 		if kindOf(rel) == "" {
 			return nil
 		}
@@ -954,6 +967,9 @@ var (
 	// rpmLatest is Fedora's and EPEL's java-latest-openjdk: the newest
 	// release the distribution carries, named by no release.
 	rpmLatest = regexp.MustCompile(`^java-latest-openjdk(?:-headless|-devel|-jmods)?(?:-\d[\w.:*?-]*)?$`)
+	// rpmVirtual is an rpm name several OpenJDK packages provide: java,
+	// java-17, java-devel, jre-21-headless, java-sdk-25, java-1.8.0.
+	rpmVirtual = regexp.MustCompile(`^(?:java|jre)(?:-(?:1\.)?(\d{1,2})(?:\.0)?)?(?:-(?:headless|devel))?$|^java-sdk(?:-(?:1\.)?(\d{1,2})(?:\.0)?)?$|^java-(\d{1,2})-headless$`)
 	// rpmInstallFlag is an rpm option that installs or upgrades package
 	// files; a query (-qip) or an erase (-e) is not an install.
 	// dpkgInstallFlag is dpkg's install option (-i, --install).
@@ -1006,11 +1022,43 @@ func (s *scanner) dockerfile(rel, text string) {
 	// vars are the ARG defaults and ENV values the file sets, for package
 	// names a RUN takes from a variable.
 	vars := map[string]string{}
+	stages := map[string]bool{}
 	for _, in := range ins {
+		// COPY --from=image and RUN --mount=...,from=image bring files of
+		// another image into the stage: the image is judged like a FROM.
+		for _, fl := range in.Flags {
+			var img string
+			switch {
+			case strings.HasPrefix(fl, "--from="):
+				img = strings.TrimPrefix(fl, "--from=")
+			case strings.HasPrefix(fl, "--mount="):
+				for _, kv := range strings.Split(strings.TrimPrefix(fl, "--mount="), ",") {
+					if v, ok := strings.CutPrefix(kv, "from="); ok {
+						img = v
+					}
+				}
+			}
+			if img == "" || stages[strings.ToLower(img)] || atoi(img) > 0 || img == "0" || strings.Contains(img, "$") {
+				continue
+			}
+			before := len(s.findings)
+			s.judgeRef(refs.Ref{File: rel, Line: in.Line, Kind: refs.KindDockerfile, Context: strings.ToUpper(in.Cmd) + " from", Text: img, Image: img}, s.opts)
+			for k := before; k < len(s.findings); k++ {
+				// Not a FROM: fix does not edit it.
+				f := &s.findings[k]
+				if f.Fixable {
+					f.Fixable, f.edit = false, nil
+					f.Fix = "Change the image this " + strings.ToUpper(in.Cmd) + " takes files from by hand. " + f.Fix
+				}
+			}
+		}
 		switch in.Cmd {
 		case "from":
 			endStage()
 			from, stageStart, stageEnv, stageCmd = in.Line, len(s.findings), map[string]string{}, nil
+			if w := strings.Fields(in.Args); len(w) >= 3 && strings.EqualFold(w[len(w)-2], "as") {
+				stages[strings.ToLower(w[len(w)-1])] = true
+			}
 		case "cmd", "entrypoint":
 			stageCmd = append(stageCmd, commandWords(in.Args)...)
 		case "arg":
@@ -1079,8 +1127,16 @@ func (s *scanner) packages(rel string, line int, run string, vars map[string]str
 		}
 		fromFile := strings.HasPrefix(arg, fileArg)
 		arg = strings.TrimPrefix(arg, fileArg)
+		// A version range in one quoted word ('java-17-openjdk >= 17.0.21.1'):
+		// the package is judged without the range.
+		if name, _, ok := strings.Cut(arg, " "); ok && !fromFile {
+			arg = name
+		}
 		before := len(hits)
 		switch {
+		case rpmVirtual.MatchString(arg):
+			m := rpmVirtual.FindStringSubmatch(arg)
+			hits = append(hits, pkgHit{name: arg, feature: atoi(m[1] + m[2] + m[3]), mgr: "rpm", vendor: "distribution", virtual: true})
 		case strings.HasPrefix(arg, unreadableArg):
 			hits = append(hits, pkgHit{name: strings.TrimPrefix(arg, unreadableArg), mgr: "rpm", vendor: "distribution", unreadable: true})
 		case zypperArg.MatchString(arg):
@@ -1449,6 +1505,8 @@ func shellText(words []string) (string, bool) {
 
 // pkgHit is one Java package an install names.
 type pkgHit struct {
+	// virtual is an rpm name that names no package (java-17, jre).
+	virtual            bool
 	name, op, ver, mgr string
 	vendor             string // distribution, corretto, temurin, zulu, msopenjdk, sapmachine
 	feature            int    // 0: the distribution's default (default-jre)
@@ -1560,6 +1618,17 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 			Reason:  "a Java package file this scan cannot read: a pattern, a URL that does not give the file name, or a name no reader here knows",
 			Message: fmt.Sprintf("installs %s, a package file whose name this scan cannot read: not checked for the Java4Shell fix", refs.CleanText(h.name, 120)),
 			Fix:     "Check which Java package the file is: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update, or the distribution's backport, have the fix."})
+		return
+	}
+	if h.virtual {
+		if h.feature > 0 && h.feature < 17 {
+			return // Java 8 and 11 are not affected
+		}
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown,
+			Props:   map[string]string{"package": h.name, "manager": h.mgr},
+			Reason:  "an rpm name that several Java packages provide (the distribution's OpenJDK, a vendor's build): which one is installed, and which release, is not in this file",
+			Message: fmt.Sprintf("installs %s, a Java runtime named by no package or release: not checked for the Java4Shell fix", refs.CleanText(h.name, 80)),
+			Fix:     "Check the installed runtime: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update, or the distribution's backport, have the fix."})
 		return
 	}
 	if h.latest {

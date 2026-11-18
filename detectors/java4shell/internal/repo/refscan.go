@@ -19,8 +19,11 @@ func (s *scanner) images(opts Options) {
 		return
 	}
 	for _, sk := range skips {
-		if sk.Text != "" && !Javaish(sk.Text) {
-			continue // an unresolved reference that does not look like Java
+		// An unresolved reference that does not look like Java is left
+		// out, unless a variable hides its name: FROM ${BASE}:${VER} can be
+		// a Java image.
+		if sk.Text != "" && !Javaish(sk.Text) && !strings.Contains(sk.Text, "$") {
+			continue
 		}
 		s.skips = append(s.skips, Skip{File: sk.File, Line: sk.Line, Reason: sk.Reason})
 	}
@@ -47,9 +50,13 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 	if img == "" || img == "scratch" || strings.Contains(img, "$") || !amd64(opts) {
 		return
 	}
-	// FROM --platform=linux/arm64: a stage that is not x86-64.
-	if p := r.Platform; p != "" && !strings.Contains(p, "$") && !strings.Contains(p, "amd64") && !strings.Contains(p, "x86_64") {
-		return
+	// FROM --platform=linux/arm64: a stage that is not x86-64. The builder
+	// takes amd64, x86_64 and x86-64 in any case, and an OS alone means the
+	// builder's own architecture.
+	if p := strings.ToLower(r.Platform); p != "" && !strings.Contains(p, "$") {
+		if _, arch, ok := strings.Cut(p, "/"); ok && !strings.HasPrefix(arch, "amd64") && !strings.HasPrefix(arch, "x86_64") && !strings.HasPrefix(arch, "x86-64") {
+			return
+		}
 	}
 	mit := s.mitigationFor(r)
 	props := map[string]string{"image": img}
@@ -72,6 +79,15 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 	if fam.OpenJ9 {
 		return // OpenJ9: not affected
 	}
+	// tag@digest: the digest is the image that runs, and the tag next to
+	// it is only text. A tag that says vulnerable is reported; one that
+	// would clear is not believed: the image has to be read.
+	byDigest := func() {
+		s.add(Finding{Rule: RuleNotChecked, File: r.File, Line: r.Line, Level: "note", Status: StatusUnknown, Pull: img, ref: &r,
+			Reason:  "the reference pins a digest, which decides the image that runs; the tag written next to it does not, so only the image can show which Java release it holds",
+			Message: fmt.Sprintf("image %s is pinned by digest; it was not read", img), Props: props})
+	}
+	pinned := strings.Contains(img, "@")
 	tv, ok := fam.ParseTag(tag)
 	if !ok {
 		s.add(Finding{Rule: RuleNotChecked, File: r.File, Line: r.Line, Level: "note", Status: StatusUnknown, Pull: img, ref: &r,
@@ -91,6 +107,9 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 		return
 	case knowledge.Vulnerable:
 	default:
+		if pinned {
+			byDigest()
+		}
 		return
 	}
 	feature := tv.Nums[0]
