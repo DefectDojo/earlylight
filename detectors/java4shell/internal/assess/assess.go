@@ -242,13 +242,13 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		}
 		return f.set(NotAffected, kwhy+"; its VM library has no AVX-512 VBMI decode stubs", what+" is not affected by Java4Shell")
 	case knowledge.Fixed:
-		return f.set(Fixed, kwhy, what+" has the Java4Shell fix")
+		return f.set(Fixed, kwhy, what+" is at or past the first release with the Java4Shell fix (judged by its version)")
 	case knowledge.Unknown:
 		return f.set(Unknown, kwhy, what+": not known whether it has the Java4Shell fix")
 	}
 	// The release data says vulnerable.
 	if read && !lib.VBMIStubs {
-		return f.set(Unknown, fmt.Sprintf("%s, but this VM library does not carry the AVX-512 VBMI Base64 decode stubs, which every affected OpenJDK build has: it may be built without them; check it", kwhy),
+		return f.set(Unknown, fmt.Sprintf("%s, but this VM library does not carry the AVX-512 VBMI Base64 decode stubs, which the affected builds checked so far all carry: it may be built without them; check it", kwhy),
 			what+": release says vulnerable, VM library lacks the vulnerable decoder")
 	}
 	if !read {

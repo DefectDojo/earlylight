@@ -12,8 +12,13 @@ import (
 // CVE is the vulnerability this detector checks.
 const CVE = "CVE-2026-114938"
 
-// Bug is the OpenJDK bug that fixed it.
+// Bug is the OpenJDK change taken as the fix. The mapping is inferred:
+// the OpenJDK advisory that would state it could not be read, and the
+// public descriptions of the CVE match this change (FACTS.md).
 const Bug = "JDK-8393212"
+
+// BugRef is how reasons name the fix.
+const BugRef = "JDK-8393212, inferred to be this CVE's fix"
 
 // Checked is the date the release data was last checked.
 const Checked = "2026-11-17"
@@ -280,7 +285,7 @@ func Judge(v Version) (Status, string) {
 		if v.Build >= 0 && v.Build <= EALastUnfixed {
 			return Vulnerable, fmt.Sprintf("JDK %d build %d: the fix reached mainline after jdk-28+%d", f, v.Build, EALastUnfixed)
 		}
-		return Unknown, fmt.Sprintf("JDK %d build %s: the fix reached mainline on 2026-11-16, after jdk-28+%d; check that this build includes %s", f, buildText(v), EALastUnfixed, Bug)
+		return Unknown, fmt.Sprintf("JDK %d build %s: the fix reached mainline on 2026-11-16, after jdk-28+%d; check that this build includes %s", f, buildText(v), EALastUnfixed, BugRef)
 	case f > newestFeature:
 		return Unknown, fmt.Sprintf("Java %s is newer than this detector's release data (%s)", ver, Checked)
 	}
@@ -302,28 +307,28 @@ func Judge(v Version) (Status, string) {
 	upd := v.Nums[:min(3, len(v.Nums))]
 	switch c := Compare(upd, l.Fixed[:3]); {
 	case c < 0:
-		return Vulnerable, fmt.Sprintf("Java %s is older than %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, Bug)
+		return Vulnerable, fmt.Sprintf("Java %s is older than %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, BugRef)
 	case c > 0:
 		// A later update (17.0.22) was not released when the data was
 		// checked, and its development builds did not have the fix yet.
-		return Unknown, fmt.Sprintf("Java %s is a later update than %s; it was not released when this detector's data was checked (%s), and the %d update repository did not have %s yet: check its release notes", ver, join(l.Fixed), Checked, f, Bug)
+		return Unknown, fmt.Sprintf("Java %s is a later update than %s; it was not released when this detector's data was checked (%s), and the %d update repository did not have %s yet: check its release notes", ver, join(l.Fixed), Checked, f, BugRef)
 	}
 	if len(v.Nums) >= 4 && v.Nums[3] > maxPatch {
 		// OpenJDK patch numbers are small (17.0.8.1, 21.0.13.1); a larger
 		// fourth number is a vendor's build number (Amazon Corretto's
 		// 21.0.13.11), which says nothing about the patch.
-		return Unknown, fmt.Sprintf("Java %s: the fourth number looks like a vendor build number, not an OpenJDK patch release, so the version does not show whether %s is in", ver, Bug)
+		return Unknown, fmt.Sprintf("Java %s: the fourth number looks like a vendor build number, not an OpenJDK patch release, so the version does not show whether %s is in", ver, BugRef)
 	}
 	switch c := Compare(v.Nums, l.Fixed); {
 	case c < 0:
-		return Vulnerable, fmt.Sprintf("Java %s is older than %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, Bug)
+		return Vulnerable, fmt.Sprintf("Java %s is older than %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, BugRef)
 	case c == 0 && v.Build >= 0 && v.Build < l.FixedBuild:
-		return Vulnerable, fmt.Sprintf("Java %s build %d predates the fix: it reached %s in build %d (%s)", ver, v.Build, join(l.Fixed), l.FixedBuild, Bug)
+		return Vulnerable, fmt.Sprintf("Java %s build %d predates the fix: it reached %s in build %d (%s)", ver, v.Build, join(l.Fixed), l.FixedBuild, BugRef)
 	}
 	if v.EA {
-		return Unknown, fmt.Sprintf("Java %s is a pre-release or self-built JDK; check that it includes %s", ver, Bug)
+		return Unknown, fmt.Sprintf("Java %s is a pre-release or self-built JDK; check that it includes %s", ver, BugRef)
 	}
-	return Fixed, fmt.Sprintf("Java %s is at or past %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, Bug)
+	return Fixed, fmt.Sprintf("Java %s is at or past %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, BugRef)
 }
 
 func buildText(v Version) string {

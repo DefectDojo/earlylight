@@ -10,7 +10,7 @@
 // whether it carries the AVX-512 VBMI decode stubs, with the release file as
 // a second witness. JVM options that keep the decoder from being generated
 // (-XX:-UseBASE64Intrinsics, -XX:UseAVX=2 or lower) are reported as a
-// mitigation, never as a fix. In a source tree it finds the Java images,
+// mitigation on a finding that stays vulnerable. In a source tree it finds the Java images,
 // versions and packages a project pins, and fix moves them to fixed
 // releases.
 //
@@ -53,8 +53,9 @@ const about = " HotSpot's AVX-512 VBMI Base64 decoder (x86-64, JDK 18 and later,
 	" characters (64 'A' then '=' is enough), so a Java program that decodes untrusted Base64 (tokens, headers," +
 	" certificates, JSON) can have its heap corrupted once the decoder is compiled: pre-authentication remote code" +
 	" execution was shown on default Keycloak, Jira, Confluence, Artifactory, Jenkins and PingFederate. It runs on CPUs" +
-	" with AVX-512F, AVX-512BW, AVX-512 VBMI and BMI2 (Intel Ice Lake and later, AMD Zen 4 and later, common on cloud" +
-	" instances). Fixed in OpenJDK 17.0.21.1, 21.0.13.1, 25.0.5.1 and 27.0.1.1 (JDK-8393212); Java 18 to 20, 22 to 24" +
+	" with AVX-512F, AVX-512BW, AVX-512 VBMI and BMI2 (Intel server CPUs from Ice Lake on and some client CPUs, not Alder" +
+	" Lake or Raptor Lake; AMD Zen 4 and later; common on cloud instances). Fixed in OpenJDK 17.0.21.1, 21.0.13.1, 25.0.5.1" +
+	" and 27.0.1.1 (by JDK-8393212, the change the public descriptions of the CVE match); Java 18 to 20, 22 to 24" +
 	" and 26 received no fix. -XX:-UseBASE64Intrinsics (or, on x86-64 only, -XX:UseAVX=2) keeps the decoder from being" +
 	" generated until the runtime is updated."
 
@@ -67,8 +68,6 @@ func (d *Detector) Manifest() engine.Manifest {
 		CVEs:  []string{knowledge.CVE},
 		Advisories: []string{
 			"https://calif.io/java4shell/",
-			"https://openjdk.org/groups/vulnerability/advisories/2026-11-17",
-			"https://www.oracle.com/security-alerts/cspunov2026.html",
 			"https://github.com/openjdk/jdk/commit/5177a70b385c16f26ede191fdac7aaba0bed0f8b",
 			"https://semgrep.dev/blog/2026/java4shell-openjdk-base64-vulnerability",
 			"https://github.com/corretto/corretto-21/blob/21.0.13.1.2/CHANGELOG.md",

@@ -177,7 +177,7 @@ func planTag(ctx context.Context, root string, f Finding, reg Registry, opts Opt
 		moving = fmt.Sprintf(" The tag %s is republished as %s releases new builds: pull it again when you rebuild and deploy (docker pull, imagePullPolicy: Always), since caches and nodes may still hold an older image under the same tag; to deploy exactly what was checked, pin it as %s@%s.", newTag, e.family.Vendor, newImage, digest)
 	}
 	return planLine(ctx, root, f, file, part.Line, col, tag, newTag, opts,
-		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: the %s release of the same variant with the Java4Shell fix, read and checked on every platform the current tag has (digest checked: %s). Rebuild and redeploy.%s",
+		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: the %s release of the same variant with the Java4Shell fix, read on linux/amd64 and checked to be published for the platforms the current tag has (digest checked: %s). Rebuild and redeploy.%s",
 			e.image, newImage, part.Line, file, where, e.family.Vendor, digest, moving))
 }
 

@@ -76,6 +76,13 @@ The lead read these; they could not be fetched from the research host. Facts her
 | Alpine | **not fixed yet**: community openjdk17 17.0.21.0.3_p1-r0, openjdk21 21.0.13.0.3_p1-r0, openjdk25 25.0.5.0.3_p1-r0/-r1 (3.23, 3.24, edge); 3.21 and 3.22 carry older 17/21 | dl-cdn.alpinelinux.org APKINDEX |
 | Red Hat (RHEL, UBI) | **not checked**: access.redhat.com and registry.access.redhat.com unreachable | n/a |
 
+## Advisory links
+
+The detector's catalog entry links only pages someone on this work could read: the Calif advisory and the Semgrep post (read by
+the lead), the OpenJDK fix commit and Amazon Corretto's changelog. **Not read by anyone (HTTP 403 or unreachable):** the OpenJDK
+advisory https://openjdk.org/groups/vulnerability/advisories/2026-11-17 and Oracle's alert
+https://www.oracle.com/security-alerts/cspunov2026.html; they are listed here only.
+
 ## How the detector uses this
 
 - The version that decides is the one inside the libjvm (`<VM name> (<version>) for <os>-<cpu> JRE (<version>)`), read from the binary, with the
