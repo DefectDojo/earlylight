@@ -119,7 +119,8 @@ func TestRunConflictUnknown(t *testing.T) {
 func TestRunCommandConfig(t *testing.T) {
 	src := mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }", "/app/nginx.conf": h2conf}
 	in := Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: src,
-		Command: []string{"/docker-entrypoint.sh", "nginx", "-c", "/app/nginx.conf", "-g", "daemon off;"}, CommandFrom: "the container command"}
+		Command: []string{"/docker-entrypoint.sh", "nginx", "-c", "/app/nginx.conf", "-g", "daemon off;"}, CommandFrom: "the container command",
+		Launcher: func(w string) (bool, string) { return w == "/docker-entrypoint.sh", "" }}
 	f := byCVE(Run(in))[knowledge.Flow]
 	if f.State != conf.Exposed || f.Facts["config"] != "/app/nginx.conf" || f.Facts["config_from"] != "the container command's -c" {
 		t.Errorf("%+v", f.Facts)
@@ -240,8 +241,11 @@ func TestConfigForPrefixAndShell(t *testing.T) {
 func TestR2StartCommand(t *testing.T) {
 	off := mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }", "/x.conf": "http { server { listen 80; } }",
 		"/etc/nginx/h2.conf": "http { server { listen 443 ssl http2; } }"}
-	run := func(cmd []string, scripts ...string) conf.State {
-		return byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: cmd, EntrypointScripts: scripts}))[knowledge.Flow].State
+	// The launcher stands for the adapter's content check: only
+	// /docker-entrypoint.sh is the official entrypoint here.
+	trusted := func(w string) (bool, string) { return w == "/docker-entrypoint.sh", "not the official entrypoint" }
+	run := func(cmd []string) conf.State {
+		return byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: cmd, Launcher: trusted}))[knowledge.Flow].State
 	}
 	for _, c := range []struct {
 		name string
@@ -266,12 +270,9 @@ func TestR2StartCommand(t *testing.T) {
 			t.Errorf("%s: %s, want %s", c.name, got, c.want)
 		}
 	}
-	official := []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}
-	if got := run(official, "10-listen-on-ipv6-by-default.sh", "20-envsubst-on-templates.sh", "30-tune-worker-processes.sh", "15-local-resolvers.envsh"); got != conf.NotExposed {
-		t.Errorf("official entrypoint.d: %s", got)
-	}
-	if got := run(official, "20-envsubst-on-templates.sh", "40-h2.sh"); got != conf.Unknown {
-		t.Errorf("a custom entrypoint.d script: %s", got)
+	// No launcher check at all: any wrapper is unknown.
+	if got := byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: []string{"/docker-entrypoint.sh", "nginx"}}))[knowledge.Flow].State; got != conf.Unknown {
+		t.Errorf("an entrypoint with no launcher check: %s", got)
 	}
 }
 

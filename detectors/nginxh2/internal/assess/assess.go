@@ -49,9 +49,10 @@ type Input struct {
 	// CommandFor, when set, gives the start command of one binary (a
 	// host's service unit), where it came from, and why there is none.
 	CommandFor func(binary string) (cmd []string, from, none string)
-	// EntrypointScripts are the names of the files in
-	// /docker-entrypoint.d, which the official entrypoint runs first.
-	EntrypointScripts []string
+	// Launcher, when set, says whether a word that runs before nginx in
+	// the command can be passed over: the official image's entrypoint,
+	// recognised by its content and its scripts'.
+	Launcher func(word string) (bool, string)
 	// Ingress is set when the target holds the ingress-nginx controller,
 	// which writes nginx.conf at start with HTTP/2 on by default.
 	Ingress bool

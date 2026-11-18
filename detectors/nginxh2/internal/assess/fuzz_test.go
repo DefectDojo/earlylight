@@ -18,7 +18,7 @@ func FuzzStart(f *testing.F) {
 		shellCommands(rest)
 		nginxOptions(strings.Fields(rest))
 		b := &ngx.Binary{ConfPath: "/etc/nginx/nginx.conf", ConfRaw: "/etc/nginx/nginx.conf"}
-		main, _, _, _ := configFor(b, Input{Command: cmd, EntrypointScripts: []string{script}})
+		main, _, _, _ := configFor(b, Input{Command: cmd, Launcher: func(w string) (bool, string) { return w == script, "" }})
 		if !strings.HasPrefix(main, "/") {
 			t.Fatalf("relative configuration path %q", main)
 		}

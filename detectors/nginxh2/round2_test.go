@@ -68,17 +68,8 @@ func TestR2SystemdUnit(t *testing.T) {
 	}
 }
 
-func TestR2EntrypointScripts(t *testing.T) {
-	s := &scan{kind: engine.Image, db: map[string][]byte{"/docker-entrypoint.d/20-envsubst-on-templates.sh": nil, "/docker-entrypoint.d/40-h2.sh": nil},
-		unread: map[string]string{"/docker-entrypoint.d/50-x.sh": "permission denied"}}
-	got := s.entrypointScripts()
-	if len(got) != 3 || got[1] != "40-h2.sh" || got[2] != "50-x.sh (not read)" {
-		t.Errorf("%v", got)
-	}
-	if s.commandFor() != nil {
-		t.Error("an image has its own command")
-	}
-}
+// TestR2EntrypointScripts gave way to TestV1EntrypointContent: scripts
+// are trusted by content, never by name.
 
 // R10: POSIX classes in an include glob match as glob(3) matches them.
 func TestR10PosixClasses(t *testing.T) {

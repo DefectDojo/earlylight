@@ -23,6 +23,8 @@ package nginxh2
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -111,8 +113,17 @@ func (e errData) Error() string { return "release data for " + string(e) + " con
 // Wants reads executables (possible nginx binaries), configuration files,
 // package databases and os-release.
 func (d *Detector) Wants(p string, head []byte, _ bool) bool {
-	return archive.IsExecutable(head) || keepDB(p) || keepConf(p)
+	return archive.IsExecutable(head) || keepDB(p) || keepConf(p) || isScript(head)
 }
+
+// isScript reports a "#!" script: an entrypoint, or a file one runs.
+func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head[1] == '!' }
+
+// Limits on the scripts kept.
+const (
+	maxScript  = 256 << 10
+	maxScripts = 32 << 20
+)
 
 // Limits on what one target keeps.
 const (
@@ -230,19 +241,21 @@ func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
 }
 
 type scan struct {
-	kind      engine.TargetKind
-	binaries  []*ngx.Binary
-	conf      map[string][]byte
-	confBytes int
-	confFull  bool            // the limit on configuration files was reached
-	tooLarge  map[string]bool // configuration files over maxConf, not kept
-	db        map[string][]byte
-	unread    map[string]string
-	unreadAll bool
-	dbBytes   int
-	ingress   bool
-	f5ingress bool
-	dropped   int
+	kind        engine.TargetKind
+	binaries    []*ngx.Binary
+	conf        map[string][]byte
+	confBytes   int
+	confFull    bool            // the limit on configuration files was reached
+	tooLarge    map[string]bool // configuration files over maxConf, not kept
+	db          map[string][]byte
+	scripts     map[string][]byte // "#!" scripts, by path
+	scriptBytes int
+	unread      map[string]string
+	unreadAll   bool
+	dbBytes     int
+	ingress     bool
+	f5ingress   bool
+	dropped     int
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
@@ -264,6 +277,13 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			s.binaries = append(s.binaries, b)
 		}
 		return nil
+	}
+	if isScript(f.Data) && len(f.Data) <= maxScript && s.scriptBytes+len(f.Data) <= maxScripts {
+		if s.scripts == nil {
+			s.scripts = map[string][]byte{}
+		}
+		s.scripts[f.Path] = f.Data
+		s.scriptBytes += len(f.Data)
 	}
 	if keepDB(f.Path) {
 		if len(f.Data) <= maxDB && s.dbBytes+len(f.Data) <= maxDBTotal {
@@ -342,14 +362,14 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 			}
 			return nil
 		},
-		Distro:            distro,
-		Release:           release,
-		Command:           ctx.Command(),
-		CommandFrom:       "the image's command",
-		CommandFor:        s.commandFor(),
-		EntrypointScripts: s.entrypointScripts(),
-		Ingress:           s.ingress,
-		Generated:         s.generated(),
+		Distro:      distro,
+		Release:     release,
+		Command:     ctx.Command(),
+		CommandFrom: "the image's command",
+		CommandFor:  s.commandFor(),
+		Launcher:    s.launcher(links, hardlinks),
+		Ingress:     s.ingress,
+		Generated:   s.generated(),
 	})
 	out := make([]engine.Finding, 0, len(found))
 	for _, x := range found {
@@ -358,22 +378,85 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	return out
 }
 
-// entrypointScripts names the files of /docker-entrypoint.d, read or
-// not.
-func (s *scan) entrypointScripts() []string {
-	var out []string
-	for p := range s.db {
-		if strings.HasPrefix(p, "/docker-entrypoint.d/") {
-			out = append(out, strings.TrimPrefix(p, "/docker-entrypoint.d/"))
+// launcher returns a check of a word that starts a container's command
+// before nginx: it is trusted only when its content is the official nginx
+// image's entrypoint, and every script that entrypoint runs from
+// /docker-entrypoint.d (find -follow: links followed) was read and is an
+// official one by content.
+func (s *scan) launcher(links, hardlinks map[string]string) func(string) (bool, string) {
+	src := &confSource{links: links, hardlinks: hardlinks}
+	content := func(p string) ([]byte, bool) {
+		r := src.resolve(p)
+		if r == "" {
+			return nil, false
 		}
-	}
-	for p := range s.unread {
-		if strings.HasPrefix(p, "/docker-entrypoint.d/") || p == "/docker-entrypoint.d" {
-			out = append(out, strings.TrimPrefix(p, "/docker-entrypoint.d/")+" (not read)")
+		if to, ok := hardlinks[r]; ok {
+			r = to
 		}
+		if b, ok := s.scripts[r]; ok {
+			return b, true
+		}
+		b, ok := s.db[r]
+		return b, ok
 	}
-	sort.Strings(out)
-	return out
+	return func(word string) (bool, string) {
+		p := word
+		if !strings.HasPrefix(p, "/") {
+			p = "/" + path.Base(p) // relative: the official image runs it from /
+		}
+		b, ok := content(p)
+		if !ok {
+			return false, fmt.Sprintf("nginx is started through %s, which was not read", word)
+		}
+		if !officialScripts["docker-entrypoint.sh"][sha(b)] {
+			return false, fmt.Sprintf("nginx is started through %s, which is not the official nginx image's entrypoint and can change the configuration", word)
+		}
+		if _, linked := links["/docker-entrypoint.d"]; linked {
+			return false, "/docker-entrypoint.d is a symbolic link, so the scripts the entrypoint runs are not known"
+		}
+		entries := map[string]bool{}
+		for _, m := range []map[string][]byte{s.scripts, s.db} {
+			for q := range m {
+				if strings.HasPrefix(q, "/docker-entrypoint.d/") {
+					entries[q] = true
+				}
+			}
+		}
+		for _, m := range []map[string]string{links, hardlinks} {
+			for q := range m {
+				if strings.HasPrefix(q, "/docker-entrypoint.d/") {
+					entries[q] = true
+				}
+			}
+		}
+		for q, why := range s.unread {
+			if q == "/docker-entrypoint.d" || strings.HasPrefix(q, "/docker-entrypoint.d/") {
+				return false, fmt.Sprintf("the entrypoint runs the scripts in /docker-entrypoint.d, and %s was not read (%s)", q, why)
+			}
+		}
+		if s.unreadAll {
+			return false, "more files were not scanned than the detector keeps a record of, so the entrypoint's scripts are not known"
+		}
+		for q := range entries {
+			name := path.Base(q)
+			if !strings.HasSuffix(name, ".sh") && !strings.HasSuffix(name, ".envsh") {
+				continue // the entrypoint ignores other files
+			}
+			b, ok := content(q)
+			if !ok {
+				return false, fmt.Sprintf("the entrypoint runs %s, which was not read", q)
+			}
+			if !officialScripts[name][sha(b)] {
+				return false, fmt.Sprintf("the entrypoint runs %s, which is not one of the official image's scripts and can change the configuration", q)
+			}
+		}
+		return true, ""
+	}
+}
+
+func sha(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }
 
 // commandFor returns, for a filesystem, the start command of each binary

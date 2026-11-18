@@ -21,13 +21,6 @@ var nginxNames = map[string]bool{"nginx": true, "nginx-debug": true, "openresty"
 // configuration.
 var launchers = map[string]bool{"tini": true, "tini-static": true, "dumb-init": true, "exec": true, "env": true, "--": true}
 
-// officialScripts are the scripts the official image's entrypoint runs
-// from /docker-entrypoint.d (nginx/docker-nginx): they write
-// configuration only from templates and the listen and worker settings,
-// which the scan reads.
-var officialScripts = map[string]bool{"10-listen-on-ipv6-by-default.sh": true, "15-local-resolvers.envsh": true,
-	"20-envsubst-on-templates.sh": true, "30-tune-worker-processes.sh": true}
-
 // configFor returns the configuration file a binary loads, the -g
 // directives, where the path came from, and why the answer is unsure ("" when
 // the start command was read in full).
@@ -40,7 +33,7 @@ func configFor(b *ngx.Binary, in Input) (string, []conf.Directive, string, strin
 	if in.CommandFor != nil {
 		cmd, from, none = in.CommandFor(b.Path)
 	}
-	args, unsure := startArgs(cmd, in.EntrypointScripts)
+	args, unsure := startArgs(cmd, in.Launcher)
 	if len(cmd) == 0 && none != "" {
 		unsure = none
 	}
@@ -89,7 +82,7 @@ func configFor(b *ngx.Binary, in Input) (string, []conf.Directive, string, strin
 
 // startArgs returns nginx's arguments in a start command and why the
 // configuration read may not be what runs.
-func startArgs(cmd, scripts []string) ([]string, string) {
+func startArgs(cmd []string, launcher func(string) (bool, string)) ([]string, string) {
 	if len(cmd) == 0 {
 		return nil, "no command that starts nginx was read (an image without one, or a host whose service unit was not found)"
 	}
@@ -99,13 +92,6 @@ func startArgs(cmd, scripts []string) ([]string, string) {
 		switch {
 		case nginxNames[b]:
 			return varArgs(cmd[i+1:])
-		case b == "docker-entrypoint.sh":
-			// The official entrypoint runs its scripts, then nginx.
-			for _, s := range scripts {
-				if !officialScripts[s] {
-					return nil, fmt.Sprintf("the entrypoint runs /docker-entrypoint.d/%s first, which can change the configuration", s)
-				}
-			}
 		case launchers[b] || strings.HasPrefix(w, "-") && i > 0 && launchers[path.Base(cmd[i-1])] || strings.Contains(w, "=") && i > 0 && path.Base(cmd[i-1]) == "env":
 		case b == "sh" || b == "bash" || b == "ash" || b == "dash":
 			for j := i + 1; j < len(cmd); j++ {
@@ -115,6 +101,13 @@ func startArgs(cmd, scripts []string) ([]string, string) {
 			}
 			return nil, "the container starts a shell script, which can change the configuration"
 		default:
+			if launcher != nil {
+				ok, why := launcher(w)
+				if ok {
+					continue
+				}
+				return nil, why
+			}
 			return nil, fmt.Sprintf("nginx is started through %s, which can change the configuration or the options it is given", w)
 		}
 	}
