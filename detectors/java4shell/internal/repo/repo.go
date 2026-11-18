@@ -323,7 +323,7 @@ var versionInText = regexp.MustCompile(`(\d{1,3}(?:\.\d{1,9}){0,5})`)
 // moving pin (the newest release of that line) and is reported only when
 // its line has no fix at all.
 func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendor string) {
-	tv := TagVersion{Text: verText, Exact: strings.Count(verText, ".") >= 2}
+	tv := TagVersion{Text: verText, Exact: strings.Count(verText, ".") >= 2, OpenJDKBuild: -1}
 	for _, p := range strings.Split(verText, ".") {
 		n := 0
 		fmt.Sscanf(p, "%d", &n)

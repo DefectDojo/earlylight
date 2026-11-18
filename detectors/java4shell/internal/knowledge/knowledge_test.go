@@ -23,7 +23,7 @@ func TestParse(t *testing.T) {
 		{"25.0.5", "25.0.5", -1, false},
 		{"21", "21", -1, false},
 		{"11.0.33+7", "11.0.33", 7, false},
-		{"21.0.13-internal+0-adhoc.root.src", "21.0.13", 0, false},
+		{"21.0.13-internal+0-adhoc.root.src", "21.0.13", 0, true},
 	} {
 		v, ok := Parse(c.in)
 		if !ok || v.String() != c.nums || v.Build != c.build || v.EA != c.ea {

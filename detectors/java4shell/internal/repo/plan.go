@@ -75,6 +75,9 @@ func target(tags []string, e *pinEdit) (string, bool) {
 		switch st, _ := JudgeTag(tv); {
 		case st == knowledge.Fixed:
 			cs = append(cs, cand{t, tv, false})
+		case st == knowledge.Vulnerable:
+			// Below the fix, or a build of the fixed release before the
+			// fix landed (21.0.13.1_1): never a target.
 		case !tv.Exact && fixed.Fixed != nil && len(tv.Nums) == 3 && knowledge.Compare(tv.Nums, fixed.Fixed[:3]) == 0:
 			// A moving tag of the fixed update (Corretto republishes
 			// "21.0.13" with 21.0.13.1.2): only reading the image shows

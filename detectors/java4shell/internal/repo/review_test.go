@@ -66,3 +66,19 @@ func TestReviewRepo(t *testing.T) {
 		t.Errorf("corretto target prefers the named fix: %q", got)
 	}
 }
+
+// Review finding 2: fix never picks a build below the fixed build.
+func TestTargetBelowFixedBuild(t *testing.T) {
+	e := &pinEdit{family: Families[0], feature: 21}
+	e.tv, _ = Families[0].ParseTag("21.0.13_9-jre")
+	if got, ok := target([]string{"21.0.13.1_1-jre"}, e); ok {
+		t.Errorf("picked %s, a build without the fix", got)
+	}
+	if got, _ := target([]string{"21.0.13.1_1-jre", "21.0.13.1_2-jre"}, e); got != "21.0.13.1_2-jre" {
+		t.Errorf("picked %s", got)
+	}
+	tv, _ := Families[0].ParseTag("21.0.13.1_1-jre")
+	if st, why := JudgeTag(tv); st != "vulnerable" {
+		t.Errorf("21.0.13.1_1: %s (%s)", st, why)
+	}
+}

@@ -90,7 +90,7 @@ func (d *Detector) Manifest() engine.Manifest {
 func (d *Detector) Load() error {
 	prev := 0
 	for _, l := range knowledge.Lines {
-		if l.Feature <= prev || l.Fixed == nil && l.Note == "" || l.Fixed != nil && l.Fixed[0] != l.Feature {
+		if l.Feature <= prev || l.Fixed == nil && l.Note == "" || l.Fixed != nil && (l.Fixed[0] != l.Feature || l.FixedBuild < 1) {
 			return fmt.Errorf("release data for Java %d contradicts itself", l.Feature)
 		}
 		prev = l.Feature

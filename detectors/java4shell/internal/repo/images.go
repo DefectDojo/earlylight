@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,6 +18,9 @@ type Family struct {
 	OpenJ9 bool
 	// Prefix comes before the version in the tag ("open-" for Semeru).
 	Prefix string
+	// OpenJDKBuild is true when the build in the tag is OpenJDK's build
+	// number (Temurin's "_9"); other vendors' tag builds are their own.
+	OpenJDKBuild bool
 	// exact reports whether the text after the version pins one release
 	// (Temurin's "_9", Liberica's "-10", Zulu's "-21.52"), so the version
 	// has no further numbers.
@@ -31,7 +35,7 @@ var (
 
 // Families are the runtime images this detector reads tags of.
 var Families = []Family{
-	{Repo: "eclipse-temurin", Vendor: "Eclipse Temurin", exact: temurinBuild},
+	{Repo: "eclipse-temurin", Vendor: "Eclipse Temurin", exact: temurinBuild, OpenJDKBuild: true},
 	{Repo: "amazoncorretto", Vendor: "Amazon Corretto"},
 	{Repo: "openjdk", Vendor: "OpenJDK (the deprecated official image)"},
 	{Repo: "sapmachine", Vendor: "SapMachine"},
@@ -94,6 +98,9 @@ type TagVersion struct {
 	// Text is the version as written in the tag, Variant what follows it
 	// (and its build), for finding the same variant of another release.
 	Text, Build, Variant string
+	// OpenJDKBuild is the OpenJDK build number the tag names, -1 when it
+	// names none (a vendor's own build number, or no build).
+	OpenJDKBuild int
 }
 
 // ParseTag reads the Java release a family's tag names. ok is false for a
@@ -111,7 +118,7 @@ func (f Family) ParseTag(tag string) (TagVersion, bool) {
 	if rest != "" && rest[0] >= '0' && rest[0] <= '9' {
 		return TagVersion{}, false
 	}
-	tv := TagVersion{Text: m, Variant: rest}
+	tv := TagVersion{Text: m, Variant: rest, OpenJDKBuild: -1}
 	for _, p := range strings.Split(m, ".") {
 		n, err := strconv.Atoi(p)
 		if err != nil {
@@ -131,6 +138,11 @@ func (f Family) ParseTag(tag string) (TagVersion, bool) {
 		if b := f.exact.FindString(rest); b != "" {
 			b = strings.TrimSuffix(b, "-")
 			tv.Exact, tv.Build, tv.Variant = true, b, rest[len(b):]
+			if f.OpenJDKBuild {
+				n := 0
+				fmt.Sscanf(strings.TrimLeft(b, "_-"), "%d", &n)
+				tv.OpenJDKBuild = n
+			}
 		}
 	}
 	return tv, true
@@ -146,7 +158,7 @@ func JudgeTag(tv TagVersion) (knowledge.Status, string) {
 		what = "the tag names the newest Java " + tv.Text + " release at build time"
 	}
 	if tv.Exact || feature < 17 {
-		st, why := knowledge.Judge(knowledge.Version{Nums: nums, Build: -1})
+		st, why := knowledge.Judge(knowledge.Version{Nums: nums, Build: tv.OpenJDKBuild})
 		return st, what + ": " + why
 	}
 	l, ok := knowledge.LineOf(feature)

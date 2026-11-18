@@ -37,8 +37,8 @@ const (
 // after "+" and whether it is an early-access build.
 type Version struct {
 	Nums  []int
-	Build int // -1 when absent
-	EA    bool
+	Build int  // -1 when absent
+	EA    bool // a pre-release or self-built JDK: -ea, -beta, -internal, adhoc
 	Raw   string
 }
 
@@ -123,11 +123,16 @@ func Parse(s string) (Version, bool) {
 		if i := strings.IndexByte(r, '+'); i >= 0 {
 			pre, rest = r[:i], r[i:]
 		}
-		v.EA = strings.HasPrefix(pre, "ea")
+		// Any pre-release identifier: ea, beta, internal, a build date.
+		v.EA = pre != ""
 	}
 	if r, ok := strings.CutPrefix(rest, "+"); ok {
 		if b, _ := leadingInt(r); b >= 0 {
 			v.Build = b
+		}
+		// A self-built JDK ("+0-adhoc.root.jdk17u") is not a release.
+		if strings.Contains(r, "adhoc") {
+			v.EA = true
 		}
 	}
 	return v, true
@@ -176,25 +181,28 @@ type Line struct {
 	Introduced []int
 	// IntroducedBuild is the first build of Introduced that has it (17.0.6+3).
 	IntroducedBuild int
-	// Fixed is the first release with the fix (nil: none).
-	Fixed []int
+	// Fixed is the first release with the fix (nil: none), and FixedBuild
+	// the first build of it that has the fix: earlier builds of the same
+	// release (17.0.21.1+0 and +1) do not.
+	Fixed      []int
+	FixedBuild int
 	// Note is why the line has no fix, or other context.
 	Note string
 }
 
 // Lines is the release data, newest last. FACTS.md gives the sources.
 var Lines = []Line{
-	{Feature: 17, Introduced: []int{17, 0, 6}, IntroducedBuild: 3, Fixed: []int{17, 0, 21, 1}},
+	{Feature: 17, Introduced: []int{17, 0, 6}, IntroducedBuild: 3, Fixed: []int{17, 0, 21, 1}, FixedBuild: 2},
 	{Feature: 18, Note: "JDK 18 is end of life and received no fix"},
 	{Feature: 19, Note: "JDK 19 is end of life and received no fix"},
 	{Feature: 20, Note: "JDK 20 is end of life and received no fix"},
-	{Feature: 21, Fixed: []int{21, 0, 13, 1}},
+	{Feature: 21, Fixed: []int{21, 0, 13, 1}, FixedBuild: 2},
 	{Feature: 22, Note: "JDK 22 is end of life and received no fix"},
 	{Feature: 23, Note: "JDK 23 is end of life and received no fix"},
 	{Feature: 24, Note: "JDK 24 is end of life and received no fix"},
-	{Feature: 25, Fixed: []int{25, 0, 5, 1}},
+	{Feature: 25, Fixed: []int{25, 0, 5, 1}, FixedBuild: 2},
 	{Feature: 26, Note: "JDK 26 is end of life (last release 26.0.2.1) and received no fix"},
-	{Feature: 27, Fixed: []int{27, 0, 1, 1}},
+	{Feature: 27, Fixed: []int{27, 0, 1, 1}, FixedBuild: 4},
 }
 
 // EAFeature is the line in early access, and the last EA build known to
@@ -266,23 +274,19 @@ func Judge(v Version) (Status, string) {
 		return Unknown, "the version could not be read"
 	case f < firstVBMIDecode:
 		return NotAffected, fmt.Sprintf("Java %s: OpenJDK %d has no x86-64 Base64 decode intrinsic, so it does not have the vulnerable AVX-512 code", ver, f)
+	case f == EAFeature && len(v.Nums) > 1:
+		return Unknown, fmt.Sprintf("Java %s is an update of JDK %d, which had no release when this detector's data was checked (%s)", ver, f, Checked)
 	case f == EAFeature:
 		if v.Build >= 0 && v.Build <= EALastUnfixed {
-			return Vulnerable, fmt.Sprintf("JDK %d early-access build %d: the fix reached mainline after jdk-28+%d", f, v.Build, EALastUnfixed)
+			return Vulnerable, fmt.Sprintf("JDK %d build %d: the fix reached mainline after jdk-28+%d", f, v.Build, EALastUnfixed)
 		}
-		return Unknown, fmt.Sprintf("JDK %d early-access build %s: the fix reached mainline on 2026-11-16, after jdk-28+%d; check that this build includes %s", f, buildText(v), EALastUnfixed, Bug)
+		return Unknown, fmt.Sprintf("JDK %d build %s: the fix reached mainline on 2026-11-16, after jdk-28+%d; check that this build includes %s", f, buildText(v), EALastUnfixed, Bug)
 	case f > newestFeature:
 		return Unknown, fmt.Sprintf("Java %s is newer than this detector's release data (%s)", ver, Checked)
 	}
 	l, ok := LineOf(f)
 	if !ok {
 		return Unknown, fmt.Sprintf("Java %s is not in this detector's release data", ver)
-	}
-	if len(v.Nums) >= 4 && v.Nums[3] > maxPatch {
-		// OpenJDK patch numbers are small (17.0.8.1, 21.0.13.1); a larger
-		// fourth number is a vendor's build number (Amazon Corretto's
-		// 21.0.13.11), which says nothing about the patch.
-		return Unknown, fmt.Sprintf("Java %s: the fourth number looks like a vendor build number, not an OpenJDK patch release, so the version does not show whether %s is in", ver, Bug)
 	}
 	if l.Introduced != nil {
 		c := Compare(v.Nums, l.Introduced)
@@ -293,17 +297,31 @@ func Judge(v Version) (Status, string) {
 	if l.Fixed == nil {
 		return Vulnerable, fmt.Sprintf("Java %s has the AVX-512 VBMI Base64 decoder without the fix: %s", ver, l.Note)
 	}
-	if Compare(v.Nums, l.Fixed) < 0 {
+	// The update first (17.0.21 of 17.0.21.1): older is unfixed whatever
+	// follows it.
+	upd := v.Nums[:min(3, len(v.Nums))]
+	switch c := Compare(upd, l.Fixed[:3]); {
+	case c < 0:
 		return Vulnerable, fmt.Sprintf("Java %s is older than %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, Bug)
-	}
-	// Releases of the same update as the fix (17.0.21.1, 17.0.21.2) carry
-	// it. A later update (17.0.22) was not released when the data was
-	// checked, and its development builds did not have the fix yet.
-	if len(v.Nums) >= 3 && len(l.Fixed) >= 3 && v.Nums[2] > l.Fixed[2] || len(v.Nums) >= 2 && v.Nums[1] > l.Fixed[1] {
+	case c > 0:
+		// A later update (17.0.22) was not released when the data was
+		// checked, and its development builds did not have the fix yet.
 		return Unknown, fmt.Sprintf("Java %s is a later update than %s; it was not released when this detector's data was checked (%s), and the %d update repository did not have %s yet: check its release notes", ver, join(l.Fixed), Checked, f, Bug)
 	}
+	if len(v.Nums) >= 4 && v.Nums[3] > maxPatch {
+		// OpenJDK patch numbers are small (17.0.8.1, 21.0.13.1); a larger
+		// fourth number is a vendor's build number (Amazon Corretto's
+		// 21.0.13.11), which says nothing about the patch.
+		return Unknown, fmt.Sprintf("Java %s: the fourth number looks like a vendor build number, not an OpenJDK patch release, so the version does not show whether %s is in", ver, Bug)
+	}
+	switch c := Compare(v.Nums, l.Fixed); {
+	case c < 0:
+		return Vulnerable, fmt.Sprintf("Java %s is older than %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, Bug)
+	case c == 0 && v.Build >= 0 && v.Build < l.FixedBuild:
+		return Vulnerable, fmt.Sprintf("Java %s build %d predates the fix: it reached %s in build %d (%s)", ver, v.Build, join(l.Fixed), l.FixedBuild, Bug)
+	}
 	if v.EA {
-		return Unknown, fmt.Sprintf("Java %s is an early-access build; check that it includes %s", ver, Bug)
+		return Unknown, fmt.Sprintf("Java %s is a pre-release or self-built JDK; check that it includes %s", ver, Bug)
 	}
 	return Fixed, fmt.Sprintf("Java %s is at or past %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, Bug)
 }
