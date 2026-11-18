@@ -19,6 +19,9 @@ import (
 type Opened struct {
 	// FS is the final filesystem as a tar stream, whiteouts applied.
 	FS io.ReadCloser
+	// Unresolved lists, once FS has been read to its end, the paths whose
+	// content the layers do not settle (see flatten): not read.
+	Unresolved func() []string
 	// Digest is the image manifest digest.
 	Digest string
 	// Platform is the platform that was opened, when known.
@@ -61,7 +64,7 @@ func opened(img v1.Image) (*Opened, error) {
 			}
 		}
 	}
-	o.FS = flatten(img)
+	o.FS, o.Unresolved = flatten(img)
 	return o, nil
 }
 

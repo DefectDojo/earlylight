@@ -4,12 +4,19 @@ import (
 	"archive/tar"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
 	"github.com/DefectDojo/earlylight/internal/engine"
@@ -286,5 +293,50 @@ func TestForgetIsCheap(t *testing.T) {
 	}
 	if n := s.settings.len(); n != 40000 {
 		t.Errorf("%d settings, want 40000", n)
+	}
+}
+
+// Round-5 review finding 2a: RUN ln /a /b; RUN rm /a: the hard link keeps
+// the runtime, as in a docker export.
+func TestHardLinkTargetRemovedInLayer(t *testing.T) {
+	lib := testlib.Build(testlib.Lib{Version: "21.0.13+9-LTS", VBMI: true})
+	layer := func(es ...[3]string) v1.Layer {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		for _, e := range es {
+			h := &tar.Header{Name: e[1], Mode: 0o755, Typeflag: tar.TypeReg, Size: int64(len(e[2]))}
+			if e[0] == "h" {
+				h.Typeflag, h.Size, h.Linkname = tar.TypeLink, 0, e[2]
+			}
+			tw.WriteHeader(h)
+			if e[0] != "h" {
+				tw.Write([]byte(e[2]))
+			}
+		}
+		tw.Close()
+		b := buf.Bytes()
+		l, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	const a = "opt/java/lib/server/libjvm.so"
+	for _, top := range [][3]string{{"f", "opt/java/lib/server/.wh.libjvm.so", ""}, {"f", a, "replaced"}} {
+		img, err := mutate.AppendLayers(empty.Image,
+			layer([3]string{"f", a, string(lib)}),
+			layer([3]string{"f", a, string(lib)}, [3]string{"h", "opt/copy/lib/server/libjvm.so", a}),
+			layer(top))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(t.TempDir(), "image.tar")
+		if err := tarball.WriteToFile(p, name.MustParseReference("test/j:1"), img); err != nil {
+			t.Fatal(err)
+		}
+		tg := engine.ScanImage([]engine.Detector{&Detector{}}, "docker-archive:"+p, engine.Options{})
+		if tg.Error != "" || len(tg.Findings) != 1 || tg.Findings[0].Verdict != engine.Vulnerable || tg.Findings[0].Path != "/opt/copy" {
+			t.Errorf("%s: error %q findings %+v", top[1], tg.Error, tg.Findings)
+		}
 	}
 }

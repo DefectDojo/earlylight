@@ -576,3 +576,72 @@ func TestUnlistableDirectories(t *testing.T) {
 		t.Errorf("unreadable /etc/shadow: %+v", fs)
 	}
 }
+
+// entLayer is a layer of hand-made entries ("d" directory, "f" file,
+// "w" whiteout).
+func entLayer(t *testing.T, es ...[3]string) v1.Layer {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, e := range es {
+		h := &tar.Header{Name: e[1], Mode: 0o644, Typeflag: tar.TypeReg, Size: int64(len(e[2]))}
+		if e[0] == "d" {
+			h.Typeflag, h.Size, h.Mode = tar.TypeDir, 0, 0o755
+		}
+		tw.WriteHeader(h)
+		tw.Write([]byte(e[2]))
+	}
+	tw.Close()
+	b := buf.Bytes()
+	l, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// Round-5 review finding 2b: a directory, then a file, then a directory
+// over three layers: the stale include in the first is gone, as in a
+// docker export, and does not turn PAM on.
+func TestDirFileDirLayers(t *testing.T) {
+	root := pamRoot(t)
+	write(t, root, "etc/ssh/sshd_config", []byte("Include /etc/ssh/sshd_config.d/*.conf\n"), 0o644)
+	img := dockerArchive(t, dirLayer(t, root, false),
+		entLayer(t, [3]string{"d", "etc/ssh/sshd_config.d", ""}, [3]string{"f", "etc/ssh/sshd_config.d/10-pam.conf", "UsePAM yes\n"}),
+		entLayer(t, [3]string{"f", "etc/ssh/sshd_config.d", "not a directory"}),
+		entLayer(t, [3]string{"d", "etc/ssh/sshd_config.d", ""}, [3]string{"f", "etc/ssh/sshd_config.d/20-x.conf", "Port 22\n"}))
+	var out, errb bytes.Buffer
+	cli.Run(cfg, []string{"scan", "image", "--format", "json", "--detector", "sshole", "docker-archive:" + img}, &out, &errb)
+	var r struct {
+		Targets []struct {
+			Findings []engine.Finding `json:"findings"`
+		} `json:"targets"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil || len(r.Targets) != 1 {
+		t.Fatalf("%v %s", err, errb.String())
+	}
+	if fs := r.Targets[0].Findings; len(fs) != 1 || fs[0].Verdict != engine.Vulnerable || fs[0].Severity != "critical" {
+		t.Errorf("%+v", fs)
+	}
+}
+
+// Round-5 review finding 4: two entries for one include in one layer (the
+// runtime keeps the last) leave it unresolved: never cleared on the first.
+func TestDuplicateInOneLayer(t *testing.T) {
+	root := pamRoot(t)
+	img := dockerArchive(t, dirLayer(t, root, false),
+		entLayer(t, [3]string{"f", "etc/ssh/sshd_config.d/50.conf", "Port 22\n"}, [3]string{"f", "etc/ssh/sshd_config.d/50.conf", "UsePAM no\n"}))
+	var out, errb bytes.Buffer
+	cli.Run(cfg, []string{"scan", "image", "--format", "json", "--detector", "sshole", "docker-archive:" + img}, &out, &errb)
+	var r struct {
+		Targets []struct {
+			Findings []engine.Finding `json:"findings"`
+		} `json:"targets"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil || len(r.Targets) != 1 {
+		t.Fatalf("%v %s", err, errb.String())
+	}
+	if fs := r.Targets[0].Findings; len(fs) != 1 || fs[0].Verdict.Cleared() {
+		t.Errorf("%+v", fs)
+	}
+}

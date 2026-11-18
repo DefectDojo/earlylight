@@ -727,6 +727,7 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 	t := &Target{Name: ref, Type: Image}
 	w := newWalker(dets, Image, t, opts)
 	var rc io.ReadCloser
+	var unresolved func() []string
 	if p, ok := strings.CutPrefix(ref, "rootfs:"); ok && opts.Guarded {
 		t.Error = fmt.Sprintf("%q: only registry references are opened for a source tree", "rootfs:"+p)
 		return t
@@ -754,6 +755,7 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 			return t
 		}
 		rc, t.Digest, t.Platform, w.ctx.env = o.FS, o.Digest, o.Platform, o.Env
+		unresolved = o.Unresolved
 		w.ctx.cmd = opts.Override.Apply(o.Entrypoint, o.Cmd)
 	}
 	defer rc.Close()
@@ -772,6 +774,15 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 	if t.Files == 0 {
 		t.Error = "the image contained no regular files"
 		return t
+	}
+	if unresolved != nil {
+		// Paths the layers do not settle: whatever was read there is
+		// forgotten, and each scan is told it was not read.
+		for _, p := range unresolved() {
+			w.forget(p)
+			so.Unread(p, false)
+			t.Skipped = append(t.Skipped, source.Skip{Path: p, Reason: "the image's layers do not settle what this file holds (two entries in one layer, a hard link to a file not in its layer, or a write through a symbolic link); not checked"})
+		}
 	}
 	w.finish()
 	return t
