@@ -40,7 +40,19 @@ type Exposure struct {
 	Unread            []string `json:"unread,omitempty"`
 }
 
-var proxyDirectives = map[string]bool{"proxy_pass": true, "grpc_pass": true, "fastcgi_pass": true, "uwsgi_pass": true, "scgi_pass": true, "memcached_pass": true}
+// proxyDirectives open connections to an upstream while a request is
+// served (the pressure CVE-2026-123633 needs): the *_pass directives,
+// subrequests, and handlers that can open sockets of their own (Lua
+// cosockets, njs fetch, Perl).
+var proxyDirectives = map[string]bool{"proxy_pass": true, "grpc_pass": true, "fastcgi_pass": true, "uwsgi_pass": true, "scgi_pass": true, "memcached_pass": true,
+	"redis_pass": true, "redis2_pass": true, "postgres_pass": true, "drizzle_pass": true, "auth_request": true, "mirror": true,
+	"js_content": true, "js_access": true, "perl": true}
+
+// proxyHandler reports an OpenResty handler that can open its own
+// connections (content_by_lua_block, access_by_lua_file, balancer_by_lua*).
+func proxyHandler(name string) bool {
+	return strings.Contains(name, "_by_lua")
+}
 
 type listen struct {
 	port       string
@@ -248,7 +260,7 @@ func proxies(ds []Directive, out *[]string, depth int) {
 		return
 	}
 	for _, d := range ds {
-		if proxyDirectives[d.Name] && len(*out) < 16 {
+		if (proxyDirectives[d.Name] || proxyHandler(d.Name)) && len(*out) < 16 {
 			*out = append(*out, loc(d))
 		}
 		if d.HasBlock {

@@ -124,6 +124,10 @@ func TestExposure(t *testing.T) {
 		{"R4 placeholder directive", `http { server { listen 443 ssl; ${EXTRA_SERVER_DIRECTIVES} } }`, Unknown, Unknown},
 		{"R4 placeholder in http", `http { ${EXTRA_HTTP}; server { listen 443 ssl; } }`, Unknown, Unknown},
 		{"R4 nginx variables elsewhere are fine", `http { server { listen 443 ssl; location / { proxy_pass http://$host; } } }`, NotExposed, NotExposed},
+		{"R12 lua content", `http { server { listen 443 ssl http2; location / { content_by_lua_block { ngx.say(1) } } } }`, Exposed, Exposed},
+		{"R12 njs", `http { server { listen 443 ssl http2; location / { js_content main.handler; } } }`, Exposed, Exposed},
+		{"R12 redis2", `http { server { listen 443 ssl http2; location / { redis2_pass r:6379; } } }`, Exposed, Exposed},
+		{"R12 auth_request", `http { server { listen 443 ssl http2; location / { auth_request /auth; root /srv; } } }`, Exposed, Exposed},
 		{"nested if", `http { server { listen 443 ssl http2; location / { if ($x) { fastcgi_pass unix:/s; } } } }`, Exposed, Exposed},
 	}
 	for _, c := range cases {

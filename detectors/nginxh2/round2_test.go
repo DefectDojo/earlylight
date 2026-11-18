@@ -75,3 +75,32 @@ func TestR2EntrypointScripts(t *testing.T) {
 		t.Error("an image has its own command")
 	}
 }
+
+// R10: POSIX classes in an include glob match as glob(3) matches them.
+func TestR10PosixClasses(t *testing.T) {
+	for p, want := range map[[2]string]bool{
+		{"/a/[[:digit:]]*.conf", "/a/10-site.conf"}: true, {"/a/[[:digit:]]*.conf", "/a/site.conf"}: false,
+		{"/a/[[:alpha:]]*", "/a/x"}: true, {"/a/[![:digit:]]*", "/a/1x"}: false, {"/a/[[:alnum:]_]*", "/a/_x"}: true,
+	} {
+		got, err := globMatch(p[0], p[1])
+		if err != nil || got != want {
+			t.Errorf("globMatch(%s, %s) = %v %v", p[0], p[1], got, err)
+		}
+	}
+	if _, err := globMatch("/a/[[:bogus:]]", "/a/x"); err == nil {
+		t.Error("an unknown class was accepted")
+	}
+}
+
+// R11: a site enabled through a hard link (an image layer's tar link)
+// is read.
+func TestR11HardLinkedSite(t *testing.T) {
+	s := &confSource{kept: map[string][]byte{"/etc/nginx/sites-available/app": []byte("server { listen 443 ssl http2; }")},
+		hardlinks: map[string]string{"/etc/nginx/sites-enabled/app": "/etc/nginx/sites-available/app"}}
+	if b, ok, _ := s.Read("/etc/nginx/sites-enabled/app"); !ok || len(b) == 0 {
+		t.Error("hard link not read")
+	}
+	if ms, _ := s.Glob("/etc/nginx/sites-enabled/*"); len(ms) != 1 {
+		t.Errorf("hard link not matched: %v", ms)
+	}
+}

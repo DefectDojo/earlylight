@@ -316,8 +316,8 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	if s.dropped > 0 {
 		ctx.Problem("nginxh2: more nginx binaries than the detector's limit; some were not checked")
 	}
-	links, _ := ctx.Links()
-	src := &confSource{kept: s.conf, full: s.confFull, tooLarge: s.tooLarge, root: ctx.SystemRoot(), links: links, unread: s.unread, unreadAll: s.unreadAll}
+	links, hardlinks := ctx.Links()
+	src := &confSource{kept: s.conf, full: s.confFull, tooLarge: s.tooLarge, root: ctx.SystemRoot(), links: links, hardlinks: hardlinks, unread: s.unread, unreadAll: s.unreadAll}
 	if s.kind == engine.Image && s.db["/docker-entrypoint.d/20-envsubst-on-templates.sh"] != nil {
 		src.templates(ctx.Env())
 	}
@@ -650,6 +650,9 @@ type confSource struct {
 	tooLarge map[string]bool
 	root     string
 	links    map[string]string
+	// hardlinks are an image's hard links (path -> the path it names),
+	// which the walk does not hand out as files of their own.
+	hardlinks map[string]string
 	// unread are the paths the walk recorded as not scanned, with why.
 	unread    map[string]string
 	unreadAll bool // more not-scanned records than kept: any path may be one
@@ -740,6 +743,9 @@ func (s *confSource) Read(p string) ([]byte, bool, string) {
 	if r == "" {
 		return nil, false, "a symbolic link loop"
 	}
+	if to, ok := s.hardlinks[r]; ok {
+		r = to
+	}
 	if b, ok := s.virtual[r]; ok {
 		return b, true, ""
 	}
@@ -807,6 +813,11 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 	// ../sites-available/default); Read follows them, and one that leads
 	// nowhere the scan read is reported as not read.
 	for p := range s.links {
+		if match(pattern, p) {
+			add(p)
+		}
+	}
+	for p := range s.hardlinks {
 		if match(pattern, p) {
 			add(p)
 		}
@@ -890,7 +901,10 @@ func globMatch(pattern, p string) (bool, error) {
 		return false, nil
 	}
 	for i := range pp {
-		pc := strings.ReplaceAll(pp[i], "[!", "[^")
+		pc, err := posixClasses(strings.ReplaceAll(pp[i], "[!", "[^"))
+		if err != nil {
+			return false, err
+		}
 		if strings.HasPrefix(np[i], ".") && !strings.HasPrefix(pc, ".") {
 			return false, nil
 		}
@@ -904,6 +918,30 @@ func globMatch(pattern, p string) (bool, error) {
 	}
 	return true, nil
 }
+
+// posixClasses turns glob(3)'s character classes ([[:digit:]]) into the
+// ranges path.Match reads. An unknown class is an error, so the list it
+// would give is not taken as complete.
+func posixClasses(p string) (string, error) {
+	for {
+		i := strings.Index(p, "[:")
+		if i < 0 {
+			return p, nil
+		}
+		j := strings.Index(p[i:], ":]")
+		if j < 0 {
+			return "", path.ErrBadPattern
+		}
+		r, ok := classRanges[p[i+2:i+j]]
+		if !ok {
+			return "", path.ErrBadPattern
+		}
+		p = p[:i] + r + p[i+j+2:]
+	}
+}
+
+var classRanges = map[string]string{"digit": "0-9", "alpha": "a-zA-Z", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z",
+	"xdigit": "0-9a-fA-F", "space": " \t", "blank": " \t", "punct": "!-/:-@\\[-`{-~"}
 
 func (s *confSource) diskPath(p string) (string, bool) {
 	clean := path.Clean("/" + p)
