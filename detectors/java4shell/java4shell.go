@@ -142,10 +142,10 @@ func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
 // its limit or --max-file-size. A JVM settings file not read is a coverage
 // gap once a runtime is found (FinishSkips): an option in it can undo a
 // mitigation the scan would report. A start script not read keeps a
-// mitigation from being reported when the container's command runs it.
-// The other files with a limit are deliberate exclusions: no verdict is
-// cleared on them (a runtime is cleared only by its VM library and release
-// file).
+// mitigation from being reported when the container's command runs it. An
+// /etc/os-release not read keeps a Red Hat row from clearing a runtime
+// (osID). The other files with a limit are deliberate exclusions: no
+// verdict is cleared on them.
 func (s *scan) VisitOverLimit(p string, _ int64) []engine.Skip {
 	s.notRead(p)
 	return nil
@@ -166,6 +166,9 @@ func (s *scan) VisitUnread(p string, dir bool) {
 func (s *scan) notRead(p string) {
 	if jvm.SettingKind(p) != "" && len(s.overSettings) < maxSettings {
 		s.overSettings[p] = true
+	}
+	if p == "/etc/os-release" {
+		s.osUnread = true
 	}
 	if hsErr.MatchString(path.Base(p)) || p == "/etc/os-release" || p == "/usr/lib/os-release" {
 		return
@@ -203,6 +206,9 @@ func (s *scan) Forget(p string) {
 		k := strings.TrimSuffix(path.Base(p), ".list")
 		s.keptBytes -= len(s.lists[k])
 		delete(s.lists, k)
+	}
+	if p == "/etc/os-release" {
+		s.osUnread = false
 	}
 	delete(s.scripts, p)
 	delete(s.unreadScripts, p)
@@ -311,8 +317,10 @@ type scan struct {
 	unreadAll     bool
 	// overSettings are JVM settings files not read.
 	overSettings map[string]bool
-	optionFiles  int // settings files that set JVM options
-	plainUnits   int // systemd units that set none
+	// osUnread is set when /etc/os-release was met and not read.
+	osUnread    bool
+	optionFiles int // settings files that set JVM options
+	plainUnits  int // systemd units that set none
 	// limits records the caps this target reached; a capped scan clears
 	// nothing.
 	limits []string
@@ -488,9 +496,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		UnreadDirs:    s.unreadDirs,
 		UnreadAll:     s.unreadAll,
 	}
-	if osr := osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]); osr != "" {
-		in.OSID, _, _ = strings.Cut(osr, " ")
-	}
+	in.OSID = s.osID()
 	if s.kind == engine.Image {
 		in.Env = ctx.Env()
 		if in.Env == nil {
@@ -517,6 +523,21 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		out = append(out, f)
 	}
 	return out
+}
+
+// osID is the target's os-release ID for a verdict (a Red Hat row clears
+// a runtime only on RHEL), "" when it is not known. The system reads
+// /usr/lib/os-release only when /etc/os-release does not exist, so an
+// /etc/os-release the scan met and did not read (over its limit,
+// unreadable) leaves the ID unknown: a verdict is never cleared on a file
+// that stands in for one not read. The java4shell_os annotation, which
+// clears nothing, still falls back.
+func (s *scan) osID() string {
+	if s.osUnread {
+		return ""
+	}
+	id, _, _ := strings.Cut(osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]), " ")
+	return id
 }
 
 var verdicts = map[assess.Status]engine.Verdict{
