@@ -223,6 +223,25 @@ type FinishSkipper interface {
 	FinishSkips() []Skip
 }
 
+// UnreadVisitor is implemented by a Scan that must know which files and
+// directories the walk met and could not read (no permission, an I/O
+// error, a file that changed while it was read), whatever their name or
+// content: a verdict must never rest on their absence. VisitUnread is
+// called for each, dir set for a directory whose contents could not be
+// listed. The walk records each as a coverage gap.
+type UnreadVisitor interface {
+	VisitUnread(path string, dir bool)
+}
+
+// Forgetter is implemented by a Scan that keeps what it was shown by
+// path. When a path comes round again (an image filesystem can name one
+// file twice; the last entry is the file), Forget is called before the new
+// entry is handed out, so nothing of the earlier one survives, nor of what
+// was found inside it ("path!/member").
+type Forgetter interface {
+	Forget(path string)
+}
+
 // HeadVisitor is implemented by a Scan that wants to see the first bytes
 // of every file the walk meets, read in full or not: a record of files
 // it does not need to read (a runtime download inside an image) without

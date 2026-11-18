@@ -214,6 +214,9 @@ type walker struct {
 	// limit on it, for handing it out (Limiter).
 	limited string
 	limits  []fileLimit
+	// exclusions are the exclusion records made for each scan, by path, so
+	// a gap the scan reports at the end replaces its exclusion.
+	exclusions []map[string]string
 }
 
 // fileLimit is one detector's own limit on one file, and whether it asked
@@ -314,13 +317,48 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 	}
 	so.Read = func(p string, head []byte, exe bool) (bool, int64) {
 		abs := w.abs(p)
+		if w.ctx.seen[abs] {
+			// The path comes round again: this entry is the file.
+			w.forget(abs)
+		}
 		// The file exists whether or not any detector reads it, so Exists
 		// does not depend on which detectors ran.
 		w.ctx.seen[abs] = true
 		visitHead(p, head)
 		return decide(abs, head, exe)
 	}
+	so.Unread = func(p string, dir bool) {
+		abs := w.abs(p)
+		if !dir {
+			w.ctx.seen[abs] = true // it exists, read or not
+		}
+		for i, s := range w.scans {
+			if uv, ok := s.(UnreadVisitor); ok {
+				w.safely(i, abs, func() { uv.VisitUnread(abs, dir) })
+			}
+		}
+	}
 	return so
+}
+
+// forget tells every scan to drop what it kept of p.
+func (w *walker) forget(p string) {
+	for i, s := range w.scans {
+		if f, ok := s.(Forgetter); ok {
+			w.safely(i, p, func() { f.Forget(p) })
+		}
+	}
+}
+
+// safely runs one of scan i's hooks on p; a panic is recorded as the
+// detector failing on p.
+func (w *walker) safely(i int, p string, f func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.t.Skipped = append(w.t.Skipped, source.Skip{Path: p, Reason: fmt.Sprintf("detector %s failed on this file (%v); not checked", w.ids[i], r), DetectorFailed: true})
+		}
+	}()
+	f()
 }
 
 // limit decides whether to read a file when some detector has limits of its
@@ -394,8 +432,15 @@ func (w *walker) overLimit(i int, p string, size int64) []source.Skip {
 	if size < 0 {
 		what = "(found while reading)"
 	}
-	return []source.Skip{{Path: p, Excluded: true,
-		Reason: fmt.Sprintf("excluded: larger than the %d-byte limit of %s for this file %s", w.limits[i].bytes, w.ids[i], what)}}
+	reason := fmt.Sprintf("excluded: larger than the %d-byte limit of %s for this file %s", w.limits[i].bytes, w.ids[i], what)
+	if w.exclusions == nil {
+		w.exclusions = make([]map[string]string, len(w.scans))
+	}
+	if w.exclusions[i] == nil {
+		w.exclusions[i] = map[string]string{}
+	}
+	w.exclusions[i][p] = reason
+	return []source.Skip{{Path: p, Excluded: true, Reason: reason}}
 }
 
 // visitOverLimitSafely runs one detector's VisitOverLimit, containing a
@@ -497,10 +542,27 @@ func (w *walker) finish() {
 				return
 			}
 			for _, sk := range skips {
+				w.dropExclusion(i, sk.Path)
 				w.t.Skipped = append(w.t.Skipped, source.Skip{Path: sk.Path, Reason: sk.Reason})
 			}
 		}
 	}
+}
+
+// dropExclusion removes the exclusion record made for scan i on p: the
+// scan reports p as a gap instead.
+func (w *walker) dropExclusion(i int, p string) {
+	if w.exclusions == nil || w.exclusions[i][p] == "" {
+		return
+	}
+	reason := w.exclusions[i][p]
+	out := w.t.Skipped[:0]
+	for _, s := range w.t.Skipped {
+		if !(s.Excluded && s.Path == p && s.Reason == reason) {
+			out = append(out, s)
+		}
+	}
+	w.t.Skipped = out
 }
 
 func finishSkipsSafely(s FinishSkipper) (skips []Skip, err error) {

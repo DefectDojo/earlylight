@@ -63,6 +63,11 @@ type Options struct {
 	// (a deliberate exclusion when Over is nil); one over MaxFileSize is
 	// always recorded as such, and Over adds what it returns.
 	Over func(abs string, size int64, own bool) []Skip
+	// Unread receives each file the walk met and could not read (it could
+	// not be opened or read, or changed while it was read), and each
+	// directory whose contents could not be listed (dir), besides the
+	// record of it.
+	Unread func(abs string, dir bool)
 	// IsExecutable decides from a file's first bytes whether it is an executable.
 	IsExecutable func(head []byte) bool
 	// Symlink receives every symbolic link (absolute path, target as written).
@@ -88,6 +93,15 @@ func (o Options) bound(limit int64) (int64, bool) {
 		return limit, true
 	}
 	return o.MaxFileSize, false
+}
+
+// unread records a file or directory the walk met and could not read, and
+// tells Unread.
+func (o Options) unread(abs, reason string, dir bool) Skip {
+	if o.Unread != nil {
+		o.Unread(abs, dir)
+	}
+	return Skip{Path: abs, Reason: reason}
 }
 
 // tooLarge records a file over the limit that applies to it; size is -1
@@ -152,7 +166,7 @@ func Dir(root string, opts Options, visit Visitor) ([]Skip, int, error) {
 		rel, _ := filepath.Rel(root, p)
 		abs := path.Clean("/" + filepath.ToSlash(rel))
 		if werr != nil {
-			skips = append(skips, Skip{Path: abs, Reason: werr.Error()})
+			skips = append(skips, opts.unread(abs, werr.Error(), d == nil || d.IsDir()))
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -182,7 +196,7 @@ func Dir(root string, opts Options, visit Visitor) ([]Skip, int, error) {
 		}
 		fi, err := d.Info()
 		if err != nil {
-			skips = append(skips, Skip{Path: abs, Reason: err.Error()})
+			skips = append(skips, opts.unread(abs, err.Error(), false))
 			return nil
 		}
 		n++
@@ -206,18 +220,18 @@ func readOne(osPath, abs string, fi fs.FileInfo, opts Options, visit Visitor, sk
 	// only the regular file the walk saw.
 	f, err := os.OpenFile(osPath, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
-		*skips = append(*skips, Skip{Path: abs, Reason: err.Error()})
+		*skips = append(*skips, opts.unread(abs, err.Error(), false))
 		return nil
 	}
 	defer f.Close()
 	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() || !os.SameFile(st, fi) {
-		*skips = append(*skips, Skip{Path: abs, Reason: "changed while it was being scanned (no longer the same regular file); not read"})
+		*skips = append(*skips, opts.unread(abs, "changed while it was being scanned (no longer the same regular file); not read", false))
 		return nil
 	}
 	head := make([]byte, headSize)
 	k, err := io.ReadFull(f, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		*skips = append(*skips, Skip{Path: abs, Reason: err.Error()})
+		*skips = append(*skips, opts.unread(abs, err.Error(), false))
 		return nil
 	}
 	head = head[:k]
@@ -242,7 +256,7 @@ func readOne(osPath, abs string, fi fs.FileInfo, opts Options, visit Visitor, sk
 	}
 	rest, err := io.ReadAll(r)
 	if err != nil {
-		*skips = append(*skips, Skip{Path: abs, Reason: err.Error()})
+		*skips = append(*skips, opts.unread(abs, err.Error(), false))
 		return nil
 	}
 	data := append(head, rest...)

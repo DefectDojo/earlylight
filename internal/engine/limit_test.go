@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -445,5 +446,175 @@ func TestFinishSkipper(t *testing.T) {
 		if tg.Gaps() != want || tg.SkippedPaths() != 1 {
 			t.Errorf("found %v: gaps %d paths %d skipped %+v", found, tg.Gaps(), tg.SkippedPaths(), tg.Skipped)
 		}
+		// A gap reported at the end replaces the scan's exclusion record.
+		if found && (len(tg.Skipped) != 1 || tg.Skipped[0].Excluded) {
+			t.Errorf("records contradict each other: %+v", tg.Skipped)
+		}
+	}
+}
+
+// unreadable makes p unreadable, or skips the test when that cannot be
+// done (running as root).
+func unreadable(t *testing.T, p string) {
+	t.Helper()
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(p, 0o755) })
+	if f, err := os.Open(p); err == nil {
+		f.Close()
+		t.Skip("running as root: permissions do not keep a file unread")
+	}
+}
+
+// unreadScan records what it is told about files it could not read and
+// what it is told to forget.
+type unreadScan struct {
+	*fake
+	unread, forgot *[]string
+	panicOn        string
+}
+
+func (u unreadScan) NewScan(TargetKind) Scan { return u }
+func (u unreadScan) VisitUnread(p string, dir bool) {
+	if p == u.panicOn {
+		panic("hostile")
+	}
+	*u.unread = append(*u.unread, fmt.Sprintf("%s %v", p, dir))
+}
+func (u unreadScan) Forget(p string) {
+	if p == u.panicOn {
+		panic("hostile")
+	}
+	*u.forgot = append(*u.forgot, p)
+}
+
+func newUnreadScan(id string) unreadScan {
+	return unreadScan{&fake{id: id, seen: &[]string{}}, &[]string{}, &[]string{}, ""}
+}
+
+// Round-3 review finding 1: a file or directory the walk met and could
+// not read is told to every scan that asks, exists, and is a gap.
+func TestUnreadFilesAndDirs(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/ssh/sshd_config.d/50.conf": []byte("UsePAM no\n"), "etc/locked/x": []byte("x"), "etc/ok": []byte("ok")})
+	unreadable(t, filepath.Join(root, "etc/ssh/sshd_config.d/50.conf"))
+	unreadable(t, filepath.Join(root, "etc/locked"))
+	u := newUnreadScan("t-unread")
+	var exists []bool
+	u.finish = func(ctx TargetContext) []Finding {
+		exists = []bool{ctx.Exists("/etc/ssh/sshd_config.d/50.conf"), ctx.Exists("/etc/ok")}
+		return nil
+	}
+	tg := ScanFS([]Detector{u}, root, Options{AsRoot: true})
+	sort.Strings(*u.unread)
+	if strings.Join(*u.unread, ",") != "/etc/locked true,/etc/ssh/sshd_config.d/50.conf false" {
+		t.Errorf("told %v", *u.unread)
+	}
+	if fmt.Sprint(exists) != "[true true]" || tg.Gaps() != 2 {
+		t.Errorf("exists %v gaps %d skipped %+v", exists, tg.Gaps(), tg.Skipped)
+	}
+	// A panic there is the detector failing on that file.
+	u = newUnreadScan("t-unread-panic")
+	u.panicOn = "/etc/ssh/sshd_config.d/50.conf"
+	tg = ScanFS([]Detector{u}, root, Options{AsRoot: true})
+	failed := false
+	for _, s := range tg.Skipped {
+		failed = failed || s.Path == u.panicOn && s.DetectorFailed
+	}
+	if tg.Error != "" || !failed {
+		t.Errorf("error %q skipped %+v", tg.Error, tg.Skipped)
+	}
+}
+
+// Round-3 review finding 2: when an image names a path twice, every scan
+// forgets the first entry before it is shown the second.
+func TestForgetDuplicateEntries(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, body := range []string{"first", "second"} {
+		tw.WriteHeader(&tar.Header{Name: "etc/a", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
+		tw.Write([]byte(body))
+	}
+	tw.WriteHeader(&tar.Header{Name: "etc/b", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg})
+	tw.Write([]byte("b"))
+	tw.Close()
+	p := filepath.Join(t.TempDir(), "rootfs.tar")
+	if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u := newUnreadScan("t-forget")
+	ScanImage([]Detector{u}, "rootfs:"+p, Options{})
+	if strings.Join(*u.forgot, ",") != "/etc/a" || strings.Join(*u.seen, ",") != "/etc/a,/etc/a,/etc/b" {
+		t.Errorf("forgot %v seen %v", *u.forgot, *u.seen)
+	}
+	u = newUnreadScan("t-forget-panic")
+	u.panicOn = "/etc/a"
+	tg := ScanImage([]Detector{u}, "rootfs:"+p, Options{})
+	if tg.Error != "" || len(tg.Skipped) != 1 || !tg.Skipped[0].DetectorFailed {
+		t.Errorf("error %q skipped %+v", tg.Error, tg.Skipped)
+	}
+}
+
+// A detector's limit equal to --max-file-size is --max-file-size: a larger
+// file is a gap. One byte under, it is the detector's own: an exclusion.
+func TestLimitAtMaxFileSize(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 2000)})
+	for _, c := range []struct {
+		limit    int64
+		excluded bool
+	}{{1000, false}, {999, true}} {
+		limit := c.limit
+		_, d := capped(fmt.Sprintf("t-atmax%d", limit), osRelease, func(string) int64 { return limit })
+		tg := ScanFS([]Detector{d}, root, Options{AsRoot: true, MaxFileSize: 1000})
+		if len(tg.Skipped) != 1 || tg.Skipped[0].Excluded != c.excluded {
+			t.Errorf("limit %d: skipped %+v", limit, tg.Skipped)
+		}
+	}
+}
+
+// panicFinishSkips panics in FinishSkips.
+type panicFinishSkips struct{ finishSkipper }
+
+func (p panicFinishSkips) NewScan(TargetKind) Scan { return p }
+func (p panicFinishSkips) FinishSkips() []Skip     { panic("late") }
+
+// A panic in FinishSkips fails the target, as one in Finish does.
+func TestFinishSkipsPanic(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": []byte("x")})
+	_, g := gapDetector("t-finpanic", false)
+	tg := ScanFS([]Detector{panicFinishSkips{finishSkipper{g, true}}}, root, Options{AsRoot: true})
+	if !strings.Contains(tg.Error, "t-finpanic failed") {
+		t.Errorf("error %q", tg.Error)
+	}
+}
+
+// visitorOnly is told about files over --max-file-size without having a
+// limit of its own.
+type visitorOnly struct {
+	*fake
+	fakeReader
+	sizes *[]int64
+}
+
+func (v visitorOnly) Manifest() Manifest                    { return v.fake.Manifest() }
+func (v visitorOnly) Load() error                           { return nil }
+func (v visitorOnly) NewScan(TargetKind) Scan               { return v }
+func (v visitorOnly) Visit(f File) []Skip                   { return v.fake.Visit(f) }
+func (v visitorOnly) Finish(ctx TargetContext) []Finding    { return nil }
+func (v visitorOnly) Wants(p string, h []byte, e bool) bool { return v.fakeReader.Wants(p, h, e) }
+func (v visitorOnly) VisitOverLimit(_ string, size int64) []Skip {
+	*v.sizes = append(*v.sizes, size)
+	return nil
+}
+
+// A LimitVisitor that is not a Limiter is told about a file it wanted over
+// --max-file-size, and reads every other file as before.
+func TestLimitVisitorWithoutLimiter(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 2000), "etc/small": []byte("x")})
+	f := &fake{id: "t-visitor-only", wants: func(string) bool { return true }, seen: &[]string{}}
+	v := visitorOnly{f, fakeReader{f}, &[]int64{}}
+	tg := ScanFS([]Detector{v}, root, Options{AsRoot: true, MaxFileSize: 1000})
+	if fmt.Sprint(*v.sizes) != "[2000]" || strings.Join(*f.seen, ",") != "/etc/small" || tg.Gaps() != 1 {
+		t.Errorf("sizes %v seen %v skipped %+v", *v.sizes, *f.seen, tg.Skipped)
 	}
 }
