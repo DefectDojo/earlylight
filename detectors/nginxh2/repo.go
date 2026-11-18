@@ -396,7 +396,7 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 				fixed++
 			}
 			if fixed == 0 {
-				return "", &repo.Declined{Reason: fmt.Sprintf("no nginx was found in %s, so the fix is not proven; change it by hand", where)}
+				return "", &repo.Declined{Reason: fmt.Sprintf("no nginx was found in %s, so the fix could not be shown; change it by hand", where)}
 			}
 			_, tag, _ := strings.Cut(target[strings.LastIndex(target, "/")+1:], ":")
 			if curOS != "" || !repo.NamesBaseOS(tag) {

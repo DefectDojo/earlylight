@@ -203,7 +203,7 @@ func TestManifestLoads(t *testing.T) {
 			t.Errorf("duplicate kind %s", k.ID)
 		}
 		seen[k.ID] = true
-		if strings.Contains(k.Description, "—") || strings.Contains(k.Title, "—") {
+		if strings.Contains(k.Description, "\u2014") || strings.Contains(k.Title, "\u2014") {
 			t.Errorf("kind %s has an em dash", k.ID)
 		}
 	}
