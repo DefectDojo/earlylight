@@ -201,6 +201,11 @@ func TestGaps(t *testing.T) {
 	if g := tg.Gaps(); g != 2 {
 		t.Fatalf("gaps %d, want 2: an archive member named testdata/ is still a gap", g)
 	}
+	// A path is counted once, however many records it has.
+	tg.Skipped = append(tg.Skipped, skip("/opt/app.jks", "not checked by another detector", false), skip("/proc", "excluded", true))
+	if g, n := tg.Gaps(), tg.SkippedPaths(); g != 2 || n != 4 {
+		t.Fatalf("gaps %d paths %d, want 2 and 4", g, n)
+	}
 }
 
 // A detector that panics on one file loses that file, not the scan.

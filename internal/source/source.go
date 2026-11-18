@@ -57,9 +57,12 @@ type Options struct {
 	// below MaxFileSize is not read past its first bytes. Nil reads every
 	// file.
 	Read func(abs string, head []byte, executable bool) (read bool, limit int64)
-	// Over records a file over the limit Read set (size -1 when it was found
-	// larger while reading). Nil records it as a deliberate exclusion.
-	Over func(abs string, size int64) []Skip
+	// Over records a file Read chose that is over the limit Read set (own)
+	// or over MaxFileSize, with its size (-1 when it was found larger while
+	// reading). A file over its own limit is recorded with what Over returns
+	// (a deliberate exclusion when Over is nil); one over MaxFileSize is
+	// always recorded as such, and Over adds what it returns.
+	Over func(abs string, size int64, own bool) []Skip
 	// IsExecutable decides from a file's first bytes whether it is an executable.
 	IsExecutable func(head []byte) bool
 	// Symlink receives every symbolic link (absolute path, target as written).
@@ -90,17 +93,22 @@ func (o Options) bound(limit int64) (int64, bool) {
 // tooLarge records a file over the limit that applies to it; size is -1
 // when it was found larger while reading.
 func (o Options) tooLarge(abs string, size, most int64, own bool) []Skip {
+	var told []Skip
 	switch {
 	case own && o.Over != nil:
-		return o.Over(abs, size)
+		return o.Over(abs, size, true)
+	case o.Over != nil:
+		told = o.Over(abs, size, false)
+	}
+	switch {
 	case own && size < 0:
 		return []Skip{{Path: abs, Reason: fmt.Sprintf("excluded: larger than the %d-byte limit set for this file, found while reading", most), Excluded: true}}
 	case own:
 		return []Skip{{Path: abs, Reason: fmt.Sprintf("excluded: larger than the %d-byte limit set for this file (%d bytes)", most, size), Excluded: true}}
 	case size < 0:
-		return []Skip{{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes) while reading", most)}}
+		return append([]Skip{{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes) while reading", most)}}, told...)
 	}
-	return []Skip{{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes)", size)}}
+	return append([]Skip{{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes)", size)}}, told...)
 }
 
 // Visitor receives each file read. Returning an error stops the walk.

@@ -74,8 +74,8 @@ func FuzzTar(f *testing.F) {
 			var over []Skip
 			limited := Options{MaxFileSize: 1 << 20,
 				Read: func(string, []byte, bool) (bool, int64) { return true, limit },
-				Over: func(p string, size int64) []Skip {
-					if size >= 0 && size <= limit {
+				Over: func(p string, size int64, own bool) []Skip {
+					if size >= 0 && size <= limit || !own && size >= 0 && size <= 1<<20 {
 						t.Errorf("%s: %d bytes recorded as over a %d-byte limit", p, size, limit)
 					}
 					over = append(over, Skip{Path: p})
@@ -108,7 +108,7 @@ func TestDirOwnLimitWhileReading(t *testing.T) {
 			}
 			return true, 4096
 		},
-		Over: func(_ string, size int64) []Skip {
+		Over: func(_ string, size int64, _ bool) []Skip {
 			sizes = append(sizes, size)
 			return []Skip{{Path: "/os-release", Reason: "over"}}
 		}}

@@ -202,14 +202,25 @@ type Limiter interface {
 	Limit(path string, head []byte, executable bool) int64
 }
 
-// LimitVisitor is implemented by a Limiter's Scan when a file it asked for
-// and did not get, over its limit, can change a verdict: an sshd_config
-// include that may turn PAM off must not let the scan clear a server.
-// VisitOverLimit is called instead of Visit, with the file's size (-1 when
-// it was found larger while reading). The skips it returns are recorded as
-// coverage gaps; when it returns none, the file is a deliberate exclusion.
+// LimitVisitor is implemented by a Scan that must know which files it
+// asked for and did not get, over its own limit (Limiter) or over
+// --max-file-size: an sshd_config include that may turn PAM off must not let
+// the scan clear a server. VisitOverLimit is called instead of Visit, with
+// the file's size (-1 when it was found larger while reading). For a file
+// over its own limit, the skips it returns are recorded as coverage gaps,
+// and when it returns none the file is a deliberate exclusion; a file over
+// --max-file-size is a gap already, and what it returns is not recorded.
 type LimitVisitor interface {
 	VisitOverLimit(path string, size int64) []Skip
+}
+
+// FinishSkipper is implemented by a Scan that decides only at the end which
+// of the files it did not check its findings depend on: FinishSkips is
+// called after Finish, and what it returns is recorded as coverage gaps
+// (sshole: a package database over its limit matters only when an OpenSSH
+// server was found).
+type FinishSkipper interface {
+	FinishSkips() []Skip
 }
 
 // HeadVisitor is implemented by a Scan that wants to see the first bytes

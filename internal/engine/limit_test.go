@@ -290,7 +290,7 @@ func TestExistsWithLimits(t *testing.T) {
 // The limit decision, checked against a model for any file size, limits and
 // wants: who sees the file, what is recorded, and that Exists holds.
 func FuzzLimits(f *testing.F) {
-	for _, s := range [][5]uint16{{100, 100, 0, 3, 0}, {101, 100, 0, 3, 0}, {4096, 4096, 4097, 3, 1}, {4097, 4096, 0, 1, 2}, {5000, 4096, 5000, 2, 3}, {0, 1, 1, 3, 3}, {1, 0, 0, 0, 0}} {
+	for _, s := range [][5]uint16{{100, 100, 0, 3, 0}, {101, 100, 0, 3, 0}, {4096, 4096, 4097, 3, 1}, {4097, 4096, 0, 1, 2}, {5000, 4096, 5000, 2, 3}, {0, 1, 1, 3, 3}, {1, 0, 0, 0, 0}, {115, 100, 0, 2, 0}} {
 		f.Add(s[0], s[1], s[2], uint8(s[3]), uint8(s[4]))
 	}
 	f.Fuzz(func(t *testing.T, size, limA, limB uint16, wants, maxSel uint8) {
@@ -358,4 +358,92 @@ func FuzzLimits(f *testing.F) {
 			t.Fatalf("Exists false for a file the walk met")
 		}
 	})
+}
+
+// panicOver panics in VisitOverLimit.
+type panicOver struct{ gapScan }
+
+func (p panicOver) NewScan(TargetKind) Scan { return p }
+func (p panicOver) VisitOverLimit(string, int64) []Skip {
+	panic("hostile size")
+}
+
+// A panic in VisitOverLimit loses that file, recorded as a detector
+// failure (a gap), and the scan goes on: over its own limit and over
+// --max-file-size alike.
+func TestVisitOverLimitPanic(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 100<<10), "etc/b": []byte("b")})
+	for _, max := range []int64{0, 1000} {
+		_, g := gapDetector(fmt.Sprintf("t-overpanic%d", max), true)
+		other := &fake{id: fmt.Sprintf("t-overother%d", max), wants: func(string) bool { return true }}
+		tg := ScanFS([]Detector{panicOver{g}, detector(other)}, root, Options{AsRoot: true, MaxFileSize: max})
+		failed := false
+		for _, s := range tg.Skipped {
+			failed = failed || s.Path == "/etc/os-release" && s.DetectorFailed
+		}
+		if tg.Error != "" || !failed || tg.Gaps() != 1 || len(*other.seen) == 0 {
+			t.Errorf("--max-file-size %d: error %q skipped %+v other saw %v", max, tg.Error, tg.Skipped, *other.seen)
+		}
+	}
+}
+
+// Files over --max-file-size are told to each scan that asked for them
+// (size known, or -1), and the record stays the --max-file-size gap.
+func TestVisitOverLimitMaxFileSize(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 2000)})
+	_, g := gapDetector("t-overmax", true)
+	tg := ScanFS([]Detector{g}, root, Options{AsRoot: true, MaxFileSize: 1000})
+	if len(*g.sizes) != 1 || (*g.sizes)[0] != 2000 || len(tg.Skipped) != 1 || !strings.Contains(tg.Skipped[0].Reason, "--max-file-size") || tg.Gaps() != 1 {
+		t.Errorf("sizes %v skipped %+v", *g.sizes, tg.Skipped)
+	}
+	// A detector that did not ask for it is not told.
+	notWanting := &fake{id: "t-overmax-no", wants: func(string) bool { return false }, seen: &[]string{}}
+	sizes := &[]int64{}
+	ng := gapScan{limitedReader{limited{notWanting, limit64K}, fakeReader{notWanting}}, true, sizes}
+	ScanFS([]Detector{ng, detector(&fake{id: "t-overmax-all"})}, root, Options{AsRoot: true, MaxFileSize: 1000})
+	if len(*sizes) != 0 {
+		t.Errorf("told a detector that did not want it: %v", *sizes)
+	}
+}
+
+// Over-limit records carry the path inside the system root when a
+// directory below it is scanned (--root).
+func TestLimiterBelowSystemRoot(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 100<<10)})
+	_, d := capped("t-caproot", osRelease, limit64K)
+	tg := ScanFS([]Detector{d}, filepath.Join(root, "etc"), Options{SystemRoot: root})
+	if tg.Error != "" || len(tg.Skipped) != 1 || tg.Skipped[0].Path != "/etc/os-release" {
+		t.Errorf("error %q skipped %+v", tg.Error, tg.Skipped)
+	}
+}
+
+// finishSkipper reports a gap only at the end.
+type finishSkipper struct {
+	gapScan
+	found bool
+}
+
+func (f finishSkipper) NewScan(TargetKind) Scan { return f }
+func (f finishSkipper) FinishSkips() []Skip {
+	if !f.found {
+		return nil
+	}
+	return []Skip{{Path: "/etc/os-release", Reason: "needed after all"}}
+}
+
+// FinishSkips adds coverage gaps after Finish; a path with several records
+// is counted once.
+func TestFinishSkipper(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 100<<10)})
+	for _, found := range []bool{false, true} {
+		_, g := gapDetector(fmt.Sprintf("t-finskip%v", found), false)
+		tg := ScanFS([]Detector{finishSkipper{g, found}}, root, Options{AsRoot: true})
+		want := 0
+		if found {
+			want = 1
+		}
+		if tg.Gaps() != want || tg.SkippedPaths() != 1 {
+			t.Errorf("found %v: gaps %d paths %d skipped %+v", found, tg.Gaps(), tg.SkippedPaths(), tg.Skipped)
+		}
+	}
 }

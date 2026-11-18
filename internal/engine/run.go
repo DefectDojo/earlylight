@@ -55,18 +55,30 @@ func (t *Target) Count(v Verdict) int {
 // which are malformed on purpose.
 func (t *Target) Gaps() int {
 	n := 0
+	gap := map[string]bool{} // a path is counted once, however many records it has
 	for _, s := range t.Skipped {
 		// The test-fixture exemption applies only to paths the operator controls:
 		// real files on a scanned filesystem. Image paths and archive member names
 		// are chosen by whoever built them, and a detector failure is never exempt.
 		fixture := t.Type == Filesystem && strings.Contains(s.Path, "/testdata/") &&
 			!strings.Contains(s.Path, "!/") && !s.DetectorFailed
-		if s.Excluded || strings.HasPrefix(s.Reason, "excluded:") || fixture {
+		if s.Excluded || strings.HasPrefix(s.Reason, "excluded:") || fixture || gap[s.Path] {
 			continue
 		}
+		gap[s.Path] = true
 		n++
 	}
 	return n
+}
+
+// SkippedPaths counts the paths that were not scanned, each once: a file
+// over the limits of two detectors has a record for each.
+func (t *Target) SkippedPaths() int {
+	seen := map[string]bool{}
+	for _, s := range t.Skipped {
+		seen[s.Path] = true
+	}
+	return len(seen)
 }
 
 // Options control a run.
@@ -276,6 +288,9 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 		if limiters[i], ok = d.(Limiter); ok {
 			limited = true
 		}
+		if _, ok := w.scans[i].(LimitVisitor); ok {
+			limited = true // it is told about files it asked for and did not get
+		}
 	}
 	var decide func(p string, head []byte, exe bool) (bool, int64)
 	switch {
@@ -284,7 +299,7 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 		decide = func(p string, head []byte, exe bool) (bool, int64) {
 			return w.limit(p, head, exe, readers, limiters)
 		}
-		so.Over = func(p string, size int64) []source.Skip { return w.tooLarge(w.abs(p), size) }
+		so.Over = func(p string, size int64, own bool) []source.Skip { return w.tooLarge(w.abs(p), size, own) }
 	case all:
 		decide = func(string, []byte, bool) (bool, int64) { return true, 0 }
 	default:
@@ -337,13 +352,26 @@ func (w *walker) limit(p string, head []byte, exe bool, readers []Reader, limite
 	return read, most
 }
 
-// tooLarge records a file that was not read because it is over the limit
-// of every detector that wants it (size -1 when found while reading).
-func (w *walker) tooLarge(p string, size int64) []source.Skip {
+// tooLarge records a file that was not read (size -1 when found larger
+// while reading). Over the limit of every detector that wants it (own), it
+// is recorded for each of them; over --max-file-size, the source records
+// it as a gap, and each detector that wanted it is only told
+// (VisitOverLimit), so a verdict never rests on its absence.
+func (w *walker) tooLarge(p string, size int64, own bool) []source.Skip {
 	var out []source.Skip
 	for i, l := range w.limits {
-		if l.wants && l.bytes > 0 && (size < 0 || size > l.bytes) {
+		switch {
+		case !l.wants:
+		case own && l.bytes > 0 && (size < 0 || size > l.bytes):
 			out = append(out, w.overLimit(i, p, size)...)
+		case !own:
+			if lv, ok := w.scans[i].(LimitVisitor); ok {
+				for _, sk := range w.visitOverLimitSafely(i, lv, p, size) {
+					if sk.failed {
+						out = append(out, source.Skip{Path: sk.Path, Reason: sk.Reason, DetectorFailed: true})
+					}
+				}
+			}
 		}
 	}
 	return out
@@ -462,7 +490,26 @@ func (w *walker) finish() {
 			return
 		}
 		w.t.Findings = append(w.t.Findings, check(w.dets[i].Manifest().ID, fs)...)
+		if fs, ok := s.(FinishSkipper); ok {
+			skips, err := finishSkipsSafely(fs)
+			if err != nil {
+				w.t.Error = fmt.Sprintf("detector %s failed: %v", w.ids[i], err)
+				return
+			}
+			for _, sk := range skips {
+				w.t.Skipped = append(w.t.Skipped, source.Skip{Path: sk.Path, Reason: sk.Reason})
+			}
+		}
 	}
+}
+
+func finishSkipsSafely(s FinishSkipper) (skips []Skip, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return s.FinishSkips(), nil
 }
 
 func finishSafely(s Scan, ctx TargetContext) (fs []Finding, err error) {
