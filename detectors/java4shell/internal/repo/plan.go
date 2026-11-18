@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -51,7 +52,7 @@ func Plan(ctx context.Context, root string, f Finding, reg Registry, opts Option
 		return planTag(ctx, root, f, reg, opts)
 	case "setup-java":
 		return planLine(ctx, root, f, f.edit.file, f.edit.line, f.edit.col, f.edit.old, fmt.Sprint(f.edit.feature), opts,
-			fmt.Sprintf("Sets setup-java's java-version from %s to %d on line %d of %s: the %s distribution's newest Java %d release has the Java4Shell fix (%s), and setup-java installs it when the job runs.",
+			fmt.Sprintf("Sets setup-java's java-version from %s to %d on line %d of %s: the %s distribution's newest Java %d release has the Java4Shell fix (%s), and setup-java installs it when the job runs. On a self-hosted runner with Java %[6]d cached, add check-latest: true to the step so it fetches the newest release.",
 				f.edit.old, f.edit.feature, f.edit.line, f.edit.file, f.Props["distribution"], f.edit.feature, knowledge.FixedVersion(f.edit.feature)))
 	}
 	return nil, declined("no automatic fix for this finding")
@@ -153,7 +154,14 @@ func planTag(ctx context.Context, root string, f Finding, reg Registry, opts Opt
 		file = r.File
 	}
 	col := part.Column - 1 + (start - off)
-	if _, err := reg.Verify(ctx, e.image, newImage); err != nil {
+	if part.Var != "" {
+		// Editing the variable changes every place that uses it.
+		if n, err := varUses(root, r.File, part.Var, opts); err != nil || n > 1 {
+			return nil, declined("%s gets its tag from %s, which %s uses in more than one place; change it by hand", e.image, part.Var, r.File)
+		}
+	}
+	digest, err := reg.Verify(ctx, e.image, newImage)
+	if err != nil {
 		var d *Declined
 		if errors.As(err, &d) {
 			return nil, err
@@ -164,9 +172,13 @@ func planTag(ctx context.Context, root string, f Finding, reg Registry, opts Opt
 	if part.Var != "" {
 		where = fmt.Sprintf(" (in the value of %s)", part.Var)
 	}
+	moving := ""
+	if tv, ok := e.family.ParseTag(newTag); ok && !tv.Exact {
+		moving = fmt.Sprintf(" The tag %s is republished as %s releases new builds: pull it again when you rebuild and deploy (docker pull, imagePullPolicy: Always), since caches and nodes may still hold an older image under the same tag; to deploy exactly what was checked, pin it as %s@%s.", newTag, e.family.Vendor, newImage, digest)
+	}
 	return planLine(ctx, root, f, file, part.Line, col, tag, newTag, opts,
-		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: the %s release of the same variant with the Java4Shell fix, read and checked on every platform the current tag has. Rebuild and redeploy.",
-			e.image, newImage, part.Line, file, where, e.family.Vendor))
+		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: the %s release of the same variant with the Java4Shell fix, read and checked on every platform the current tag has (linux/amd64 digest checked: %s). Rebuild and redeploy.%s",
+			e.image, newImage, part.Line, file, where, e.family.Vendor, digest, moving))
 }
 
 // planLine replaces old with repl at col on a line and rescans the file in
@@ -298,4 +310,47 @@ func Printable(s string) string {
 // apply it.
 func Mitigation(file string, line int) string {
 	return fmt.Sprintf("%s: after line %d add\n    ENV JAVA_TOOL_OPTIONS=\"-XX:-UseBASE64Intrinsics\"\n  (append to any JAVA_TOOL_OPTIONS the image already sets; this keeps the vulnerable decoder from being generated until the product ships a fixed runtime)", file, line)
+}
+
+// varUses counts the places a Dockerfile, Compose file or .env file uses
+// a variable ($VAR, ${VAR}).
+func varUses(root, file, name string, opts Options) (int, error) {
+	b, ok := opts.Overlay[file]
+	if !ok {
+		var err error
+		if b, err = readFile(root, file); err != nil {
+			return 0, err
+		}
+	}
+	re := regexp.MustCompile(`\$\{?` + regexp.QuoteMeta(name) + `\b`)
+	return len(re.FindAllIndex(b, -1)), nil
+}
+
+// baseOSWords name a base OS in a tag's variant.
+var baseOSWords = []string{"alpine", "jammy", "noble", "focal", "resolute", "plucky", "ubuntu", "debian", "bookworm", "trixie", "bullseye",
+	"ubi", "al2023", "al2", "centos", "rocky", "alma", "windowsservercore", "nanoserver", "distroless", "wolfi", "chainguard"}
+
+// NamesBaseOS reports whether a tag's variant names the base OS, so two
+// tags with the same variant are on the same one.
+func NamesBaseOS(variant string) bool {
+	v := strings.ToLower(variant)
+	for _, w := range baseOSWords {
+		if strings.Contains(v, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// SameBase compares the base OS (ID and VERSION_ID of os-release) of the
+// current image and its replacement, for tags whose variant does not name
+// it: moving a deployment to another distribution is not this fix's call.
+func SameBase(current, target string) error {
+	switch {
+	case current == "" || target == "":
+		return &Declined{Reason: "the base OS of the current or the new image could not be read, and the tag does not name it; change it by hand"}
+	case current != target:
+		return &Declined{Reason: fmt.Sprintf("the new image is on %s, the current one on %s; change it by hand", target, current)}
+	}
+	return nil
 }

@@ -118,7 +118,7 @@ func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head
 // keep reports the package databases owners are read from.
 func keep(p string) bool {
 	switch p {
-	case "/lib/apk/db/installed", "/usr/lib/apk/db/installed", "/var/lib/dpkg/status":
+	case "/lib/apk/db/installed", "/usr/lib/apk/db/installed", "/var/lib/dpkg/status", "/etc/os-release", "/usr/lib/os-release":
 		return true
 	}
 	return assess.IsDpkgList(p)
@@ -265,6 +265,9 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	}
 	if len(s.crashes) > 0 {
 		ctx.Annotate("java4shell_crash_logs", s.crashes)
+	}
+	if osr := osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]); osr != "" {
+		ctx.Annotate("java4shell_os", osr)
 	}
 	if len(s.libs) == 0 {
 		if len(s.limits) > 0 {
@@ -435,4 +438,32 @@ func (r resolver) resolve(p string) string {
 		}
 	}
 	return cur // a loop: as far as it got
+}
+
+// osRelease is "ID VERSION_ID" from os-release, for comparing the base OS
+// of two images.
+func osRelease(files ...[]byte) string {
+	for _, b := range files {
+		if len(b) == 0 || len(b) > 64<<10 {
+			continue
+		}
+		var id, ver string
+		for _, l := range strings.Split(string(b), "\n") {
+			k, v, ok := strings.Cut(strings.TrimSpace(l), "=")
+			if !ok {
+				continue
+			}
+			v = strings.Trim(v, "\"'")
+			switch k {
+			case "ID":
+				id = v
+			case "VERSION_ID":
+				ver = v
+			}
+		}
+		if id != "" {
+			return strings.TrimSpace(id + " " + ver)
+		}
+	}
+	return ""
 }

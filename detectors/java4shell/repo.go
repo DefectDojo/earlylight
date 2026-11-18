@@ -314,6 +314,16 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 		if t.Error != "" {
 			return "", fmt.Errorf("reading %s: %s", target, t.Error)
 		}
+		// A tag whose variant does not name its base OS ("-jre") may move
+		// to another distribution between releases: compare them.
+		if fam, tag, ok := repo.FamilyOf(target); ok {
+			if tv, ok := fam.ParseTag(tag); !ok || !repo.NamesBaseOS(tv.Variant) {
+				c := engine.ScanImage([]engine.Detector{d}, current, engine.Options{Platform: "linux/amd64", MaxFileSize: o.MaxFileSize, Guarded: true, PublicOnly: o.PublicOnly})
+				if err := repo.SameBase(annotation(c, "java4shell_os"), annotation(t, "java4shell_os")); err != nil {
+					return "", err
+				}
+			}
+		}
 		if t.Incomplete != "" || t.Gaps() > 0 || len(t.Problems) > 0 {
 			return "", &repo.Declined{Reason: fmt.Sprintf("%s could not be read in full; change it by hand", target)}
 		}
@@ -339,4 +349,12 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 		}
 		return desc.Digest.String(), nil
 	}
+}
+
+func annotation(t *engine.Target, key string) string {
+	if t == nil || t.Error != "" {
+		return ""
+	}
+	v, _ := t.Annotations[key].(string)
+	return v
 }
