@@ -480,7 +480,6 @@ func (s *scanner) sdkmanrc(rel, text string) {
 // (a Zulu version, not a Java version: not judged).
 var asdfJava = regexp.MustCompile(`^(?:(adoptopenjdk|temurin|corretto|openjdk|sapmachine|liberica|microsoft|oracle|semeru-openj9|semeru|dragonwell|kona|zulu|graalvm|graalvm-community|oracle-graalvm|mandrel|jetbrains|java-se-ri)-)?(?:(?:jre|jdk|openj9|musl|lite|javafx|fx|crac)-)*(\d[\d.]*)`)
 
-//
 // mise is true for a mise file: mise resolves a short version (temurin-17,
 // 21) to the newest release when it installs, where asdf takes the name as
 // one release (openjdk-21 is 21 GA).
@@ -948,12 +947,12 @@ var (
 	// files; a query (-qip) or an erase (-e) is not an install.
 	// dpkgInstallFlag is dpkg's install option (-i, --install).
 	dpkgInstallFlag = regexp.MustCompile(`^(?:-[a-zA-Z]*i[a-zA-Z]*|--install)$`)
-	rpmInstallFlag = regexp.MustCompile(`^(?:-[a-dfh-pr-zA-UW-Z]*[iUF][a-dfh-pr-zA-UW-Z]*|--install|--upgrade|--freshen|--reinstall)$`)
-	vendorJava     = regexp.MustCompile(`\b((temurin|zulu|msopenjdk|sapmachine)-?(\d{1,2})(?:-ca)?(?:-(?:jdk|jre))?(?:-headless)?)\b(=([^\s;&|]+))?`)
-	defaultJava    = regexp.MustCompile(`\b(default-(?:jre|jdk)(?:-headless)?)\b`)
-	envJTO         = regexp.MustCompile(`(?i)^\s*ENV\s+`)
-	cmdLine        = regexp.MustCompile(`(?i)^\s*(?:ENTRYPOINT|CMD)\s+`)
-	fromLine       = regexp.MustCompile(`(?i)^\s*FROM\s`)
+	rpmInstallFlag  = regexp.MustCompile(`^(?:-[a-dfh-pr-zA-UW-Z]*[iUF][a-dfh-pr-zA-UW-Z]*|--install|--upgrade|--freshen|--reinstall)$`)
+	vendorJava      = regexp.MustCompile(`\b((temurin|zulu|msopenjdk|sapmachine)-?(\d{1,2})(?:-ca)?(?:-(?:jdk|jre))?(?:-headless)?)\b(=([^\s;&|]+))?`)
+	defaultJava     = regexp.MustCompile(`\b(default-(?:jre|jdk)(?:-headless)?)\b`)
+	envJTO          = regexp.MustCompile(`(?i)^\s*ENV\s+`)
+	cmdLine         = regexp.MustCompile(`(?i)^\s*(?:ENTRYPOINT|CMD)\s+`)
+	fromLine        = regexp.MustCompile(`(?i)^\s*FROM\s`)
 )
 
 func (s *scanner) dockerfile(rel, text string) {
