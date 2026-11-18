@@ -83,6 +83,24 @@ func (d *Detector) Wants(p string, head []byte, _ bool) bool {
 	return archive.IsExecutable(head) || keep(p) || isScript(head)
 }
 
+// Limit is the size Visit keeps a file to, so the engine never reads a
+// larger one: a start script or an account, package or configuration file
+// is never hundreds of MiB. Executables (possible sshd binaries) are read
+// whole.
+func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
+	if archive.IsExecutable(head) {
+		return 0
+	}
+	var most int64
+	if isScript(head) {
+		most = maxScript
+	}
+	if keep(p) {
+		most = max(most, maxKept)
+	}
+	return most
+}
+
 // isScript reports a "#!" script: a container's entrypoint or startup step.
 func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head[1] == '!' }
 
