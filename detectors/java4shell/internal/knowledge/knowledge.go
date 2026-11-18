@@ -44,7 +44,11 @@ type Version struct {
 	Nums  []int
 	Build int  // -1 when absent
 	EA    bool // a pre-release or self-built JDK: -ea, -beta, -internal, adhoc
-	Raw   string
+	// SelfBuilt is a JDK built from source (-internal, adhoc): its build
+	// number is not the release's, so it cannot place it before or after a
+	// build boundary.
+	SelfBuilt bool
+	Raw       string
 }
 
 // Feature is the major release (8, 11, 17...).
@@ -128,8 +132,15 @@ func Parse(s string) (Version, bool) {
 		if i := strings.IndexByte(r, '+'); i >= 0 {
 			pre, rest = r[:i], r[i:]
 		}
-		// Any pre-release identifier: ea, beta, internal, a build date.
-		v.EA = pre != ""
+		switch {
+		case pre == "", strings.EqualFold(pre, "LTS"), pre[0] >= '0' && pre[0] <= '9':
+			// A vendor suffix (21.0.13.1-LTS) or an rpm release
+			// (21.0.13.1.2-1.el9), not a pre-release.
+		case strings.HasPrefix(pre, "internal"):
+			v.EA, v.SelfBuilt = true, true
+		default:
+			v.EA = true // ea, beta, rc, a build date
+		}
 	}
 	if r, ok := strings.CutPrefix(rest, "+"); ok {
 		if b, _ := leadingInt(r); b >= 0 {
@@ -137,7 +148,7 @@ func Parse(s string) (Version, bool) {
 		}
 		// A self-built JDK ("+0-adhoc.root.jdk17u") is not a release.
 		if strings.Contains(r, "adhoc") {
-			v.EA = true
+			v.EA, v.SelfBuilt = true, true
 		}
 	}
 	return v, true
@@ -295,6 +306,9 @@ func Judge(v Version) (Status, string) {
 	}
 	if l.Introduced != nil {
 		c := Compare(v.Nums, l.Introduced)
+		if c == 0 && v.SelfBuilt {
+			return Unknown, fmt.Sprintf("Java %s is a self-built JDK of %s, the update the decoder came in with (build %d): its build number does not show whether it has it", ver, join(l.Introduced), l.IntroducedBuild)
+		}
 		if c < 0 || c == 0 && v.EA && v.Build >= 0 && v.Build < l.IntroducedBuild {
 			return NotAffected, fmt.Sprintf("Java %s predates %s, the first %d update with the AVX-512 VBMI Base64 decoder (8268276)", ver, join(l.Introduced), f)
 		}
@@ -322,6 +336,8 @@ func Judge(v Version) (Status, string) {
 	switch c := Compare(v.Nums, l.Fixed); {
 	case c < 0:
 		return Vulnerable, fmt.Sprintf("Java %s is older than %s, the first %d release with the fix (%s)", ver, join(l.Fixed), f, BugRef)
+	case c == 0 && v.SelfBuilt:
+		return Unknown, fmt.Sprintf("Java %s is a self-built JDK of %s, the release the fix reached in build %d: its build number does not show whether its source had the fix (%s)", ver, join(l.Fixed), l.FixedBuild, BugRef)
 	case c == 0 && v.Build >= 0 && v.Build < l.FixedBuild:
 		return Vulnerable, fmt.Sprintf("Java %s build %d predates the fix: it reached %s in build %d (%s)", ver, v.Build, join(l.Fixed), l.FixedBuild, BugRef)
 	}

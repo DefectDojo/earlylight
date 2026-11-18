@@ -24,7 +24,7 @@ func TestReviewBuilds(t *testing.T) {
 		// Pre-release builds are not judged fixed.
 		{"21.0.13.1-beta+1-202611100000", Vulnerable},
 		{"21.0.13.1-beta+2-202611150000", Unknown},
-		{"17.0.21.1-internal+0-adhoc.root.jdk17u", Vulnerable},
+		{"17.0.21.1-internal+0-adhoc.root.jdk17u", Unknown}, // self-built: the build number says nothing (round 2)
 		{"17.0.21.1-internal+2-adhoc.root.jdk17u", Unknown},
 		{"17.0.21.1+2-adhoc.builder.jdk", Unknown},
 		// Older than the fix whatever the fourth number means.
@@ -36,6 +36,31 @@ func TestReviewBuilds(t *testing.T) {
 		v, ok := Parse(c.v)
 		if !ok {
 			t.Fatalf("Parse(%q) failed", c.v)
+		}
+		if got, why := Judge(v); got != c.want {
+			t.Errorf("Judge(%s) = %s (%s), want %s", c.v, got, why, c.want)
+		}
+	}
+}
+
+// Round-2 finding 3: self-built JDKs have no meaningful build number, and
+// -LTS or an rpm release suffix is not a pre-release.
+func TestReviewSelfBuilt(t *testing.T) {
+	for _, c := range []struct {
+		v    string
+		want Status
+	}{
+		{"17.0.6-internal+0-adhoc.root.jdk17u", Unknown},
+		{"17.0.21.1-internal+0-adhoc.root.jdk17u", Unknown},
+		{"21.0.2-internal+0-adhoc.root.jdk21u", Vulnerable}, // the source predates the fix
+		{"24.0.2-internal+0-adhoc.root.jdk24u", Vulnerable}, // the line has no fix
+		{"21.0.13.1-LTS", Fixed},
+		{"21.0.13.1.2-1.el9", Fixed},
+		{"21.0.13-LTS", Vulnerable},
+	} {
+		v, ok := Parse(c.v)
+		if !ok {
+			t.Fatalf("Parse(%q)", c.v)
 		}
 		if got, why := Judge(v); got != c.want {
 			t.Errorf("Judge(%s) = %s (%s), want %s", c.v, got, why, c.want)
