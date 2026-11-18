@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -158,6 +159,13 @@ const headSize = 4096
 // PHP runtime inside could not be recognised. (From php2shell-scan's source.)
 func upx(head []byte) bool {
 	return bytes.Contains(head, []byte("UPX!")) || (bytes.Contains(head, []byte("UPX0")) && bytes.Contains(head, []byte("UPX1")))
+}
+
+// Forget drops what was kept of p: an image names it again, and the last
+// entry is the file.
+func (c *collector) Forget(p string) {
+	delete(c.dbFiles, p)
+	c.binaries = slices.DeleteFunc(c.binaries, func(b *detect.Binary) bool { return b.Path == p })
 }
 
 func (c *collector) Visit(f engine.File) []engine.Skip {

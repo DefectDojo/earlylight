@@ -16,6 +16,8 @@ import (
 	"github.com/DefectDojo/earlylight/detectors/brotli/internal/fingerprint"
 	"github.com/DefectDojo/earlylight/internal/archive"
 	"github.com/DefectDojo/earlylight/internal/engine"
+	"slices"
+	"strings"
 )
 
 // ID is the detector's ID.
@@ -81,6 +83,14 @@ func (d *Detector) Wants(_ string, head []byte, _ bool) bool {
 func (d *Detector) NewScan(engine.TargetKind) engine.Scan { return &scan{} }
 
 type scan struct{ findings []engine.Finding }
+
+// Forget drops what was found in p, and inside it: an image names it
+// again, and the last entry is the file.
+func (s *scan) Forget(p string) {
+	s.findings = slices.DeleteFunc(s.findings, func(f engine.Finding) bool {
+		return f.Path == p || strings.HasPrefix(f.Path, p+"!/")
+	})
+}
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
 	if !archive.IsExecutable(f.Data) && !fingerprint.IsWasm(f.Data) {
