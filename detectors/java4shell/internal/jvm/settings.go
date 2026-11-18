@@ -442,6 +442,16 @@ type shellCmd struct {
 	cond bool
 }
 
+// SplitCommands returns the simple commands of a shell line (split on
+// ; && || | & outside quotes).
+func SplitCommands(line string) []string {
+	var out []string
+	for _, c := range splitCommands(line) {
+		out = append(out, c.text)
+	}
+	return out
+}
+
 // splitCommands splits a line on ; && || | & outside quotes.
 func splitCommands(line string) []shellCmd {
 	var out []shellCmd

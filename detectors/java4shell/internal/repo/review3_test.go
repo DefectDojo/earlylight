@@ -66,3 +66,21 @@ func TestReviewVersionNames(t *testing.T) {
 		t.Errorf("an arm64 stage reported: %+v", f)
 	}
 }
+
+// Round-2 finding 6: package names count only as install arguments.
+func TestPackageArgsOnly(t *testing.T) {
+	root := tree(t, map[string]string{
+		"a/Dockerfile": "FROM debian:12\nRUN apt-get install -y curl && curl -fsSL https://example.invalid/OpenJDK17U-jre_x64_linux_hotspot_17.0.5_8.tar.gz | tar xz && mv jdk-17.0.5+8-jre /opt/temurin-17\n",
+		"b/Dockerfile": "FROM debian:12\nRUN apt-get install -y curl && curl -fsSL https://cdn.azul.com/zulu/bin/zulu21.42.19-ca-jdk21.0.13-linux_x64.tar.gz -o /tmp/zulu21.tar.gz\n",
+		"c/Dockerfile": "FROM debian:12\nRUN apt-get update && apt-get install -y --no-install-recommends curl temurin-21-jdk && rm -rf /var/lib/apt/lists/*\n",
+	})
+	res := scan(t, root)
+	for _, f := range res.Findings {
+		if f.File == "a/Dockerfile" || f.File == "b/Dockerfile" {
+			t.Errorf("a path or URL read as a package: %s:%d %s", f.File, f.Line, f.Message)
+		}
+	}
+	if f, ok := find(res, "c/Dockerfile", 2); !ok || f.Props["package"] != "temurin-21-jdk" {
+		t.Errorf("install argument missed: %+v", f)
+	}
+}

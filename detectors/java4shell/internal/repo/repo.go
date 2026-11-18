@@ -834,28 +834,90 @@ func (s *scanner) packages(rel string, line int, run string) {
 		return
 	}
 	var hits []pkgHit
-	for _, m := range aptJava.FindAllStringSubmatch(run, -1) {
-		hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: opOf(m[3]), ver: m[4], mgr: "apt", vendor: "distribution"})
-	}
-	for _, m := range apkJava.FindAllStringSubmatch(run, -1) {
-		hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: m[3], ver: m[4], mgr: "apk", vendor: "distribution"})
-	}
-	for _, m := range rpmJava.FindAllStringSubmatch(run, -1) {
-		v := "distribution"
-		if m[3] == "amazon-corretto" {
-			v = "corretto"
+	for _, arg := range installArgs(run) {
+		switch {
+		case aptArg.MatchString(arg):
+			m := aptArg.FindStringSubmatch(arg)
+			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: opOf(m[3]), ver: m[4], mgr: "apt", vendor: "distribution"})
+		case apkArg.MatchString(arg):
+			m := apkArg.FindStringSubmatch(arg)
+			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: m[3], ver: m[4], mgr: "apk", vendor: "distribution"})
+		case rpmArg.MatchString(arg):
+			m := rpmArg.FindStringSubmatch(arg)
+			v := "distribution"
+			if m[3] == "amazon-corretto" {
+				v = "corretto"
+			}
+			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), ver: m[4], mgr: "rpm", vendor: v})
+		case vendorArg.MatchString(arg):
+			m := vendorArg.FindStringSubmatch(arg)
+			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[3]), op: opOf(m[4]), ver: m[5], mgr: "package", vendor: m[2]})
+		case defaultArg.MatchString(arg):
+			hits = append(hits, pkgHit{name: arg, mgr: "apt", vendor: "distribution"})
 		}
-		hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), ver: m[4], mgr: "rpm", vendor: v})
-	}
-	for _, m := range vendorJava.FindAllStringSubmatch(run, -1) {
-		hits = append(hits, pkgHit{name: m[1], feature: atoi(m[3]), op: opOf(m[4]), ver: m[5], mgr: "package", vendor: m[2]})
-	}
-	for _, m := range defaultJava.FindAllStringSubmatch(run, -1) {
-		hits = append(hits, pkgHit{name: m[1], mgr: "apt", vendor: "distribution"})
 	}
 	for _, h := range hits {
 		s.judgePackage(rel, line, h)
 	}
+}
+
+// anchored matches the whole of one argument.
+func anchored(re *regexp.Regexp) *regexp.Regexp {
+	return regexp.MustCompile(`^(?:` + strings.TrimPrefix(re.String(), `\b`) + `)$`)
+}
+
+var (
+	aptArg     = anchored(aptJava)
+	apkArg     = anchored(apkJava)
+	rpmArg     = anchored(rpmJava)
+	vendorArg  = anchored(vendorJava)
+	defaultArg = anchored(defaultJava)
+)
+
+var (
+	pkgTools = map[string]bool{"apt-get": true, "apt": true, "apk": true, "dnf": true, "yum": true, "microdnf": true, "tdnf": true, "zypper": true}
+	pkgVerbs = map[string]bool{"install": true, "add": true, "in": true, "reinstall": true}
+	// pkgValueFlags are package-manager options followed by a separate value.
+	pkgValueFlags = map[string]bool{"-t": true, "-o": true, "-X": true, "--repository": true, "--virtual": true, "-c": true, "--root": true,
+		"-p": true, "--target-release": true, "--option": true, "--repo": true, "--setopt": true, "--enablerepo": true, "--disablerepo": true}
+)
+
+// installArgs returns the package arguments of the install commands on a
+// RUN line: the words after "<tool> [flags] install|add", without flags,
+// their values, paths and URLs.
+func installArgs(run string) []string {
+	var out []string
+	for _, cmd := range jvm.SplitCommands(run) {
+		words := jvm.Words(cmd)
+		i := 0
+		for i < len(words) && !pkgTools[path.Base(words[i])] {
+			i++
+		}
+		if i == len(words) {
+			continue
+		}
+		i++
+		for i < len(words) && strings.HasPrefix(words[i], "-") {
+			if pkgValueFlags[words[i]] {
+				i++
+			}
+			i++
+		}
+		if i >= len(words) || !pkgVerbs[words[i]] {
+			continue
+		}
+		for j := i + 1; j < len(words); j++ {
+			w := words[j]
+			switch {
+			case pkgValueFlags[w]:
+				j++
+			case strings.HasPrefix(w, "-"), strings.ContainsAny(w, "/$"), strings.Contains(w, "://"):
+			default:
+				out = append(out, w)
+			}
+		}
+	}
+	return out
 }
 
 // pkgHit is one Java package an install names.
