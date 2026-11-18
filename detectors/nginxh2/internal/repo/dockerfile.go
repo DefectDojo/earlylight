@@ -31,9 +31,26 @@ func (s *scanner) dockerfile(rel string, b []byte) {
 	stages := map[string]*stage{}
 	var cur *stage
 	index := -1
+	fromLine := 0
 	for _, in := range ins {
 		if in.Onbuild && in.Cmd != "run" {
 			continue
+		}
+		switch in.Cmd {
+		case "from", "label", "expose", "healthcheck", "stopsignal", "maintainer", "arg", "user", "workdir", "shell":
+		default:
+			// What the stage changes on top of the image it builds on
+			// (files, commands, environment): the built image's
+			// configuration is not the base image's.
+			if fromLine > 0 && s.stageMods != nil {
+				k := fmt.Sprintf("%s:%d", rel, fromLine)
+				if _, ok := s.stageMods[k]; !ok {
+					s.stageMods[k] = fmt.Sprintf("the Dockerfile builds on this image (%s at line %d), so the image it makes may load another configuration or command", strings.ToUpper(in.Cmd), in.Line)
+				}
+			}
+		}
+		if in.Cmd == "from" {
+			fromLine = in.Line
 		}
 		switch in.Cmd {
 		case "from":

@@ -80,3 +80,18 @@ func TestRepoPlatforms(t *testing.T) {
 		t.Error("registryRef")
 	}
 }
+
+// R3: a deployment that changes the image's command or configuration
+// leaves the pulled image's exposure unknown.
+func TestR3PulledDeployment(t *testing.T) {
+	f := pullFinding()
+	f.Props = map[string]string{"deployment": "the Compose service sets command and volumes"}
+	it := &engine.Target{Platform: "linux/amd64", Findings: []engine.Finding{
+		{Kind: KindFlow, Path: "/usr/sbin/nginx", Verdict: engine.Vulnerable, Severity: "medium", Message: "m", Facts: map[string]string{"exposure": "not-exposed"}},
+		{Kind: KindReuse, Path: "/usr/sbin/nginx", Verdict: engine.Vulnerable, Severity: "critical", Message: "m", Facts: map[string]string{"exposure": "exposed"}},
+	}}
+	out := fromPulled(f, it)
+	if len(out) != 2 || out[0].Facts["exposure"] != "unknown" || out[0].Severity != "high" || out[1].Facts["exposure"] != "exposed" {
+		t.Errorf("%+v", out)
+	}
+}

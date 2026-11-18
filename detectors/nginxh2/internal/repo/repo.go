@@ -173,7 +173,7 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 		}
 	}
 	sort.Strings(list)
-	s := &scanner{root: root, opts: opts, fromImage: map[string]refs.Ref{}, seen: map[string]bool{}}
+	s := &scanner{root: root, opts: opts, fromImage: map[string]refs.Ref{}, seen: map[string]bool{}, stageMods: map[string]string{}}
 	// Image references, with the place they are written.
 	rs, rskips, err := refs.ScanFiles(root, list, refs.Options{Overlay: opts.Overlay})
 	if err != nil {
@@ -213,6 +213,7 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 			s.yamlFile(rel, b)
 		}
 	}
+	s.deployments(root)
 	res.Findings = append(res.Findings, s.findings...)
 	res.Skips = append(res.Skips, s.skips...)
 	sort.SliceStable(res.Findings, func(i, j int) bool {
@@ -223,6 +224,85 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 		return a.Line < b.Line
 	})
 	return res, nil
+}
+
+// deploymentKeys are what a Compose service or Kubernetes container sets
+// that changes what the image runs or the configuration it loads.
+var deploymentKeys = []string{"command", "entrypoint", "args", "volumes", "volumeMounts", "configs", "environment", "env", "env_file", "envFrom"}
+
+// deployments records, on each image reference that is read from its
+// registry, what the deployment or build changes about it: the image's
+// own command and configuration are then not what runs.
+func (s *scanner) deployments(root string) {
+	docs := map[string][]*yaml.Node{}
+	for i := range s.findings {
+		f := &s.findings[i]
+		if f.Pull == "" || f.ref == nil {
+			continue
+		}
+		r := f.ref
+		if r.Kind == refs.KindDockerfile {
+			if why := s.stageMods[fmt.Sprintf("%s:%d", r.File, r.Line)]; why != "" {
+				f.Props["deployment"] = why
+			}
+			continue
+		}
+		if r.Kind != refs.KindCompose && r.Kind != refs.KindKubernetes {
+			continue
+		}
+		ds, ok := docs[r.File]
+		if !ok {
+			b, found := s.opts.Overlay[r.File]
+			if !found {
+				var err error
+				if b, err = readFile(root, r.File); err != nil {
+					f.Props["deployment"] = "the file could not be read again to see what it sets for the image"
+					continue
+				}
+			}
+			dec := yaml.NewDecoder(strings.NewReader(string(b)))
+			for len(ds) < 1024 {
+				var d yaml.Node
+				if dec.Decode(&d) != nil {
+					break
+				}
+				ds = append(ds, &d)
+			}
+			docs[r.File] = ds
+		}
+		for _, d := range ds {
+			if m := mappingWithImageAt(d, r.Line, 0); m != nil {
+				var set []string
+				for _, k := range deploymentKeys {
+					if mapGet(m, k) != nil {
+						set = append(set, k)
+					}
+				}
+				if len(set) > 0 {
+					f.Props["deployment"] = fmt.Sprintf("the deployment sets %s for this image, so it may load another configuration or command", strings.Join(set, ", "))
+				}
+				break
+			}
+		}
+	}
+}
+
+// mappingWithImageAt finds the mapping whose image key's value is on line.
+func mappingWithImageAt(n *yaml.Node, line, depth int) *yaml.Node {
+	if n == nil || depth > 64 {
+		return nil
+	}
+	if n.Kind == yaml.MappingNode {
+		if v := mapGet(n, "image"); v != nil && v.Kind == yaml.ScalarNode && v.Line == line {
+			return n
+		}
+	}
+	for _, c := range n.Content {
+		if m := mappingWithImageAt(c, line, depth+1); m != nil {
+			return m
+		}
+	}
+	return nil
 }
 
 // mayBeNginx reports whether an unresolved reference could be an nginx
@@ -297,6 +377,7 @@ type scanner struct {
 	skips     []Skip
 	fromImage map[string]refs.Ref // "file:line" of a FROM -> its reference
 	seen      map[string]bool     // "file|image" judged
+	stageMods map[string]string   // "file:line" of a FROM -> what its stage changes
 }
 
 func (s *scanner) add(f Finding) {

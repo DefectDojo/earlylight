@@ -424,3 +424,24 @@ func TestAlpineBranches(t *testing.T) {
 		t.Errorf("the fixed pin: %+v", fs)
 	}
 }
+
+// Review 2, finding 3: what a deployment changes about an image it reads
+// (command, environment, mounted configuration, a Dockerfile building on
+// it) is recorded, so the image's own configuration is not trusted.
+func TestR3Deployment(t *testing.T) {
+	res := scan(t, map[string]string{
+		"compose.yaml": "services:\n  web:\n    image: nginx:1.29\n    command: [nginx, -c, /etc/nginx/site/nginx.conf]\n    volumes:\n      - ./conf.d:/etc/nginx/conf.d:ro\n  plain:\n    image: nginx:1.30\n",
+		"k8s.yaml":     "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: x}\nspec:\n  template:\n    spec:\n      containers:\n      - name: a\n        image: nginx:mainline\n        volumeMounts:\n        - {name: c, mountPath: /etc/nginx/conf.d}\n      - name: b\n        image: nginx:stable\n",
+		"Dockerfile":   "FROM nginx:1.31 AS a\nCOPY site.conf /etc/nginx/conf.d/\nFROM nginx:alpine AS b\nLABEL x=y\n",
+	})
+	for _, c := range []struct {
+		file string
+		line int
+		want bool
+	}{{"compose.yaml", 3, true}, {"compose.yaml", 8, false}, {"k8s.yaml", 9, true}, {"k8s.yaml", 13, false}, {"Dockerfile", 1, true}, {"Dockerfile", 3, false}} {
+		f := one(t, res, c.file, c.line, RuleNotChecked, knowledge.Unknown)
+		if got := f.Props["deployment"] != ""; got != c.want {
+			t.Errorf("%s:%d deployment %q, want %v", c.file, c.line, f.Props["deployment"], c.want)
+		}
+	}
+}

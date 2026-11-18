@@ -226,6 +226,15 @@ func fromPulled(f repo.Finding, it *engine.Target) (out []engine.Finding) {
 		}
 		g.Message = fmt.Sprintf("image %s (%s): %s: %s", at, it.Digest, x.Path, x.Message)
 		g.Fix = x.Fix + " Use a release of " + img + " built with the fix (nginx 1.31.9 or 1.30.7), then redeploy."
+		if why := f.Props["deployment"]; why != "" && g.Facts["exposure"] != "exposed" {
+			// The image's own configuration is not what this deployment
+			// runs: a weaker answer from it does not hold.
+			g.Facts["exposure"], g.Facts["exposure_unknown"] = "unknown", why
+			g.Message += " Exposure in this deployment is not known: " + why + "."
+			if g.Verdict == engine.Vulnerable {
+				g.Severity = "high"
+			}
+		}
 		out = append(out, g)
 	}
 	switch {
