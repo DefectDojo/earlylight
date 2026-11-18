@@ -7,7 +7,6 @@ package assess
 
 import (
 	"fmt"
-	"path"
 	"sort"
 	"strings"
 
@@ -42,8 +41,17 @@ type Input struct {
 	// Distro is the os-release family (debian, ubuntu, alpine, rhel) and
 	// Release its VERSION_ID (Alpine: the branch).
 	Distro, Release string
-	// Command is what an image's container runs.
+	// Command is what starts nginx: an image's container command, or the
+	// ExecStart of a host's service unit; nil when none was found.
 	Command []string
+	// CommandFrom says where Command came from ("the image's command").
+	CommandFrom string
+	// CommandFor, when set, gives the start command of one binary (a
+	// host's service unit), where it came from, and why there is none.
+	CommandFor func(binary string) (cmd []string, from, none string)
+	// EntrypointScripts are the names of the files in
+	// /docker-entrypoint.d, which the official entrypoint runs first.
+	EntrypointScripts []string
 	// Ingress is set when the target holds the ingress-nginx controller,
 	// which writes nginx.conf at start with HTTP/2 on by default.
 	Ingress bool
@@ -74,7 +82,7 @@ func Run(in Input) []Finding {
 	var out []Finding
 	cache := map[string]cached{}
 	for _, b := range in.Binaries {
-		main, extra, how, unsure := configFor(b, in.Command)
+		main, extra, how, unsure := configFor(b, in)
 		exp, cfgFiles := exposure(in, main, extra, cache)
 		if unsure != "" && exp != nil && in.Generated == "" && !in.Ingress {
 			// The configuration read may not be the one that runs: a
@@ -224,141 +232,6 @@ func has(xs []string, s string) bool {
 		}
 	}
 	return false
-}
-
-// configFor returns the configuration file a binary loads: the image
-// command's -c (and -p) when the command runs nginx, else the binary's
-// compiled-in default. extra are -g directives.
-func configFor(b *ngx.Binary, cmd []string) (string, []conf.Directive, string, string) {
-	main, how := b.ConfPath, "the binary's default"
-	prefix := b.Prefix
-	var extra []conf.Directive
-	args, ok, unsure := nginxArgs(cmd)
-	if ok {
-		setPrefix := false
-		for i := 0; i < len(args); i++ {
-			a := args[i]
-			val := func(flag string) (string, bool) {
-				if a == flag && i+1 < len(args) {
-					i++
-					return args[i], true
-				}
-				if strings.HasPrefix(a, flag) && len(a) > len(flag) {
-					return a[len(flag):], true
-				}
-				return "", false
-			}
-			if v, ok := val("-c"); ok {
-				main, how = v, "the container command's -c"
-			} else if v, ok := val("-p"); ok {
-				prefix, setPrefix = v, true
-			} else if v, ok := val("-g"); ok {
-				if ds, err := conf.Parse("-g", v); err == nil {
-					extra = append(extra, ds...)
-				} else {
-					unsure = "the container command's -g directives could not be read"
-				}
-			}
-		}
-		if setPrefix && how == "the binary's default" && !strings.HasPrefix(b.ConfRaw, "/") {
-			// -p moves a relative compiled-in configuration path.
-			main, how = b.ConfRaw, "the binary's default under the container command's -p"
-			if main == "" {
-				main = "conf/nginx.conf"
-			}
-		}
-	}
-	if main == "" {
-		main = "/usr/local/nginx/conf/nginx.conf"
-		how = "nginx's default"
-	}
-	if !strings.HasPrefix(main, "/") {
-		if prefix == "" {
-			prefix = "/usr/local/nginx/"
-		}
-		main = path.Join(prefix, main)
-	}
-	return path.Clean("/" + main), extra, how, unsure
-}
-
-// nginxArgs returns the arguments after the word of the command that runs
-// nginx (or openresty, angie, tengine), as an entrypoint script passes
-// them on. Inside a "sh -c" text the simple command that runs nginx is
-// read; unsure is set when that text cannot be read word by word.
-func nginxArgs(cmd []string) ([]string, bool, string) {
-	for i, w := range cmd {
-		switch path.Base(w) {
-		case "nginx", "openresty", "angie", "tengine", "nginx-debug":
-			return cmd[i+1:], true, ""
-		case "sh", "bash", "ash", "dash":
-			for j := i + 1; j+1 < len(cmd); j++ {
-				if strings.HasPrefix(cmd[j], "-") && strings.Contains(cmd[j], "c") {
-					return shellNginx(cmd[j+1])
-				}
-			}
-		}
-	}
-	return nil, false, ""
-}
-
-// shellNginx finds nginx in a shell text: its simple commands are split on
-// ; & | and newlines outside quotes, and the words of the one that runs
-// nginx are its arguments. A variable or command substitution among them
-// makes the configuration unsure.
-func shellNginx(text string) ([]string, bool, string) {
-	var cmds [][]string
-	var cur []string
-	var w strings.Builder
-	in, q := false, byte(0)
-	flush := func() {
-		if in {
-			cur = append(cur, w.String())
-			w.Reset()
-			in = false
-		}
-	}
-	for i := 0; i < len(text); i++ {
-		c := text[i]
-		switch {
-		case q != 0:
-			if c == q {
-				q = 0
-			} else {
-				w.WriteByte(c)
-			}
-		case c == '"' || c == '\'':
-			q, in = c, true
-		case c == ' ' || c == '\t':
-			flush()
-		case c == ';' || c == '&' || c == '|' || c == '\n':
-			flush()
-			cmds = append(cmds, cur)
-			cur = nil
-		default:
-			w.WriteByte(c)
-			in = true
-		}
-	}
-	flush()
-	cmds = append(cmds, cur)
-	for _, ws := range cmds {
-		for i, x := range ws {
-			switch path.Base(x) {
-			case "nginx", "openresty", "angie", "tengine", "nginx-debug":
-				args := ws[i+1:]
-				for _, a := range args {
-					if strings.ContainsAny(a, "$`") {
-						return args, true, "the container starts nginx from a shell command whose arguments use variables"
-					}
-				}
-				return args, true, ""
-			}
-		}
-	}
-	if strings.Contains(text, "nginx") || strings.Contains(text, "openresty") {
-		return nil, false, "the container starts nginx from a shell command that could not be read word by word"
-	}
-	return nil, false, ""
 }
 
 type cached struct {

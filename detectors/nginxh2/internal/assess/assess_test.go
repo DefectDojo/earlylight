@@ -65,7 +65,8 @@ func TestRunExposed(t *testing.T) {
 }
 
 func TestRunNotExposedStaysVulnerable(t *testing.T) {
-	fs := byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.30.6"))}, Source: mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }"}}))
+	fs := byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.30.6"))}, Source: mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }"},
+		Command: []string{"nginx", "-g", "daemon off;"}}))
 	f := fs[knowledge.Flow]
 	if f.Status != knowledge.Vulnerable || f.State != conf.NotExposed || f.Severity != "medium" || !strings.Contains(f.Message, "still needs the update") {
 		t.Errorf("%+v", f)
@@ -118,7 +119,7 @@ func TestRunConflictUnknown(t *testing.T) {
 func TestRunCommandConfig(t *testing.T) {
 	src := mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }", "/app/nginx.conf": h2conf}
 	in := Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: src,
-		Command: []string{"/docker-entrypoint.sh", "nginx", "-c", "/app/nginx.conf", "-g", "daemon off;"}}
+		Command: []string{"/docker-entrypoint.sh", "nginx", "-c", "/app/nginx.conf", "-g", "daemon off;"}, CommandFrom: "the container command"}
 	f := byCVE(Run(in))[knowledge.Flow]
 	if f.State != conf.Exposed || f.Facts["config"] != "/app/nginx.conf" || f.Facts["config_from"] != "the container command's -c" {
 		t.Errorf("%+v", f.Facts)
@@ -192,10 +193,10 @@ func TestDistroFixText(t *testing.T) {
 
 func TestConfigFor(t *testing.T) {
 	b := &ngx.Binary{ConfPath: "", Prefix: ""}
-	if m, _, how, _ := configFor(b, nil); m != "/usr/local/nginx/conf/nginx.conf" || how != "nginx's default" {
+	if m, _, how, _ := configFor(b, Input{}); m != "/usr/local/nginx/conf/nginx.conf" || how != "nginx's default" {
 		t.Errorf("%s %s", m, how)
 	}
-	if _, ok, _ := nginxArgs([]string{"sh", "-c", "echo"}); ok {
+	if _, unsure := startArgs([]string{"sh", "-c", "echo"}, nil); unsure == "" {
 		t.Error("a command without nginx")
 	}
 }
@@ -205,21 +206,25 @@ func TestConfigForPrefixAndShell(t *testing.T) {
 	or.Line, or.ConfPath, or.Configure = "openresty/1.31.8.1", "conf/nginx.conf", "--prefix=/usr/local/openresty/nginx --with-http_v2_module"
 	or.Extra = []string{"  -p prefix     : set prefix path (default: /usr/local/openresty/nginx/)"}
 	b := bin(t, or)
-	if m, _, _, _ := configFor(b, nil); m != "/usr/local/openresty/nginx/conf/nginx.conf" {
+	if m, _, _, _ := configFor(b, Input{}); m != "/usr/local/openresty/nginx/conf/nginx.conf" {
 		t.Errorf("default: %s", m)
 	}
-	if m, _, how, _ := configFor(b, []string{"openresty", "-p", "/app/", "-g", "daemon off;"}); m != "/app/conf/nginx.conf" || !strings.Contains(how, "-p") {
+	if m, _, how, _ := configFor(b, Input{Command: []string{"openresty", "-p", "/app/", "-g", "daemon off;"}}); m != "/app/conf/nginx.conf" || !strings.Contains(how, "-p") {
 		t.Errorf("-p: %s %s", m, how)
 	}
 	// An absolute compiled-in path does not move with -p.
-	if m, _, _, _ := configFor(bin(t, ngxtest.Default("1.31.8")), []string{"nginx", "-p", "/app/"}); m != "/etc/nginx/nginx.conf" {
+	if m, _, _, _ := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"nginx", "-p", "/app/"}}); m != "/etc/nginx/nginx.conf" {
 		t.Errorf("absolute: %s", m)
 	}
-	m, _, how, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), []string{"/bin/sh", "-c", "envsubst < /t > /etc/nginx/x.conf && exec nginx -c '/app/nginx.conf' -g 'daemon off;'"})
+	m, _, how, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"/bin/sh", "-c", "exec nginx -c '/app/nginx.conf' -g 'daemon off;'"}})
 	if m != "/app/nginx.conf" || unsure != "" || !strings.Contains(how, "-c") {
 		t.Errorf("sh -c: %s %s %q", m, how, unsure)
 	}
-	if _, _, _, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), []string{"sh", "-c", "nginx -c $CONF"}); unsure == "" {
+	// Something that writes the configuration first: unsure.
+	if _, _, _, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"/bin/sh", "-c", "envsubst < /t > /etc/nginx/x.conf && exec nginx"}}); unsure == "" {
+		t.Error("envsubst before nginx was not noted")
+	}
+	if _, _, _, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"sh", "-c", "nginx -c $CONF"}}); unsure == "" {
 		t.Error("a variable in the shell text was not noted")
 	}
 	// Unsure: a weaker answer becomes unknown.
@@ -227,5 +232,45 @@ func TestConfigForPrefixAndShell(t *testing.T) {
 		Command: []string{"sh", "-c", "nginx -c $CONF"}}))
 	if f := fs[knowledge.Flow]; f.State != conf.Unknown {
 		t.Errorf("unsure: %+v", f.State)
+	}
+}
+
+// Review 2, finding 2: exposure is "not exposed" only when the command
+// that starts nginx, and everything it loads, were read.
+func TestR2StartCommand(t *testing.T) {
+	off := mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }", "/x.conf": "http { server { listen 80; } }",
+		"/etc/nginx/h2.conf": "http { server { listen 443 ssl http2; } }"}
+	run := func(cmd []string, scripts ...string) conf.State {
+		return byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: cmd, EntrypointScripts: scripts}))[knowledge.Flow].State
+	}
+	for _, c := range []struct {
+		name string
+		cmd  []string
+		want conf.State
+	}{
+		{"official", []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}, conf.NotExposed},
+		{"tini", []string{"/sbin/tini", "--", "nginx", "-g", "daemon off;"}, conf.NotExposed},
+		{"no command", nil, conf.Unknown},
+		{"s6 init", []string{"/init"}, conf.Unknown},
+		{"start script", []string{"/start.sh"}, conf.Unknown},
+		{"forego", []string{"forego", "start", "-r"}, conf.Unknown},
+		{"supervisord", []string{"supervisord", "-c", "/etc/supervisord.conf"}, conf.Unknown},
+		{"wrapper then nginx", []string{"/usr/local/bin/wrap", "nginx"}, conf.Unknown},
+		{"sed in sh -c", []string{"sh", "-c", "sed -i 's/listen 80;/listen 443 ssl http2;/' /etc/nginx/nginx.conf && nginx -g 'daemon off;'"}, conf.Unknown},
+		{"exec in sh -c", []string{"sh", "-c", "exec nginx -g 'daemon off;'"}, conf.NotExposed},
+		{"continuation", []string{"sh", "-c", "exec nginx \\\n -c /etc/nginx/h2.conf"}, conf.Exposed},
+		{"-qc", []string{"nginx", "-qc", "/etc/nginx/h2.conf"}, conf.Exposed},
+		{"-g include", []string{"nginx", "-c", "/x.conf", "-g", "include /etc/nginx/h2.conf;"}, conf.Exposed},
+	} {
+		if got := run(c.cmd); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+	official := []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}
+	if got := run(official, "10-listen-on-ipv6-by-default.sh", "20-envsubst-on-templates.sh", "30-tune-worker-processes.sh", "15-local-resolvers.envsh"); got != conf.NotExposed {
+		t.Errorf("official entrypoint.d: %s", got)
+	}
+	if got := run(official, "20-envsubst-on-templates.sh", "40-h2.sh"); got != conf.Unknown {
+		t.Errorf("a custom entrypoint.d script: %s", got)
 	}
 }

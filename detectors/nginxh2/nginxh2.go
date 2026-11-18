@@ -207,7 +207,21 @@ func keepDB(p string) bool {
 		n := pkgdb.DpkgListName(p)
 		return strings.Contains(n, "nginx") || strings.Contains(n, "openresty") || strings.Contains(n, "angie") || strings.Contains(n, "tengine")
 	}
-	return strings.HasPrefix(p, "/docker-entrypoint.d/")
+	return strings.HasPrefix(p, "/docker-entrypoint.d/") || unitPath(p)
+}
+
+// unitDirs hold systemd units; a unit's drop-ins are in <dir>/<unit>.d.
+var unitDirs = []string{"/etc/systemd/system/", "/run/systemd/system/", "/lib/systemd/system/", "/usr/lib/systemd/system/"}
+
+// unitPath reports a systemd service unit or one of its drop-ins.
+func unitPath(p string) bool {
+	for _, d := range unitDirs {
+		if rest, ok := strings.CutPrefix(p, d); ok {
+			return strings.HasSuffix(rest, ".service") && !strings.Contains(rest, "/") ||
+				strings.Contains(rest, ".service.d/") && strings.HasSuffix(rest, ".conf")
+		}
+	}
+	return false
 }
 
 // NewScan starts a filesystem or image scan.
@@ -328,15 +342,177 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 			}
 			return nil
 		},
-		Distro:    distro,
-		Release:   release,
-		Command:   ctx.Command(),
-		Ingress:   s.ingress,
-		Generated: s.generated(),
+		Distro:            distro,
+		Release:           release,
+		Command:           ctx.Command(),
+		CommandFrom:       "the image's command",
+		CommandFor:        s.commandFor(),
+		EntrypointScripts: s.entrypointScripts(),
+		Ingress:           s.ingress,
+		Generated:         s.generated(),
 	})
 	out := make([]engine.Finding, 0, len(found))
 	for _, x := range found {
 		out = append(out, finding(x))
+	}
+	return out
+}
+
+// entrypointScripts names the files of /docker-entrypoint.d, read or
+// not.
+func (s *scan) entrypointScripts() []string {
+	var out []string
+	for p := range s.db {
+		if strings.HasPrefix(p, "/docker-entrypoint.d/") {
+			out = append(out, strings.TrimPrefix(p, "/docker-entrypoint.d/"))
+		}
+	}
+	for p := range s.unread {
+		if strings.HasPrefix(p, "/docker-entrypoint.d/") || p == "/docker-entrypoint.d" {
+			out = append(out, strings.TrimPrefix(p, "/docker-entrypoint.d/")+" (not read)")
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// commandFor returns, for a filesystem, the start command of each binary
+// from the systemd units that run it; an image has its own command.
+func (s *scan) commandFor() func(string) ([]string, string, string) {
+	if s.kind == engine.Image {
+		return nil
+	}
+	units := systemdStarts(s.db)
+	return func(bin string) ([]string, string, string) {
+		var found [][]string
+		var from []string
+		for _, u := range units {
+			if u.cmd[0] == bin || !strings.HasPrefix(u.cmd[0], "/") && path.Base(u.cmd[0]) == path.Base(bin) {
+				found = append(found, u.cmd)
+				from = append(from, u.unit)
+			}
+		}
+		switch len(found) {
+		case 0:
+			return nil, "", "no service unit that starts " + bin + " was found (systemd), so the configuration it loads is not known"
+		case 1:
+			return found[0], "the service unit " + from[0], ""
+		}
+		for _, c := range found[1:] {
+			if strings.Join(c, "\x00") != strings.Join(found[0], "\x00") {
+				return nil, "", "more than one service unit starts " + bin + " (" + strings.Join(from, ", ") + ")"
+			}
+		}
+		return found[0], "the service units " + strings.Join(from, ", "), ""
+	}
+}
+
+type unitStart struct {
+	unit string
+	cmd  []string
+}
+
+// systemdStarts reads the ExecStart of every service unit that runs an
+// nginx build, its drop-ins applied in order ("ExecStart=" clears).
+func systemdStarts(db map[string][]byte) []unitStart {
+	byName := map[string]string{} // unit name -> path, the first directory wins
+	for _, d := range unitDirs {
+		var names []string
+		for p := range db {
+			if rest, ok := strings.CutPrefix(p, d); ok && strings.HasSuffix(rest, ".service") && !strings.Contains(rest, "/") {
+				names = append(names, rest)
+			}
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			if _, ok := byName[n]; !ok {
+				byName[n] = d + n
+			}
+		}
+	}
+	var out []unitStart
+	var names []string
+	for n := range byName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		files := []string{byName[n]}
+		var drops []string
+		for p := range db {
+			for _, d := range unitDirs {
+				if strings.HasPrefix(p, d+n+".d/") {
+					drops = append(drops, p)
+				}
+			}
+		}
+		sort.Slice(drops, func(i, j int) bool { return path.Base(drops[i]) < path.Base(drops[j]) })
+		files = append(files, drops...)
+		var exec []string
+		for _, f := range files {
+			for _, l := range strings.Split(string(db[f]), "\n") {
+				l = strings.TrimSpace(l)
+				v, ok := strings.CutPrefix(l, "ExecStart=")
+				if !ok {
+					continue
+				}
+				v = strings.TrimLeft(strings.TrimSpace(v), "-@:+!")
+				if v == "" {
+					exec = nil
+					continue
+				}
+				exec = unitWords(v)
+			}
+		}
+		if len(exec) > 0 && nginxStart(path.Base(exec[0])) {
+			out = append(out, unitStart{unit: byName[n], cmd: exec})
+		}
+	}
+	return out
+}
+
+func nginxStart(b string) bool {
+	switch b {
+	case "nginx", "nginx-debug", "openresty", "angie", "tengine":
+		return true
+	}
+	return false
+}
+
+// unitWords splits an ExecStart value on white space, with quotes
+// grouping and a backslash escaping.
+func unitWords(v string) []string {
+	var out []string
+	var b strings.Builder
+	in, q := false, byte(0)
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case q != 0:
+			if c == q {
+				q = 0
+			} else {
+				b.WriteByte(c)
+			}
+		case c == '"' || c == '\'':
+			q, in = c, true
+		case c == '\\' && i+1 < len(v):
+			i++
+			b.WriteByte(v[i])
+			in = true
+		case c == ' ' || c == '\t':
+			if in {
+				out = append(out, b.String())
+				b.Reset()
+				in = false
+			}
+		default:
+			b.WriteByte(c)
+			in = true
+		}
+	}
+	if in {
+		out = append(out, b.String())
 	}
 	return out
 }

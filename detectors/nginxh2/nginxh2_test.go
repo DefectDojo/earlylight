@@ -76,10 +76,11 @@ func TestScanDebianLayout(t *testing.T) {
 
 func TestScanFixedAndOff(t *testing.T) {
 	tg := scanFS(t, map[string][]byte{
-		"/usr/sbin/nginx":          ngxtest.Default("1.31.9").Bytes(),
-		"/opt/old/sbin/nginx":      ngxtest.Default("1.30.6").Bytes(),
-		"/etc/nginx/nginx.conf":    []byte("http { include conf.d/*.conf; }"),
-		"/etc/nginx/conf.d/a.conf": []byte("server { listen 80; }"),
+		"/usr/sbin/nginx":                       ngxtest.Default("1.31.9").Bytes(),
+		"/opt/old/sbin/nginx":                   ngxtest.Default("1.30.6").Bytes(),
+		"/etc/nginx/nginx.conf":                 []byte("http { include conf.d/*.conf; }"),
+		"/etc/nginx/conf.d/a.conf":              []byte("server { listen 80; }"),
+		"/etc/systemd/system/old-nginx.service": []byte("[Service]\nExecStart=/opt/old/sbin/nginx -g 'daemon on;'\n"),
 	}, engine.Options{})
 	if f := find(tg, KindFlow, "/usr/sbin/nginx"); f == nil || f.Verdict != engine.Fixed || f.Reason == "" {
 		t.Errorf("fixed: %+v", f)

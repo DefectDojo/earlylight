@@ -55,7 +55,9 @@ func Load(src Source, main string, extra []Directive) *Config {
 	if !ok {
 		return l.cfg
 	}
-	l.cfg.Root = append(root, extra...)
+	// -g directives are in the main context, and their includes are
+	// followed like any other.
+	l.cfg.Root = append(root, l.expand(extra, 0)...)
 	return l.cfg
 }
 
