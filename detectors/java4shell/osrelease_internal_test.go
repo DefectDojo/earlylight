@@ -33,6 +33,7 @@ func TestRedHatRowNeedsOSReleaseRead(t *testing.T) {
 		name string
 		data []byte
 		link string // a symbolic link when set
+		hard bool   // link is a hard link
 	}
 	for _, c := range []struct {
 		name    string
@@ -40,20 +41,32 @@ func TestRedHatRowNeedsOSReleaseRead(t *testing.T) {
 		want    engine.Verdict
 		os      string // the java4shell_os annotation, which may fall back
 	}{
-		{"usr/lib alone, as RHEL lays it out", []entry{{"etc/os-release", nil, "../usr/lib/os-release"}, {"usr/lib/os-release", rhel, ""}}, engine.Fixed, "rhel 9.6"},
-		{"etc read", []entry{{"etc/os-release", rhel, ""}, {"usr/lib/os-release", rocky, ""}}, engine.Fixed, "rhel 9.6"},
-		{"etc over the limit", []entry{{"etc/os-release", big, ""}, {"usr/lib/os-release", rhel, ""}}, engine.Unknown, "rhel 9.6"},
-		{"etc over the limit, named after usr/lib", []entry{{"usr/lib/os-release", rhel, ""}, {"etc/os-release", big, ""}}, engine.Unknown, "rhel 9.6"},
-		{"etc read, then named again over the limit", []entry{{"etc/os-release", rhel, ""}, {"usr/lib/os-release", rhel, ""}, {"etc/os-release", big, ""}}, engine.Unknown, "rhel 9.6"},
-		{"etc over the limit, then named again and read", []entry{{"etc/os-release", big, ""}, {"usr/lib/os-release", rocky, ""}, {"etc/os-release", rhel, ""}}, engine.Fixed, "rhel 9.6"},
-		{"etc over the limit, then a link to usr/lib", []entry{{"etc/os-release", big, ""}, {"usr/lib/os-release", rhel, ""}, {"etc/os-release", nil, "../usr/lib/os-release"}}, engine.Fixed, "rhel 9.6"},
+		{"usr/lib alone, as RHEL lays it out", []entry{{"etc/os-release", nil, "../usr/lib/os-release", false}, {"usr/lib/os-release", rhel, "", false}}, engine.Fixed, "rhel 9.6"},
+		{"etc read", []entry{{"etc/os-release", rhel, "", false}, {"usr/lib/os-release", rocky, "", false}}, engine.Fixed, "rhel 9.6"},
+		{"etc over the limit", []entry{{"etc/os-release", big, "", false}, {"usr/lib/os-release", rhel, "", false}}, engine.Unknown, "rhel 9.6"},
+		{"etc over the limit, named after usr/lib", []entry{{"usr/lib/os-release", rhel, "", false}, {"etc/os-release", big, "", false}}, engine.Unknown, "rhel 9.6"},
+		{"etc read, then named again over the limit", []entry{{"etc/os-release", rhel, "", false}, {"usr/lib/os-release", rhel, "", false}, {"etc/os-release", big, "", false}}, engine.Unknown, "rhel 9.6"},
+		{"etc over the limit, then named again and read", []entry{{"etc/os-release", big, "", false}, {"usr/lib/os-release", rocky, "", false}, {"etc/os-release", rhel, "", false}}, engine.Fixed, "rhel 9.6"},
+		// Review: a file at /etc/os-release is the system's even without an
+		// ID, and a link there to any other file is a file not read.
+		{"etc empty", []entry{{"etc/os-release", nil, "", false}, {"usr/lib/os-release", rhel, "", false}}, engine.Unknown, "rhel 9.6"},
+		{"etc without an ID", []entry{{"etc/os-release", []byte("NAME=x\n"), "", false}, {"usr/lib/os-release", rhel, "", false}}, engine.Unknown, "rhel 9.6"},
+		{"etc a link to another file", []entry{{"etc/rocky-release-os", rocky, "", false}, {"etc/os-release", nil, "rocky-release-os", false}, {"usr/lib/os-release", rhel, "", false}}, engine.Unknown, "rhel 9.6"},
+		{"etc a hard link to another file", []entry{{"etc/rocky-release-os", rocky, "", false}, {"etc/os-release", nil, "etc/rocky-release-os", true}, {"usr/lib/os-release", rhel, "", false}}, engine.Unknown, "rhel 9.6"},
+		{"etc a hard link to usr/lib", []entry{{"usr/lib/os-release", rhel, "", false}, {"etc/os-release", nil, "usr/lib/os-release", true}}, engine.Fixed, "rhel 9.6"},
+		{"usr/lib a hard link to etc", []entry{{"etc/os-release", rhel, "", false}, {"usr/lib/os-release", nil, "etc/os-release", true}}, engine.Fixed, "rhel 9.6"},
+		{"etc a link through a linked directory", []entry{{"usr/etc/os-release", rocky, "", false}, {"etc", nil, "usr/etc", false}, {"usr/lib/os-release", rhel, "", false}}, engine.Unknown, "rhel 9.6"},
+		{"etc over the limit, then a link to usr/lib", []entry{{"etc/os-release", big, "", false}, {"usr/lib/os-release", rhel, "", false}, {"etc/os-release", nil, "../usr/lib/os-release", false}}, engine.Fixed, "rhel 9.6"},
 	} {
 		var buf bytes.Buffer
 		tw := tar.NewWriter(&buf)
-		for _, e := range append([]entry{{dir + "/lib/server/libjvm.so", lib, ""}, {dir + "/release", release, ""}}, c.entries...) {
+		for _, e := range append([]entry{{dir + "/lib/server/libjvm.so", lib, "", false}, {dir + "/release", release, "", false}}, c.entries...) {
 			h := &tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.data)), Typeflag: tar.TypeReg}
 			if e.link != "" {
 				h.Typeflag, h.Linkname, h.Size = tar.TypeSymlink, e.link, 0
+			}
+			if e.hard {
+				h.Typeflag = tar.TypeLink
 			}
 			if err := tw.WriteHeader(h); err != nil {
 				t.Fatal(err)
@@ -79,14 +92,17 @@ func TestRedHatRowNeedsOSReleaseRead(t *testing.T) {
 
 	// An /etc/os-release that could not be read (no permission, an I/O
 	// error) is the same.
+	osID := func(s *scan) string {
+		return s.osID(func(p string) bool { _, ok := s.kept[p]; return ok }, resolver{}, nil)
+	}
 	s := (&Detector{}).NewScan(engine.Filesystem).(*scan)
 	s.Visit(engine.File{Path: "/usr/lib/os-release", Data: rhel})
 	s.VisitUnread("/etc/os-release", false)
-	if id := s.osID(); id != "" {
+	if id := osID(s); id != "" {
 		t.Errorf("unreadable /etc/os-release: os ID %q, want none", id)
 	}
 	s.Forget("/etc/os-release")
-	if id := s.osID(); id != "rhel" {
+	if id := osID(s); id != "rhel" {
 		t.Errorf("after the unreadable /etc/os-release is forgotten: os ID %q, want rhel", id)
 	}
 	// Nor is /usr/lib/os-release trusted when /etc could not be listed.
@@ -94,7 +110,7 @@ func TestRedHatRowNeedsOSReleaseRead(t *testing.T) {
 		u := (&Detector{}).NewScan(engine.Filesystem).(*scan)
 		u.Visit(engine.File{Path: "/usr/lib/os-release", Data: rhel})
 		u.VisitUnread(dir, true)
-		if id := u.osID(); id != want {
+		if id := osID(u); id != want {
 			t.Errorf("unlistable %s: os ID %q, want %q", dir, id, want)
 		}
 	}
@@ -142,7 +158,7 @@ func TestRedHatRowNeedsOSReleaseRead(t *testing.T) {
 	s.Visit(engine.File{Path: "/etc/os-release", Data: rocky})
 	s.Forget("/usr/lib/os-release")
 	s.VisitOverLimit("/usr/lib/os-release", maxOSRelease+1)
-	if id := s.osID(); id != "rocky" {
+	if id := osID(s); id != "rocky" {
 		t.Errorf("os ID %q, want rocky", id)
 	}
 }

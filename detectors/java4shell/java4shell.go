@@ -469,7 +469,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		}
 		return nil
 	}
-	links, _ := ctx.Links()
+	links, hardlinks := ctx.Links()
 	res := resolver{links: links}
 	owners := map[string]assess.Package{}
 	for _, db := range []string{"/lib/apk/db/installed", "/usr/lib/apk/db/installed"} {
@@ -496,7 +496,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		UnreadDirs:    s.unreadDirs,
 		UnreadAll:     s.unreadAll,
 	}
-	in.OSID = s.osID()
+	in.OSID = s.osID(ctx.Exists, res, hardlinks)
 	if s.kind == engine.Image {
 		in.Env = ctx.Env()
 		if in.Env == nil {
@@ -527,24 +527,39 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 
 // osID is the target's os-release ID for a verdict (a Red Hat row clears
 // a runtime only on RHEL), "" when it is not known. The system reads
-// /usr/lib/os-release only when /etc/os-release does not exist, so an
-// /etc/os-release the scan met and did not read (over its limit,
-// unreadable), or one that a directory the scan could not list may hold,
-// leaves the ID unknown: a verdict is never cleared on a file that stands
-// in for one not read. The java4shell_os annotation, which clears nothing,
-// still falls back.
-func (s *scan) osID() string {
+// /usr/lib/os-release only when /etc/os-release does not exist, so
+// /usr/lib/os-release speaks for the target only when no file is at
+// /etc/os-release, or a link there leads to it. A file at /etc/os-release
+// is the system's, with an ID or without. One the scan met and did not
+// read (over its limit, unreadable), one a directory the scan could not
+// list may hold, and a link to any other file (which is not kept) leave
+// the ID unknown: a verdict is never cleared on a file that stands in for
+// one not read. The java4shell_os annotation, which clears nothing, still
+// falls back.
+func (s *scan) osID(exists func(string) bool, res resolver, hardlinks map[string]string) string {
+	const etc, usr = "/etc/os-release", "/usr/lib/os-release"
 	if s.osUnread || s.unreadAll {
 		return ""
 	}
-	if s.kept["/etc/os-release"] == nil {
+	file := usr
+	switch to, hard := hardlinks[etc]; {
+	case exists(etc):
+		file = etc
+	case hard:
+		if to != usr {
+			return ""
+		}
+	default:
 		for _, d := range s.unreadDirs {
 			if d = strings.TrimSuffix(d, "/"); d == "" || d == "/etc" {
 				return ""
 			}
 		}
+		if at := res.resolve(etc); at != etc && at != usr {
+			return ""
+		}
 	}
-	id, _, _ := strings.Cut(osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]), " ")
+	id, _, _ := strings.Cut(osRelease(s.kept[file]), " ")
 	return id
 }
 
