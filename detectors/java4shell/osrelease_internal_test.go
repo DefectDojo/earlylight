@@ -89,6 +89,55 @@ func TestRedHatRowNeedsOSReleaseRead(t *testing.T) {
 	if id := s.osID(); id != "rhel" {
 		t.Errorf("after the unreadable /etc/os-release is forgotten: os ID %q, want rhel", id)
 	}
+	// Nor is /usr/lib/os-release trusted when /etc could not be listed.
+	for dir, want := range map[string]string{"/etc": "", "/": "", "/etc/": "", "/etc/ssh": "rhel", "/opt": "rhel"} {
+		u := (&Detector{}).NewScan(engine.Filesystem).(*scan)
+		u.Visit(engine.File{Path: "/usr/lib/os-release", Data: rhel})
+		u.VisitUnread(dir, true)
+		if id := u.osID(); id != want {
+			t.Errorf("unlistable %s: os ID %q, want %q", dir, id, want)
+		}
+	}
+	// The same through a filesystem walk that cannot list /etc (not as
+	// root, which can).
+	if os.Geteuid() != 0 {
+		root := t.TempDir()
+		for rel, data := range map[string][]byte{dir + "/lib/server/libjvm.so": lib, dir + "/release": release, "usr/lib/os-release": rhel, "etc/os-release": rocky} {
+			p := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		etc := filepath.Join(root, "etc")
+		for mode, want := range map[os.FileMode]engine.Verdict{0o000: engine.Unknown, 0o755: engine.Unknown} {
+			// 0755: /etc/os-release is read and says rocky.
+			if err := os.Chmod(etc, mode); err != nil {
+				t.Fatal(err)
+			}
+			tg := engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
+			os.Chmod(etc, 0o755)
+			if len(tg.Findings) != 1 || tg.Findings[0].Verdict != want {
+				t.Errorf("/etc mode %o: findings %+v", mode, tg.Findings)
+			}
+		}
+		// And an /etc/os-release that cannot be opened.
+		if err := os.Chmod(filepath.Join(etc, "os-release"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		tg := engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
+		if len(tg.Findings) != 1 || tg.Findings[0].Verdict != engine.Unknown || tg.Annotations["java4shell_os"] != "rhel 9.6" {
+			t.Errorf("unreadable /etc/os-release: findings %+v annotations %v", tg.Findings, tg.Annotations)
+		}
+		// Without /etc/os-release, /usr/lib/os-release is the system's.
+		os.Remove(filepath.Join(etc, "os-release"))
+		tg = engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
+		if len(tg.Findings) != 1 || tg.Findings[0].Verdict != engine.Fixed {
+			t.Errorf("no /etc/os-release: findings %+v", tg.Findings)
+		}
+	}
 	// An unread /usr/lib/os-release does not matter when /etc/os-release was read.
 	s.Visit(engine.File{Path: "/etc/os-release", Data: rocky})
 	s.Forget("/usr/lib/os-release")

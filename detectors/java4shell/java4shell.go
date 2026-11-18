@@ -529,12 +529,20 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 // a runtime only on RHEL), "" when it is not known. The system reads
 // /usr/lib/os-release only when /etc/os-release does not exist, so an
 // /etc/os-release the scan met and did not read (over its limit,
-// unreadable) leaves the ID unknown: a verdict is never cleared on a file
-// that stands in for one not read. The java4shell_os annotation, which
-// clears nothing, still falls back.
+// unreadable), or one that a directory the scan could not list may hold,
+// leaves the ID unknown: a verdict is never cleared on a file that stands
+// in for one not read. The java4shell_os annotation, which clears nothing,
+// still falls back.
 func (s *scan) osID() string {
-	if s.osUnread {
+	if s.osUnread || s.unreadAll {
 		return ""
+	}
+	if s.kept["/etc/os-release"] == nil {
+		for _, d := range s.unreadDirs {
+			if d = strings.TrimSuffix(d, "/"); d == "" || d == "/etc" {
+				return ""
+			}
+		}
 	}
 	id, _, _ := strings.Cut(osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]), " ")
 	return id
