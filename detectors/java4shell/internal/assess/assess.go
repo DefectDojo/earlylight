@@ -58,6 +58,9 @@ type Finding struct {
 	Mitigation     string           `json:"mitigation,omitempty"`
 	MitigatedFor   []string         `json:"mitigated_for,omitempty"` // partial mitigations (one service)
 	Release        knowledge.Status `json:"release_status,omitempty"`
+	// GraalVM is a GraalVM JDK (HotSpot with JVMCI): fixed only at a
+	// published fixed GraalVM build.
+	GraalVM bool `json:"graalvm,omitempty"`
 }
 
 // Input is everything one target gives.
@@ -83,6 +86,9 @@ type Input struct {
 	UnreadAll  bool
 	// Owners maps installed files to the OS package that installed them.
 	Owners map[string]Package
+	// OSID is the target's os-release ID (rhel, rocky, debian), "" when
+	// it has none.
+	OSID string
 	// Resolve follows symbolic links within the target.
 	Resolve func(string) string
 }
@@ -107,10 +113,10 @@ func Run(in Input) []Finding {
 	env := jvm.EnvMap(in.Env)
 	var out []Finding
 	for _, r := range roots {
-		out = append(out, withFix(judge(in, env, r, byRoot[r])))
+		out = append(out, withFix(redHat(in, judge(in, env, r, byRoot[r]))))
 	}
 	for _, l := range loose {
-		out = append(out, withFix(judge(in, env, path.Dir(l.Path), []*jvm.Library{l})))
+		out = append(out, withFix(redHat(in, judge(in, env, path.Dir(l.Path), []*jvm.Library{l}))))
 	}
 	return out
 }
@@ -195,6 +201,8 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		}
 	}
 	f.VM = lib.VMName
+	f.GraalVM = knowledge.IsGraalVM(lib.JREVersion) || knowledge.IsGraalVM(lib.VMVersion) ||
+		hasRel && (rel["GRAALVM_VERSION"] != "" || knowledge.IsGraalVM(rel.Version()))
 	if openj9 {
 		f.VM = "OpenJ9"
 	}
@@ -225,7 +233,13 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		}
 		return f.set(Unknown, why, what+": Java version unknown")
 	}
-	ks, kwhy := knowledge.Judge(v)
+	judgeVersion, judgeBackport := knowledge.Judge, knowledge.JudgeBackport
+	if f.GraalVM {
+		dist := knowledge.GraalVMDist(f.Vendor)
+		judgeVersion = func(v knowledge.Version) (knowledge.Status, string) { return knowledge.JudgeGraalVM(v, dist) }
+		judgeBackport = knowledge.JudgeBackportGraalVM
+	}
+	ks, kwhy := judgeVersion(v)
 	f.Release = ks
 	read := lib.HotSpot() // the stub names are only meaningful in a HotSpot library that was read
 	if !read && ks != knowledge.Vulnerable {
@@ -240,7 +254,7 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	switch ks {
 	case knowledge.NotAffected:
 		if read && lib.VBMIStubs {
-			bs, bwhy := knowledge.JudgeBackport(v)
+			bs, bwhy := judgeBackport(v)
 			f.Release = bs
 			if bs == knowledge.Vulnerable {
 				if ok, how := mitigation(in, env, root, v.Feature(), &f); ok && unreadCommandScript(in) == "" {
@@ -277,6 +291,67 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		return f.set(Mitigated, kwhy+"; "+how, what+" is vulnerable to Java4Shell, mitigated by its JVM options until it is updated")
 	}
 	return f.set(Vulnerable, kwhy, what+" is vulnerable to Java4Shell")
+}
+
+// redHatVendor is what Red Hat's release files name as IMPLEMENTOR.
+const redHatVendor = "Red Hat, Inc."
+
+// redHat applies Red Hat's backport table to a runtime its rpm installed:
+// a fixed Red Hat build keeps the upstream version in its VM library, so
+// only the rpm release shows the fix. The rpm is named by the install path
+// alone (the rpm database is not read), so the table clears a runtime only
+// when the runtime confirms it:
+//   - its VM library is a released, non-GraalVM HotSpot of exactly the
+//     update and build the rpm packages; a library that is not keeps its own
+//     verdict (it proves it is not that build);
+//   - its release file names Red Hat as the implementor, and the target's
+//     os-release says RHEL (Rocky, AlmaLinux and CentOS Stream reuse Red
+//     Hat's releases and implementor); without these, or without a readable
+//     version line, the verdict is unknown: the path says fixed, the
+//     runtime does not show it.
+func redHat(in Input, f Finding) Finding {
+	if f.Package == nil || f.Package.Manager != "rpm" || f.Status != Vulnerable && f.Status != Mitigated {
+		return f
+	}
+	st, why, known := knowledge.JudgeRedHat(f.Package.Name, f.Package.Version)
+	if !known || st != knowledge.Fixed {
+		return f
+	}
+	why += ", by its install path"
+	v, vok := knowledge.Parse(f.Version)
+	if f.VersionFrom == "vm-library" && vok {
+		up, build, uok := knowledge.RedHatUpstream(f.Package.Version)
+		var not string
+		switch {
+		case f.GraalVM:
+			not = "a GraalVM build"
+		case v.EA || v.SelfBuilt:
+			not = "a pre-release or self-built JDK"
+		case !uok || v.Build != build || knowledge.Compare(v.Nums, up) != 0:
+			not = "another update or build"
+		}
+		if not != "" {
+			f.Reason += "; " + why + ", but its VM library (Java " + f.Version + ") is " + not + ", not that build"
+			return f
+		}
+	}
+	var doubt string
+	switch {
+	case f.VersionFrom != "vm-library" || !vok:
+		doubt = "its VM library's version line could not be read"
+	case f.Vendor != redHatVendor:
+		doubt = "its release file does not name Red Hat, Inc. as the implementor"
+	case in.OSID != "rhel":
+		doubt = "the target's os-release does not say RHEL (ID=rhel); Rocky, AlmaLinux and CentOS Stream reuse Red Hat's releases"
+	}
+	if doubt != "" {
+		f.Release = knowledge.Unknown
+		return f.set(Unknown, why+"; but "+doubt+", so the runtime does not show that it is that build",
+			describe(f, v, vok)+": the install path names Red Hat's fixed build, the runtime does not confirm it")
+	}
+	f.Release, f.Mitigation, f.MitigatedFor = knowledge.Fixed, "", nil
+	return f.set(Fixed, why+"; its VM library reads Java "+f.Version+", the update and build Red Hat backported the fix into, its release file names Red Hat and the target is RHEL",
+		describe(f, v, true)+" has Red Hat's backported Java4Shell fix (judged by its rpm release)")
 }
 
 func (f Finding) set(s Status, reason, msg string) Finding {
@@ -551,7 +626,9 @@ func fixText(f Finding, v knowledge.Version, ok bool) string {
 		interim = " The JVM options keep the vulnerable decoder from running until then; keep them until it is updated."
 	}
 	target := "a Java release with the fix (17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later on the same update)"
-	if ok && v.Feature() < 17 {
+	if f.GraalVM {
+		target = fmt.Sprintf("a GraalVM build with the fix once Oracle or the GraalVM project publishes one (none had been as of %s), or a JDK release with the fix (17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1)", knowledge.Checked)
+	} else if ok && v.Feature() < 17 {
 		// A backported decoder (Oracle's Java 8 Performance Pack).
 		target = fmt.Sprintf("a build of Java %d from the same vendor with the fix (none was known on %s), or one without the backported AVX-512 decoder", v.Feature(), knowledge.Checked)
 	} else if ok {
@@ -565,9 +642,18 @@ func fixText(f Finding, v knowledge.Version, ok bool) string {
 	case f.Product != "":
 		return fmt.Sprintf("Upgrade %s to a release that bundles %s; its own runtime is not updated by the operating system's Java packages.%s", f.Product, target, interim)
 	case f.Package != nil:
+		if pkg, el, ok := knowledge.RedHatPackage(f.Package.Name, f.Package.Version); ok {
+			if fx, ok := knowledge.RedHatFixFor(pkg, el); ok {
+				evr := fx.EVR
+				if i := strings.IndexByte(evr, ':'); i >= 0 {
+					evr = evr[i+1:]
+				}
+				target = fmt.Sprintf("Red Hat's build %s or later (%s)", evr, fx.Advisory)
+			}
+		}
 		return fmt.Sprintf("Update the %s package to %s: %s (%s).%s", f.Package.Name, target, upgradeLine(*f.Package), distroStatus(*f.Package), interim)
 	case f.JLinked:
 		return fmt.Sprintf("Rebuild this jlink image from a JDK at %s.%s", target, interim)
 	}
-	return fmt.Sprintf("Update this runtime to %s (Amazon Corretto and SapMachine published theirs on %s; others had not %s: check your vendor).%s", target, knowledge.VendorFixPublished, knowledge.AsOf(), interim)
+	return fmt.Sprintf("Update this runtime to %s (%s: check your vendor).%s", target, knowledge.VendorStatus(), interim)
 }

@@ -21,6 +21,9 @@ type Family struct {
 	// OpenJDKBuild is true when the build in the tag is OpenJDK's build
 	// number (Temurin's "_9"); other vendors' tag builds are their own.
 	OpenJDKBuild bool
+	// GraalVM images hold a GraalVM JDK: fixed only at a published fixed
+	// GraalVM build, and never edited to another tag.
+	GraalVM bool
 	// exact reports whether the text after the version pins one release
 	// (Temurin's "_9", Liberica's "-10", Zulu's "-21.52"), so the version
 	// has no further numbers.
@@ -53,6 +56,14 @@ var Families = []Family{
 	{Repo: "mcr.microsoft.com/openjdk/jdk", Vendor: "Microsoft Build of OpenJDK"},
 	{Repo: "container-registry.oracle.com/java/openjdk", Vendor: "Oracle OpenJDK"},
 	{Repo: "container-registry.oracle.com/java/jdk", Vendor: "Oracle JDK"},
+	// GraalVM images whose tags are the JDK version (21, 21.0.5, 21.0.5-ol9).
+	// ghcr.io/graalvm/jdk and graalvm-ce are left out: their tags have
+	// been GraalVM's own numbers (22.3.3).
+	{Repo: "container-registry.oracle.com/graalvm/jdk", Vendor: "Oracle GraalVM", GraalVM: true},
+	{Repo: "container-registry.oracle.com/graalvm/native-image", Vendor: "Oracle GraalVM", GraalVM: true},
+	{Repo: "ghcr.io/graalvm/jdk-community", Vendor: "GraalVM Community", GraalVM: true},
+	{Repo: "ghcr.io/graalvm/native-image-community", Vendor: "GraalVM Community", GraalVM: true},
+	{Repo: "ghcr.io/graalvm/graalvm-community", Vendor: "GraalVM Community", GraalVM: true},
 	{Repo: "ibm-semeru-runtimes", Vendor: "IBM Semeru", OpenJ9: true, Prefix: "open-"},
 	{Repo: "ibmjava", Vendor: "IBM Java", OpenJ9: true},
 	{Repo: "icr.io/appcafe/ibm-semeru-runtimes", Vendor: "IBM Semeru", OpenJ9: true, Prefix: "open-"},
@@ -101,6 +112,8 @@ type TagVersion struct {
 	// OpenJDKBuild is the OpenJDK build number the tag names, -1 when it
 	// names none (a vendor's own build number, or no build).
 	OpenJDKBuild int
+	// EA is a pre-release (a version name such as 21-ea+26).
+	EA bool
 }
 
 // ParseTag reads the Java release a family's tag names. ok is false for a
@@ -152,13 +165,16 @@ func (f Family) ParseTag(tag string) (TagVersion, bool) {
 // both unfixed and fixed releases is Unknown: the image has to be read.
 func JudgeTag(tv TagVersion) (knowledge.Status, string) {
 	nums := tv.Nums
+	if knowledge.NotJava(nums) {
+		return knowledge.Unknown, "the tag names " + tv.Text + ", which " + strings.TrimPrefix(knowledge.NotJavaWhy(tv.Text), tv.Text+" ")
+	}
 	feature := nums[0]
 	what := "the tag names Java " + tv.Text
 	if !tv.Exact {
 		what = "the tag names the newest Java " + tv.Text + " release at build time"
 	}
 	if tv.Exact || feature < 17 {
-		st, why := knowledge.Judge(knowledge.Version{Nums: nums, Build: tv.OpenJDKBuild})
+		st, why := knowledge.Judge(knowledge.Version{Nums: nums, Build: tv.OpenJDKBuild, EA: tv.EA})
 		return st, what + ": " + why
 	}
 	l, ok := knowledge.LineOf(feature)

@@ -37,7 +37,7 @@ func TestReviewRepo(t *testing.T) {
 	if f, ok := find(res, "g/.tool-versions", 1); ok {
 		t.Errorf("fixed Corretto reported: %+v", f)
 	}
-	if CorrettoJava("21.0.5.11.1") != "21.0.5" || CorrettoJava("21.0.13.1.2") != "21.0.13.1" || CorrettoJava("21.0.13.0.11") != "21.0.13.0" {
+	if CorrettoJava("21.0.5.11.1") != "21.0.5" || CorrettoJava("21.0.13.1.2") != "21.0.13.1.2" || CorrettoJava("21.0.13.0.11") != "21.0.13.0.11" {
 		t.Error("CorrettoJava")
 	}
 

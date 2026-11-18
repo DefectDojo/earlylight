@@ -1,10 +1,12 @@
 package assess
 
 import (
-	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
+	"fmt"
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
 )
 
 // Package is the OS package that installed a runtime.
@@ -130,6 +132,12 @@ func distroStatus(p Package) string {
 	case "dpkg":
 		return "Debian and Ubuntu had published no fixed package " + knowledge.AsOf()
 	case "rpm":
+		if pkg, el, ok := knowledge.RedHatPackage(p.Name, p.Version); ok {
+			if fx, ok := knowledge.RedHatFixFor(pkg, el); ok {
+				return fmt.Sprintf("Red Hat's first fixed %s build is %s, %s", el, fx.EVR, fx.Advisory)
+			}
+			return knowledge.RedHatStatus()
+		}
 		return "the distribution's fix status was not checked"
 	}
 	return ""

@@ -247,6 +247,9 @@ func FuzzScanText(f *testing.F) {
 	f.Add(".github/workflows/a.yml", "jobs:\n a:\n  steps:\n   - uses: actions/setup-java@v4\n     with:\n      java-version: |\n        17\n        21.0.5\n")
 	f.Add("pom.xml", "<requireJavaVersion><version>[17.0.1,)</version></requireJavaVersion><from><image>eclipse-temurin:21.0.1_12-jre</image></from>")
 	f.Add(".tool-versions", "java corretto-21.0.5.11.1\n")
+	f.Add(".sdkmanrc", "java=22.3.1.r17-grl\njava=21.0.13.1-graal\n")
+	f.Add(".tool-versions", "java graalvm-22.3.1+java17\n")
+	f.Add("Dockerfile", "FROM registry.access.redhat.com/ubi9/openjdk-21:1.20\nRUN microdnf install -y java-17-openjdk-headless-1:17.0.21.1.1-1.el9.x86_64\nFROM container-registry.oracle.com/graalvm/jdk:21.0.13\n")
 	f.Add("compose.yaml", "services:\n a:\n  image: amazoncorretto:21.0.1\n  environment: [\"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics\"]\n")
 	f.Fuzz(func(t *testing.T, name, text string) {
 		if strings.ContainsAny(name, "/\\\x00") || name == "" || name == "." || name == ".." || len(text) > 1<<16 {

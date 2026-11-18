@@ -56,7 +56,8 @@ const about = " HotSpot's AVX-512 VBMI Base64 decoder (x86-64, JDK 18 and later,
 	" with AVX-512F, AVX-512BW, AVX-512 VBMI and BMI2 (Intel server CPUs from Ice Lake on and some client CPUs, not Alder" +
 	" Lake or Raptor Lake; AMD Zen 4 and later; common on cloud instances). Fixed in OpenJDK 17.0.21.1, 21.0.13.1, 25.0.5.1" +
 	" and 27.0.1.1 (by JDK-8393212, the change the public descriptions of the CVE match); Java 18 to 20, 22 to 24" +
-	" and 26 received no fix. -XX:-UseBASE64Intrinsics (or, on x86-64 only, -XX:UseAVX=2) keeps the decoder from being" +
+	" and 26 received no fix. Oracle GraalVM for JDK 17 and 21 and GraalVM Enterprise Edition 21.3 are affected too, with no" +
+	" fixed GraalVM build known yet. -XX:-UseBASE64Intrinsics (or, on x86-64 only, -XX:UseAVX=2) keeps the decoder from being" +
 	" generated until the runtime is updated."
 
 // Manifest describes the detector.
@@ -67,6 +68,8 @@ func (d *Detector) Manifest() engine.Manifest {
 		Title: "Java4Shell: HotSpot AVX-512 Base64 decoder out-of-bounds write (" + knowledge.CVE + ")",
 		CVEs:  []string{knowledge.CVE},
 		Advisories: []string{
+			knowledge.OpenJDKAdvisory,
+			knowledge.OracleAdvisory,
 			"https://calif.io/java4shell/",
 			"https://github.com/openjdk/jdk/commit/5177a70b385c16f26ede191fdac7aaba0bed0f8b",
 			"https://semgrep.dev/blog/2026/java4shell-openjdk-base64-vulnerability",
@@ -75,9 +78,9 @@ func (d *Detector) Manifest() engine.Manifest {
 		Disclosed: knowledge.Disclosed,
 		Targets:   []engine.TargetKind{engine.Filesystem, engine.Image, engine.Repository},
 		Kinds: append([]engine.Kind{
-			{ID: KindRuntime, Title: "Java runtime vulnerable to Java4Shell", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,
+			{ID: KindRuntime, Title: "Java runtime vulnerable to Java4Shell", Level: "error", SecuritySeverity: knowledge.CVSS, CWEs: cwe,
 				Description: "A HotSpot Java runtime for x86-64 with the AVX-512 VBMI Base64 decoder and without the fix: an installed JDK or JRE, a packaged OpenJDK, a jlink image or a runtime in a container image." + about},
-			{ID: KindBundled, Title: "Java runtime bundled in a product is vulnerable to Java4Shell", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,
+			{ID: KindBundled, Title: "Java runtime bundled in a product is vulnerable to Java4Shell", Level: "error", SecuritySeverity: knowledge.CVSS, CWEs: cwe,
 				Description: "A Java runtime that a product ships inside its own install directory (Atlassian Jira and Confluence, Elasticsearch, Artifactory, JetBrains IDEs and others) without the fix. Updating the operating system's Java does not fix it: upgrade the product." + about},
 		}, repoKinds()...),
 		Tags: []string{"security", "java", "openjdk", "hotspot", "Java4Shell"},
@@ -485,6 +488,9 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		UnreadDirs:    s.unreadDirs,
 		UnreadAll:     s.unreadAll,
 	}
+	if osr := osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]); osr != "" {
+		in.OSID, _, _ = strings.Cut(osr, " ")
+	}
 	if s.kind == engine.Image {
 		in.Env = ctx.Env()
 		if in.Env == nil {
@@ -561,7 +567,10 @@ func finding(x assess.Finding) engine.Finding {
 		sort.Strings(x.MitigatedFor)
 		facts["mitigated_only_for"] = strings.Join(x.MitigatedFor, ",")
 	}
-	if fx := fixedFor(x.Version); fx != "" {
+	if x.GraalVM {
+		// GraalVM's fixed builds are numbered its own way: none was known.
+		facts["graalvm"] = "yes"
+	} else if fx := fixedFor(x.Version); fx != "" {
 		facts["fixed_in"] = fx
 	}
 	method := "vm-library"

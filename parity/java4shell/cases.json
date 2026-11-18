@@ -394,6 +394,54 @@
   ]
  },
  {
+  "name": "graalvm-ce-22.3.0-java17",
+  "what": "GraalVM CE 22.3.0 for Java 17: built on 17.0.5, before the decoder (findepi/graalvm repackages the CE release archives; ghcr.io is unreachable here)",
+  "mode": "registry",
+  "ref": "findepi/graalvm@sha256:b4460f6857d29beec43231b7cfbbaaa3e6eaafe2d5f406ff6ffb416751d9b373",
+  "expected": [
+   [
+    "linux/amd64",
+    "/graalvm",
+    "runtime",
+    "fixed",
+    "not-affected",
+    "vm-library"
+   ]
+  ]
+ },
+ {
+  "name": "graalvm-ce-22.3.1-java17",
+  "what": "GraalVM CE 22.3.1 for Java 17: 17.0.6+10-jvmci-22.3-b13 with the decoder, no fixed GraalVM build",
+  "mode": "registry",
+  "ref": "findepi/graalvm@sha256:a953392b957211d965012180bd7600ab5929ea6326f9ea49d3aba5db24ada717",
+  "expected": [
+   [
+    "linux/amd64",
+    "/graalvm",
+    "runtime",
+    "vulnerable",
+    "vulnerable",
+    "vm-library"
+   ]
+  ]
+ },
+ {
+  "name": "graalvm-ce-21",
+  "what": "GraalVM CE for JDK 21 (23.1.2): 21.0.2+13-jvmci-23.1-b30",
+  "mode": "registry",
+  "ref": "findepi/graalvm@sha256:19937684c9efd655c5892f83c9c381f139b0b271818303ebe1159cf7968ed235",
+  "expected": [
+   [
+    "linux/amd64",
+    "/graalvm",
+    "runtime",
+    "vulnerable",
+    "vulnerable",
+    "vm-library"
+   ]
+  ]
+ },
+ {
   "name": "elasticsearch",
   "what": "Elasticsearch 9.5.5, which bundles its own JDK",
   "mode": "registry",
@@ -522,6 +570,22 @@
    [
     "linux/amd64",
     "/usr/lib/jvm/java-25-openjdk-amd64",
+    "runtime",
+    "vulnerable",
+    "vulnerable",
+    "vm-library"
+   ]
+  ]
+ },
+ {
+  "name": "debian-sid-pkg",
+  "what": "Debian sid openjdk-17-jre-headless (17.0.21.0.3+1-1, the five-part last affected release, no fixed package)",
+  "mode": "build",
+  "dockerfile": "debian-sid-pkg.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/lib/jvm/java-17-openjdk-amd64",
     "runtime",
     "vulnerable",
     "vulnerable",
@@ -667,7 +731,7 @@
  },
  {
   "name": "repo",
-  "what": "Source tree, offline: Dockerfiles (with install forms: --mount, :arch, .arch, /release, =${VAR}), Compose, Kubernetes, setup-java, version files, Gradle",
+  "what": "Source tree, offline: Dockerfiles (with install forms: --mount, :arch, .arch, /release, =${VAR}), Compose, Kubernetes, setup-java, version files, Gradle; Red Hat UBI images and a microdnf install, GraalVM in sdkman and asdf names and an Oracle GraalVM image",
   "mode": "repo",
   "dir": "repo",
   "expected": [
@@ -754,6 +818,31 @@
    [
     "Dockerfile.forms:6",
     "os-package",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile.redhat:1",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile.redhat:2",
+    "not-checked",
+    "unknown"
+   ],
+   [
+    "Dockerfile.redhat:4",
+    "os-package",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile.redhat:5",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "graalvm/.sdkmanrc:1",
+    "java-pin",
     "vulnerable"
    ]
   ]
