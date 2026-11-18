@@ -1,6 +1,10 @@
 package nginxh2
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,5 +106,24 @@ func TestR11HardLinkedSite(t *testing.T) {
 	}
 	if ms, _ := s.Glob("/etc/nginx/sites-enabled/*"); len(ms) != 1 {
 		t.Errorf("hard link not matched: %v", ms)
+	}
+}
+
+// R14: the nginx version is read from an APKINDEX.tar.gz.
+func TestR14IndexReader(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	body := "P:musl\nV:1.2.5-r0\n\nP:nginx\nV:1.30.7-r0\no:nginx\n\n"
+	tw.WriteHeader(&tar.Header{Name: "APKINDEX", Mode: 0o644, Size: int64(len(body))})
+	tw.Write([]byte(body))
+	tw.Close()
+	gz.Close()
+	v, err := nginxInIndex(&buf)
+	if err != nil || v != "1.30.7-r0" {
+		t.Errorf("%q %v", v, err)
+	}
+	if _, err := apkIndex(engine.Options{})(context.Background(), "3.24; rm"); err == nil {
+		t.Error("a malformed branch was fetched")
 	}
 }

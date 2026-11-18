@@ -496,7 +496,7 @@ func (s *scanner) image(r *refs.Ref) {
 	if target := fam.FixedTag(t); target != "" {
 		f.Fixable = true
 		f.edit = &tagEdit{image: r.Image, family: fam, tag: t, target: target}
-		f.Fix = fmt.Sprintf("Move to %s:%s, the first fixed release of the same line and variant, then rebuild and redeploy.", repoName, target)
+		f.Fix = fmt.Sprintf("Move to %s:%s, %s, then rebuild and redeploy.", repoName, target, fam.MoveText(t))
 	} else {
 		f.Fix = fam.LineText(t) + "."
 	}

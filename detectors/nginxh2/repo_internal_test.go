@@ -1,6 +1,7 @@
 package nginxh2
 
 import (
+	"context"
 	"testing"
 
 	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/knowledge"
@@ -108,5 +109,23 @@ func TestR8FromPlatform(t *testing.T) {
 	}
 	if got := verifyOptions(o, repo.Finding{Platform: "$BUILDPLATFORM"}).Platforms; len(got) != 2 {
 		t.Errorf("a variable platform: %v", got)
+	}
+}
+
+// R13: fix reads each image pair once, however many references name it.
+func TestR13VerifyOnce(t *testing.T) {
+	calls := 0
+	v := memoVerify(func(_ context.Context, cur, target string) (string, error) {
+		calls++
+		return "sha256:x", nil
+	})
+	for i := 0; i < 3; i++ {
+		if d, err := v(context.Background(), "nginx:1.31.8", "nginx:1.31.9"); err != nil || d != "sha256:x" {
+			t.Fatal(d, err)
+		}
+	}
+	v(context.Background(), "nginx:1.30.6", "nginx:1.30.7")
+	if calls != 2 {
+		t.Errorf("%d reads, want 2", calls)
 	}
 }

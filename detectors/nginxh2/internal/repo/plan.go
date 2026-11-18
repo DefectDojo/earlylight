@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/knowledge"
+	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/pkgdb"
 	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
@@ -44,13 +45,16 @@ func declined(format string, args ...any) error {
 type Registry struct {
 	Tags   func(ctx context.Context, repo string) ([]string, error)
 	Verify func(ctx context.Context, current, target string) (string, error)
+	// APKIndex returns the nginx package version in an Alpine branch's
+	// main index ("3.24", "edge"); nil when the run is offline.
+	APKIndex func(ctx context.Context, branch string) (string, error)
 }
 
 // Plan finds the edit that fixes a finding, checks it by rescanning the
 // edited file in memory, and returns it without writing anything.
 func Plan(ctx context.Context, root string, f Finding, reg Registry, opts Options) (*Change, error) {
 	if f.Fixable && f.pin != nil {
-		return planPin(ctx, root, f, opts)
+		return planPin(ctx, root, f, reg, opts)
 	}
 	if !f.Fixable || f.edit == nil {
 		return nil, declined("%s", f.Fix)
@@ -121,14 +125,41 @@ func Plan(ctx context.Context, root string, f Finding, reg Registry, opts Option
 		where = fmt.Sprintf(" (in the value of %s)", part.Var)
 	}
 	return planLine(ctx, root, f, file, part.Line, col, tag, e.target, opts,
-		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: the first release of the same line and variant with the fix for CVE-2026-123007 and CVE-2026-123633, read and judged on the platforms it is built for (the FROM line's --platform, else the --platform list, else linux/amd64 and linux/arm64) and published for each of them, on the same base OS (index digest %s). Rebuild and redeploy.",
-			e.image, newImage, part.Line, file, where, digest))
+		fmt.Sprintf("Changes the image %s to %s on line %d of %s%s: %s with the fix for CVE-2026-123007 and CVE-2026-123633, read and judged on the platforms it is built for (the FROM line's --platform, else the --platform list, else linux/amd64 and linux/arm64) and published for each of them, on the same base OS (index digest %s). Rebuild and redeploy.",
+			e.image, newImage, part.Line, file, where, e.family.MoveText(e.tag), digest))
 }
 
 // planPin moves a package pin to the fixed package: the pin must be
 // written once in the RUN instruction (its first line and the lines it
 // continues onto).
-func planPin(ctx context.Context, root string, f Finding, opts Options) (*Change, error) {
+func planPin(ctx context.Context, root string, f Finding, reg Registry, opts Options) (*Change, error) {
+	// The branch's index decides what the pin can be: Alpine keeps only
+	// the newest build of a package, and a dated table could move a pin
+	// to a build that is gone, or down a line.
+	if reg.APKIndex == nil {
+		return nil, declined("moving the pin %s needs Alpine %s's package index, which this run does not read; change it to %s by hand after checking the index", f.pin.old, f.pin.branch, f.pin.repl)
+	}
+	cur, err := reg.APKIndex(ctx, f.pin.branch)
+	if err != nil {
+		return nil, declined("Alpine %s's package index could not be read (%v): not checked; try again later, or change the pin by hand", f.pin.branch, err)
+	}
+	up, err := knowledge.UpstreamOf(cur)
+	if err != nil {
+		return nil, declined("Alpine %s's index lists nginx %q, which does not read as a release; change the pin by hand", f.pin.branch, cur)
+	}
+	for _, c := range knowledge.CVEs {
+		if st, _ := knowledge.Nginx(c, up); st != knowledge.Fixed {
+			return nil, declined("Alpine %s's index lists nginx %s, which does not have the fix for %s; change the pin by hand when it does", f.pin.branch, cur, c.ID)
+		}
+	}
+	name, oldVer, _ := strings.Cut(f.pin.old, "=")
+	if c, ok := pkgdb.CompareAPK(cur, oldVer); !ok || c <= 0 {
+		return nil, declined("Alpine %s's fixed nginx %s is not newer than the pinned %s; change the pin by hand", f.pin.branch, cur, oldVer)
+	}
+	if o, err := knowledge.UpstreamOf(oldVer); err != nil || knowledge.Cmp(o.Line(), up.Line()) != 0 {
+		return nil, declined("Alpine %s's fixed nginx %s is on another line than the pinned %s; change the pin by hand", f.pin.branch, cur, oldVer)
+	}
+	f.pin.repl = name + "=" + cur
 	b, ok := opts.Overlay[f.File]
 	if !ok {
 		var err error
@@ -161,7 +192,7 @@ func planPin(ctx context.Context, root string, f Finding, opts Options) (*Change
 		return nil, declined("the pin %s is not written once in the instruction at line %d; change it to %s by hand", f.pin.old, f.Line, f.pin.repl)
 	}
 	return planLine(ctx, root, f, f.File, hits[0].line, hits[0].col, f.pin.old, f.pin.repl, opts,
-		fmt.Sprintf("Changes the package pin %s to %s on line %d of %s: the fixed nginx package on Alpine %s (APKINDEX, %s). Rebuild.", f.pin.old, f.pin.repl, hits[0].line, f.File, f.pin.branch, knowledge.Checked))
+		fmt.Sprintf("Changes the package pin %s to %s on line %d of %s: the fixed nginx package Alpine %s's index lists now. Rebuild.", f.pin.old, f.pin.repl, hits[0].line, f.File, f.pin.branch))
 }
 
 // planLine replaces old with repl at col on a line and rescans in memory:

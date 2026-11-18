@@ -117,7 +117,6 @@ func repoFinding(f repo.Finding) engine.Finding {
 // Limits on what one source-tree scan reads from registries.
 const (
 	maxRepoImages = 20
-	pullTimeout   = 5 * time.Minute
 )
 
 // repoPlatforms are the platforms a pulled image is judged on: the ones
@@ -475,7 +474,19 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 	reg := repo.Registry{}
 	if !o.Offline {
 		reg.Tags = tagLister(o)
-		reg.Verify = d.verifier(o)
+		reg.Verify = memoVerify(d.verifier(o))
+		reg.APKIndex = apkIndex(o)
+	}
+	// One verifier per platform list, each reading a pair once.
+	byPlatforms := map[string]func(context.Context, string, string) (string, error){}
+	verifiers := func(oo engine.Options) func(context.Context, string, string) (string, error) {
+		k := strings.Join(oo.Platforms, ",")
+		if v, ok := byPlatforms[k]; ok {
+			return v
+		}
+		v := memoVerify(d.verifier(oo))
+		byPlatforms[k] = v
+		return v
 	}
 	code := 0
 	for _, dir := range dirs {
@@ -532,7 +543,7 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 			}
 			freg := reg
 			if !o.Offline {
-				freg.Verify = d.verifier(verifyOptions(o, f))
+				freg.Verify = verifiers(verifyOptions(o, f))
 			}
 			ch, err := repo.Plan(ctx, dir, f, freg, repo.Options{})
 			if err != nil {
@@ -551,6 +562,24 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 		}
 	}
 	return code
+}
+
+// memoVerify reads each current and target pair once in a fix run.
+func memoVerify(v func(context.Context, string, string) (string, error)) func(context.Context, string, string) (string, error) {
+	type res struct {
+		digest string
+		err    error
+	}
+	memo := map[string]res{}
+	return func(ctx context.Context, cur, target string) (string, error) {
+		k := cur + "\x00" + target
+		if r, ok := memo[k]; ok {
+			return r.digest, r.err
+		}
+		d, err := v(ctx, cur, target)
+		memo[k] = res{d, err}
+		return d, err
+	}
 }
 
 // verifyOptions are the options a tag move is verified with: a FROM

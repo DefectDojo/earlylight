@@ -421,9 +421,24 @@ func TestAlpineBranches(t *testing.T) {
 	if !f.Fixable {
 		t.Fatalf("a 3.24 pin is fixable: %+v", f)
 	}
-	ch, err := Plan(context.Background(), root, f, Registry{}, Options{})
+	// R14: the branch's index decides; without it (offline) nothing moves.
+	if _, err := Plan(context.Background(), root, f, Registry{}, Options{}); err == nil {
+		t.Fatal("a pin moved without reading the branch's index")
+	}
+	index := func(v string) Registry {
+		return Registry{APKIndex: func(_ context.Context, branch string) (string, error) { return v, nil }}
+	}
+	ch, err := Plan(context.Background(), root, f, index("1.30.7-r0"), Options{})
 	if err != nil || ch.Line != 5 || ch.New != "    curl nginx=1.30.7-r0" {
 		t.Fatalf("pin plan: %+v %v", ch, err)
+	}
+	// The index has a later fixed build: that is the pin.
+	if ch, err := Plan(context.Background(), root, f, index("1.30.7-r1"), Options{}); err != nil || ch.New != "    curl nginx=1.30.7-r1" {
+		t.Errorf("later build: %+v %v", ch, err)
+	}
+	// The index has no fixed build any more (or yet): declined.
+	if _, err := Plan(context.Background(), root, f, index("1.30.6-r0"), Options{}); err == nil {
+		t.Error("moved to an unfixed build")
 	}
 	one(t, res, "Dockerfile", 7, RuleNotChecked, knowledge.Unknown)
 	if f := one(t, res, "Dockerfile", 9, RulePackage, knowledge.Vulnerable); f.Fixable || !strings.Contains(f.Fix, "Alpine 3.22 had no fixed") {
@@ -498,5 +513,31 @@ func TestR9NeverSilent(t *testing.T) {
 	}
 	if !skipped["compose.yaml"] || !skipped["Dockerfile.prod"] {
 		t.Errorf("symbolic links not recorded: %+v", res.Skips)
+	}
+}
+
+// R14: on edge, a pin above Alpine's fixed package is never moved down.
+func TestR14EdgeNoDowngrade(t *testing.T) {
+	root := tree(t, map[string]string{"Dockerfile": "FROM alpine:edge\nRUN apk add nginx=1.31.8-r0\n"})
+	res, err := Scan(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := one(t, res, "Dockerfile", 2, RulePackage, knowledge.Vulnerable)
+	if strings.Contains(f.Fix, "1.30.7-r0, the fixed package") {
+		t.Errorf("fix text proposes a move down: %s", f.Fix)
+	}
+	reg := Registry{APKIndex: func(context.Context, string) (string, error) { return "1.30.7-r0", nil }}
+	if _, err := Plan(context.Background(), root, f, reg, Options{}); err == nil {
+		t.Error("planned a move down a line")
+	}
+}
+
+// R15: the F5 controller's move to 5.8.0 is labelled a minor upgrade.
+func TestR15MinorUpgrade(t *testing.T) {
+	res := scan(t, map[string]string{"compose.yaml": "services:\n  ic:\n    image: nginx/nginx-ingress:5.7.1\n"})
+	f := one(t, res, "compose.yaml", 3, RuleImage, knowledge.Vulnerable)
+	if !strings.Contains(f.Fix, "minor upgrade") || strings.Contains(f.Fix, "same line") {
+		t.Errorf("%s", f.Fix)
 	}
 }

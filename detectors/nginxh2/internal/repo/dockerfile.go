@@ -456,11 +456,16 @@ func (s *scanner) pinned(f *Finding, p pkg, st *stage) {
 	}
 	switch {
 	case p.product == "nginx" && st.distro == "alpine" && f.Status == knowledge.Vulnerable:
-		if v, ok := knowledge.AlpineFixed[st.branch]; ok && p.op == "=" {
-			f.Fix = fmt.Sprintf("Pin %s=%s, the fixed package on Alpine %s, and rebuild.", p.name, v, st.branch)
+		v, ok := knowledge.AlpineFixed[st.branch]
+		newer, cmpOK := pkgdb.CompareAPK(v, p.ver)
+		switch {
+		case ok && p.op == "=" && cmpOK && newer > 0:
+			f.Fix = fmt.Sprintf("Pin %s=%s, the fixed package on Alpine %s (or the newer build its index lists), and rebuild.", p.name, v, st.branch)
 			f.Fixable = true
 			f.pin = &pinEdit{old: p.name + "=" + p.ver, repl: p.name + "=" + v, branch: st.branch}
-		} else {
+		case ok:
+			f.Fix = fmt.Sprintf("Alpine %s's fixed nginx (%s on %s) is not newer than this pin; pin a fixed release of the pinned line by hand (1.31.9 or later).", st.branch, v, knowledge.Checked)
+		default:
 			f.Fix = knowledge.AlpineText(st.branch) + ". Build on Alpine 3.24 with nginx>=1.30.7-r0."
 		}
 	case p.product == "nginx" && nginxOrgVersion(p.ver):

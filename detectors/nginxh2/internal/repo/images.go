@@ -185,6 +185,16 @@ func (f Family) FixedTag(t Tag) string {
 	return ""
 }
 
+// MoveText says what the move to FixedTag is: the next release of the same
+// line, or for the F5 controller, a minor upgrade.
+func (f Family) MoveText(t Tag) string {
+	if f.ID == F5Ingress.ID {
+		v, _ := knowledge.ParseV(t.Version)
+		return fmt.Sprintf("a minor upgrade (%s to 5.8) of the same variant, the first release on nginx 1.31.9; read its release notes before deploying", v.Line())
+	}
+	return "the first release of the same line and variant"
+}
+
 // LineText says why a vulnerable tag has no fixed tag of its own line.
 func (f Family) LineText(t Tag) string {
 	if f.NoFix != "" {
