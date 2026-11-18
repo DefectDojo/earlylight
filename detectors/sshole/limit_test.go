@@ -136,7 +136,114 @@ func TestFailOnSkipWithLimits(t *testing.T) {
 	}
 	padded(t, root, "etc/shadow", []byte("root:*::0:::::\n"), maxKept+1)
 	_, skipped, code = scanExit(t, "--detector", "sshole", "--as-root", "--fail-on-skip", root)
-	if code != 3 || len(skipped) != 2 {
+	gaps := 0
+	for _, s := range skipped {
+		if s.Path == "/etc/shadow" && !s.Excluded {
+			gaps++
+		}
+	}
+	if code != 3 || gaps != 1 {
 		t.Errorf("a large /etc/shadow: exit %d skipped %+v", code, skipped)
+	}
+}
+
+// sshVerdict returns sshole's single verdict and the exit status.
+func sshVerdict(t *testing.T, args ...string) (engine.Verdict, int) {
+	t.Helper()
+	fs, _, code := scanExit(t, append([]string{"--detector", "sshole"}, args...)...)
+	if len(fs) != 1 {
+		t.Fatalf("findings %+v", fs)
+	}
+	return fs[0].Verdict, code
+}
+
+// Round-2 review finding 2: a package database over the old 4 MiB limit is
+// read (16 MiB, as java4shell), and with no OpenSSH server in the target a
+// file over the limit is no coverage gap.
+func TestPackageDBLimit(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "etc/os-release", []byte("ID=alpine\nVERSION_ID=3.22.2\n"), 0o644)
+	padded(t, root, "lib/apk/db/installed", []byte("P:musl\nV:1.2.5-r10\n\n"), 4500036)
+	if _, _, code := scanExit(t, "--detector", "sshole", "--as-root", "--fail-on-skip", root); code != 0 {
+		t.Errorf("a 4.5 MB apk database and no sshd: exit %d", code)
+	}
+	padded(t, root, "lib/apk/db/installed", []byte("P:musl\nV:1.2.5-r10\n\n"), 16<<20+1)
+	if _, skipped, code := scanExit(t, "--detector", "sshole", "--as-root", "--fail-on-skip", root); code != 0 || len(skipped) != 1 || !skipped[0].Excluded {
+		t.Errorf("an apk database over 16 MiB and no sshd: exit %d skipped %+v", code, skipped)
+	}
+	root = alpineRoot(t, "10.0_p1-r11")
+	db, _ := os.ReadFile(filepath.Join(root, "lib/apk/db/installed"))
+	padded(t, root, "lib/apk/db/installed", db, 4500036)
+	if v, code := sshVerdict(t, "--as-root", "--fail-on-skip", root); v != engine.Fixed || code != 0 {
+		t.Errorf("a 4.5 MB apk database naming the fixed package: %s exit %d", v, code)
+	}
+	// Over 16 MiB, the fixed package is not known: not cleared, and a gap.
+	padded(t, root, "lib/apk/db/installed", db, 16<<20+1)
+	fs, skipped, _ := scanExit(t, "--detector", "sshole", "--as-root", root)
+	gap := false
+	for _, s := range skipped {
+		gap = gap || s.Path == "/lib/apk/db/installed" && !s.Excluded
+	}
+	if len(fs) != 1 || fs[0].Verdict.Cleared() || !gap {
+		t.Errorf("an apk database over 16 MiB with sshd: %+v skipped %+v", fs, skipped)
+	}
+}
+
+// Round-2 review finding 3: a start script over the limit that may start
+// sshd with PAM off keeps the server from being cleared.
+func TestStartScriptOverLimitNeverClears(t *testing.T) {
+	for _, c := range []struct{ name, rel, text string }{
+		{"-o UsePAM=no", "etc/cont-init.d/10-sshd", "#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n"},
+		{"-f another config", "etc/cont-init.d/10-sshd", "#!/bin/sh\nexec /usr/sbin/sshd -D -f /etc/ssh/alt_sshd_config\n"},
+		// Named like sshd_config, so read up to 4 MiB as a config file,
+		// but past the script limit.
+		{"a script read for its name", "etc/cont-init.d/gen-sshd_config.sh", "#!/bin/sh\nexec /usr/sbin/sshd -D -o UsePAM=no\n"},
+	} {
+		root := pamRoot(t)
+		write(t, root, "etc/ssh/alt_sshd_config", []byte("UsePAM no\n"), 0o644)
+		write(t, root, c.rel, []byte(c.text), 0o755)
+		if v, _ := sshVerdict(t, "--as-root", root); v != engine.Vulnerable {
+			t.Errorf("%s, small: %s", c.name, v)
+		}
+		padded(t, root, c.rel, []byte(c.text), 307200)
+		if v, code := sshVerdict(t, "--as-root", root); v.Cleared() || code == 0 {
+			t.Errorf("%s, 307,200 bytes: %s exit %d", c.name, v, code)
+		}
+	}
+	// A large script that does not run at start changes nothing.
+	root := pamRoot(t)
+	padded(t, root, "opt/install.sh", []byte("#!/bin/sh\n"), 307200)
+	if v, _ := sshVerdict(t, "--as-root", root); v != engine.Inactive {
+		t.Errorf("a large script outside the start: %s", v)
+	}
+}
+
+// Round-2 review finding 4: an include over --max-file-size, not only over
+// sshole's own limit, keeps the server from being cleared, at and around
+// the boundary where the two limits are equal.
+func TestIncludeOverMaxFileSize(t *testing.T) {
+	for _, c := range []struct {
+		size int64
+		max  string
+	}{{2 << 20, "1048576"}, {maxKept + 1, "4194304"}, {maxKept + 1, "4194305"}, {maxKept, "4194303"}} {
+		root := pamRoot(t)
+		padded(t, root, "etc/ssh/sshd_config.d/50-site.conf", []byte("UsePAM no\n"), c.size)
+		if v, code := sshVerdict(t, "--as-root", "--max-file-size", c.max, "--fail-on-skip", root); v.Cleared() || code != 3 {
+			t.Errorf("a %d-byte include, --max-file-size %s: %s exit %d", c.size, c.max, v, code)
+		}
+	}
+}
+
+// Round-2 review finding 7: an include too large to read from disk under
+// --root (a subdirectory scanned, the configuration read from the root)
+// keeps the server from being cleared.
+func TestIncludeOverLimitOnDisk(t *testing.T) {
+	root := pamRoot(t)
+	if v, _ := sshVerdict(t, "--root", root, filepath.Join(root, "usr")); v != engine.Inactive {
+		t.Fatalf("PAM on, read from disk: %s", v)
+	}
+	padded(t, root, "etc/ssh/sshd_config.d/50-site.conf", []byte("UsePAM no\n"), maxKept+1)
+	if v, _ := sshVerdict(t, "--root", root, filepath.Join(root, "usr")); v.Cleared() {
+		t.Errorf("an include over the limit on disk: %s", v)
 	}
 }

@@ -37,6 +37,19 @@ func TestConfigUnread(t *testing.T) {
 	if c := ParseConfig(m, "/etc/ssh/sshd_config"); len(c.Unread) != 1 || !strings.Contains(c.Unread[0], "more than 256") {
 		t.Errorf("past the include limit: unread %v", c.Unread)
 	}
+	// Includes nested past the parser's depth.
+	m = memFiles{}
+	for i := 0; i <= 17; i++ {
+		m[fmt.Sprintf("/etc/ssh/%d.conf", i)] = fmt.Sprintf("Include /etc/ssh/%d.conf\n", i+1)
+	}
+	m["/etc/ssh/sshd_config"] = "Include /etc/ssh/0.conf\n"
+	if c := ParseConfig(m, "/etc/ssh/sshd_config"); len(c.Unread) != 1 || !strings.Contains(c.Unread[0], "nested too deeply") {
+		t.Errorf("nested too deeply: unread %v", c.Unread)
+	}
+	// Directives past the parser's limit.
+	if c := ParseConfig(memFiles{"/etc/ssh/sshd_config": strings.Repeat("Port 22\n", maxDirectives+1) + "UsePAM no\n"}, "/etc/ssh/sshd_config"); len(c.Unread) != 1 || !strings.Contains(c.Unread[0], "directives") {
+		t.Errorf("past the directive limit: unread %v", c.Unread)
+	}
 	if c := ParseConfig(memFiles{"/etc/ssh/sshd_config": "UsePAM yes\n"}, "/etc/ssh/sshd_config"); len(c.Unread) != 0 {
 		t.Errorf("all read: unread %v", c.Unread)
 	}

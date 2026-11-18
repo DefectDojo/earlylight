@@ -97,9 +97,19 @@ func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
 		most = maxScript
 	}
 	if keep(p) {
-		most = max(most, maxKept)
+		most = max(most, keptLimit(p))
 	}
 	return most
+}
+
+// keptLimit is the most read of a file the verdict reads: a package
+// database can be large (16 MiB, as java4shell's), the others are small.
+func keptLimit(p string) int64 {
+	switch p {
+	case "/lib/apk/db/installed", "/usr/lib/apk/db/installed", "/usr/lib/opkg/status":
+		return maxPackageDB
+	}
+	return maxKept
 }
 
 // isScript reports a "#!" script: a container's entrypoint or startup step.
@@ -131,11 +141,14 @@ func keep(p string) bool {
 		strings.Contains(path.Dir(p), "ssh") && (strings.HasSuffix(base, ".conf") || strings.HasSuffix(base, "config"))
 }
 
-const maxKept = 4 << 20
+const (
+	maxKept      = 4 << 20
+	maxPackageDB = 16 << 20
+)
 
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
-	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}, over: map[string]bool{}}
+	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}, over: map[string]bool{}, unreadScripts: map[string]bool{}}
 }
 
 type scan struct {
@@ -144,33 +157,62 @@ type scan struct {
 	files       map[string][]byte
 	scripts     map[string][]byte
 	scriptBytes int
-	// over holds the files a verdict reads that were over the limit:
-	// present, but their content is unknown.
+	// over holds the files a verdict reads that were not read (over the
+	// limit or --max-file-size): present, but their content is unknown.
 	over map[string]bool
+	// unreadScripts are files that may be start scripts and were not read.
+	unreadScripts map[string]bool
 }
 
-// VisitOverLimit records a file the verdict reads (an account file, the
-// package database, an sshd_config or a file one includes) that is over
-// the limit: it is a coverage gap, and a configuration that includes it is
-// never taken as turning PAM on. A start script over the limit is only an
-// exclusion: the startup analysis never clears a server.
-func (s *scan) VisitOverLimit(p string, size int64) []engine.Skip {
-	if !keep(p) {
+// VisitOverLimit records a file the scan asked for and did not get, over
+// its limit or --max-file-size. A configuration that includes it, or a
+// start script that was not read, never lets a server be cleared, and an
+// account file, package database or sshd_config not read is a coverage gap
+// once a server is found (FinishSkips). The record here is an exclusion:
+// with no OpenSSH server in the target, none of these files matters.
+func (s *scan) VisitOverLimit(p string, _ int64) []engine.Skip {
+	// The last entry for a path wins (a tar can hold several).
+	delete(s.files, p)
+	delete(s.scripts, p)
+	if keep(p) {
+		s.over[p] = true
+	}
+	s.unreadScripts[p] = true // its head is not known here: it may be a script
+	return nil
+}
+
+// FinishSkips reports the files the verdict reads that were not read, as
+// coverage gaps, when an OpenSSH server was found.
+func (s *scan) FinishSkips() []engine.Skip {
+	if len(s.binaries) == 0 {
 		return nil
 	}
-	s.over[p] = true
-	return []engine.Skip{{Path: p, Reason: fmt.Sprintf("larger than the %d bytes sshole reads of a file its verdict depends on; not checked", maxKept)}}
+	var out []engine.Skip
+	for p := range s.over {
+		out = append(out, engine.Skip{Path: p, Reason: fmt.Sprintf("larger than the %d bytes sshole reads of a file its verdict depends on; not checked", keptLimit(p))})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
 	if f.Member {
 		return nil // installed servers only, not copies inside archives
 	}
-	if isScript(f.Data) && len(f.Data) <= maxScript && s.scriptBytes+len(f.Data) <= maxScripts {
-		s.scripts[f.Path] = f.Data
-		s.scriptBytes += len(f.Data)
+	// The last entry for a path wins (a tar can hold several).
+	delete(s.over, f.Path)
+	delete(s.unreadScripts, f.Path)
+	if isScript(f.Data) {
+		if len(f.Data) <= maxScript && s.scriptBytes+len(f.Data) <= maxScripts {
+			s.scripts[f.Path] = f.Data
+			s.scriptBytes += len(f.Data)
+		} else {
+			// Read for its other use (a file named like sshd_config) or
+			// past the total: not checked as a start script.
+			s.unreadScripts[f.Path] = true
+		}
 	}
-	if keep(f.Path) && len(f.Data) <= maxKept && !archive.IsExecutable(f.Data) {
+	if keep(f.Path) && int64(len(f.Data)) <= keptLimit(f.Path) && !archive.IsExecutable(f.Data) {
 		s.files[f.Path] = f.Data
 		return nil
 	}
@@ -222,7 +264,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Resolve:  res.resolve,
 		Branch:   branch,
 		Image:    s.kind == engine.Image,
-		Startup:  assess.Startup{Command: ctx.Command(), Scripts: s.scripts},
+		Startup:  assess.Startup{Command: ctx.Command(), Scripts: s.scripts, Unread: s.unreadScripts},
 	})
 	out := make([]engine.Finding, 0, len(found))
 	for _, x := range found {
@@ -371,7 +413,7 @@ func (f *files) disk(p string) []byte {
 		return nil
 	}
 	fi, err := os.Lstat(full)
-	if err != nil || fi.Size() > maxKept {
+	if err != nil || fi.Size() > keptLimit(p) {
 		return nil
 	}
 	b, err := os.ReadFile(full)

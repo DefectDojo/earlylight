@@ -14,6 +14,66 @@ type Startup struct {
 	Command []string
 	// Scripts are the image's shell scripts ("#!" files), by path.
 	Scripts map[string][]byte
+	// Unread are scripts that were not read (larger than the scan reads):
+	// one that runs at start can start sshd with any settings.
+	Unread map[string]bool
+}
+
+// unreadStart lists the scripts that run at start and were not read: the
+// command's own script, one a start script names, and those in the init
+// directories.
+func (s Startup) unreadStart(resolve func(string) (string, bool), scripts []script) []string {
+	if len(s.Unread) == 0 {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		r := p
+		if resolve != nil {
+			if rp, ok := resolve(p); ok {
+				r = rp
+			}
+		}
+		if !strings.HasPrefix(r, "/") {
+			for _, d := range pathDirs {
+				if s.Unread[d+r] {
+					r = d + r
+					break
+				}
+			}
+		}
+		if s.Unread[r] && !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	c := s.Command
+	for len(c) > 1 && isWrapper(path.Base(c[0])) {
+		c = c[1:]
+	}
+	if len(c) > 0 {
+		add(c[0])
+		for _, w := range c[1:] {
+			if strings.HasPrefix(w, "/") {
+				add(w)
+			}
+		}
+	}
+	for _, sc := range scripts {
+		for _, m := range absPathRE.FindAllString(sc.text, -1) {
+			add(m)
+		}
+	}
+	for p := range s.Unread {
+		for _, d := range initDirs {
+			if strings.HasPrefix(p, d) {
+				add(p)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // initDirs hold scripts an init system runs at start whatever the command

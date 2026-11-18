@@ -11,8 +11,7 @@ import (
 )
 
 // A hostile account file as large as --max-file-size is not read into
-// memory: the detector keeps one only up to 4 MiB, and one over that is a
-// coverage gap.
+// memory: the detector keeps one only up to 4 MiB.
 func TestKeptFileBounded(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o755); err != nil {
@@ -35,8 +34,9 @@ func TestKeptFileBounded(t *testing.T) {
 	if a := after.TotalAlloc - before.TotalAlloc; a > 8<<20 {
 		t.Errorf("a 128 MiB /etc/shadow cost %d bytes", a)
 	}
-	// The verdict reads it: a coverage gap, not an exclusion.
-	if len(tg.Skipped) != 1 || tg.Skipped[0].Excluded || !strings.Contains(tg.Skipped[0].Reason, "sshole reads") || tg.Gaps() != 1 {
+	// With no OpenSSH server in the target, no verdict reads it: an
+	// exclusion, not a gap.
+	if len(tg.Skipped) != 1 || !tg.Skipped[0].Excluded || !strings.Contains(tg.Skipped[0].Reason, "limit of sshole") || tg.Gaps() != 0 {
 		t.Errorf("skipped %+v", tg.Skipped)
 	}
 }
@@ -61,5 +61,22 @@ func TestLimits(t *testing.T) {
 		if got := d.Limit(c.path, c.head, false); got != c.want {
 			t.Errorf("%s %q: limit %d, want %d", c.path, c.head, got, c.want)
 		}
+	}
+}
+
+// Round-2 review finding 5: of several entries for one path, the last
+// decides: an over-limit entry after a read one leaves the path unread, a
+// read entry after an over-limit one leaves it read.
+func TestDuplicateEntries(t *testing.T) {
+	const p = "/etc/ssh/sshd_config.d/50-site.conf"
+	s := (&Detector{}).NewScan(engine.Image).(*scan)
+	s.Visit(engine.File{Path: p, Data: []byte("UsePAM yes\n")})
+	s.VisitOverLimit(p, maxKept+1)
+	if _, ok := s.files[p]; ok || !s.over[p] {
+		t.Errorf("read then over: files %v over %v", s.files, s.over)
+	}
+	s.Visit(engine.File{Path: p, Data: []byte("UsePAM yes\n")})
+	if _, ok := s.files[p]; !ok || s.over[p] || s.unreadScripts[p] {
+		t.Errorf("over then read: files %v over %v unread %v", s.files, s.over, s.unreadScripts)
 	}
 }
