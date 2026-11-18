@@ -207,6 +207,10 @@ func (s *scanner) judgeRef(r refs.Ref, opts Options) {
 	if fam.GraalVM {
 		st, why = graalTag(tv, st, why, graalDist(fam.Vendor))
 	}
+	if st == knowledge.Unknown && fam.Vendor == "Azul Zulu" && knowledge.NotJava(tv.Nums) && zuluNoFix(tv.Nums[0]) {
+		// Zulu's own number in the tag (22.32.15 is JDK 22).
+		st, why = knowledge.Vulnerable, fmt.Sprintf("the tag names Azul Zulu %s, whose first number is the Java line: Java %d received no Java4Shell fix", tv.Text, tv.Nums[0])
+	}
 	switch st {
 	case knowledge.Unknown:
 		s.add(Finding{Rule: RuleNotChecked, File: r.File, Line: r.Line, Level: "note", Status: StatusUnknown, Pull: img, ref: &r,

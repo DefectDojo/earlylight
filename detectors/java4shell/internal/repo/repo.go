@@ -457,6 +457,12 @@ func (s *scanner) judgeVersion(rel string, line int, ga bool, verText, source, v
 	if vendor != "" {
 		props["vendor"] = vendor
 	}
+	if knowledge.NotJava(tv.Nums) && strings.Contains(strings.ToLower(vendor), "zulu") && zuluNoFix(tv.Nums[0]) {
+		// Zulu's own numbers start with the Java line: a line that
+		// received no fix is vulnerable whatever the rest says.
+		s.lineToolchain(rel, line, tv.Nums[0], source+" ("+refs.CleanText(verText, 60)+", Azul Zulu)")
+		return
+	}
 	if knowledge.NotJava(tv.Nums) && !isGraal(vendor) {
 		s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown, Reason: knowledge.NotJavaWhy(verText),
 			Message: fmt.Sprintf("%s selects %s, which is not a Java version: not checked for the Java4Shell fix", source, verText),
@@ -1031,12 +1037,28 @@ var (
 	// environment("BP_JVM_VERSION", "21"), environment["BP_JVM_VERSION"] = "21"
 	// and project.toml's name = "BP_JVM_VERSION" with value = "21" after it.
 	bpJVM = regexp.MustCompile(`BP_JVM_VERSION["']?\s*\]?\s*(?:[:=,]|to\b|>|value\s*=)\s*["']?(\d{1,2}(?:\.\d+)*)`)
-	// jibFrom reads a Jib base image across lines: from { image = "..." },
-	// jib.from.image = "...", <from><image>...</image>, <jib.from.image>.
-	jibFrom        = regexp.MustCompile(`(?:\bfrom\s*\{[^}]*?\bimage\s*=\s*|jib\.from\.image\s*=\s*|<from>\s*<image>\s*|<jib\.from\.image>\s*)["']?([A-Za-z0-9][\w./:@-]*)`)
+	// jibFrom reads a Jib base image written in one piece: jib.from.image =
+	// "..." and <jib.from.image>. The from { } block and <from> element are
+	// read by jibBlocks.
+	jibFrom = regexp.MustCompile(`(?:jib\.from\.image\s*=\s*|<jib\.from\.image>\s*)["']?([A-Za-z0-9][\w./:@-]*)`)
+	// jibBlock opens Jib's from block; jibImage is the image set directly
+	// in it: image = "x", image "x", image("x").
+	jibBlock       = regexp.MustCompile(`\bfrom\s*\{`)
+	jibImage       = regexp.MustCompile(`\bimage\s*(?:=\s*|\(\s*|\s)["']([^"'\s]+)["']`)
+	jibElement     = regexp.MustCompile(`(?s)<from>(.*?)</from>`)
+	jibTag         = regexp.MustCompile(`<image>\s*([^<\s]*)\s*</image>`)
+	pomRef         = regexp.MustCompile(`^\$\{([\w.-]+)\}$`)
 	mavenToolchain = regexp.MustCompile(`<version>\s*\[?(\d{1,2})(?:,\))?\s*</version>`)
 	enforcerJava   = regexp.MustCompile(`(?s)<requireJavaVersion>\s*<version>\s*([^<]{1,60})</version>`)
 )
+
+// zuluNoFix reports whether the first number of one of Azul Zulu's own
+// version numbers (22.32.15 is JDK 22) names a Java line that received no
+// fix: the number alone then says vulnerable.
+func zuluNoFix(feature int) bool {
+	l, ok := knowledge.LineOf(feature)
+	return feature > 17 && ok && l.Fixed == nil
+}
 
 // lineToolchain reports a toolchain or release setting that selects a Java
 // line with no fix. Lines with a fix are not reported: the toolchain picks
@@ -1063,10 +1085,74 @@ func (s *scanner) gradle(rel, text string) {
 	s.settings(rel, text)
 }
 
+// uncomment blanks out a build file's comments, keeping every offset and
+// line: // and /* */ in Gradle files, <!-- --> in XML, # in TOML and
+// properties files. What a comment says is not a setting.
+func uncomment(rel, text string) string {
+	b := []byte(text)
+	blank := func(from, to int) {
+		for k := from; k < to && k < len(b); k++ {
+			if b[k] != '\n' {
+				b[k] = ' '
+			}
+		}
+	}
+	base := strings.ToLower(path.Base(rel))
+	switch {
+	case strings.HasSuffix(base, ".xml"):
+		for off := 0; ; {
+			i := strings.Index(text[off:], "<!--")
+			if i < 0 {
+				break
+			}
+			end := strings.Index(text[off+i:], "-->")
+			if end < 0 {
+				blank(off+i, len(b))
+				break
+			}
+			blank(off+i, off+i+end+3)
+			off += i + end + 3
+		}
+	default:
+		hash := strings.HasSuffix(base, ".toml") || strings.HasSuffix(base, ".properties") || strings.HasSuffix(base, ".yaml") || strings.HasSuffix(base, ".yml")
+		var q byte
+		for i := 0; i < len(text); i++ {
+			c := text[i]
+			switch {
+			case q != 0:
+				if c == '\\' {
+					i++
+				} else if c == q || c == '\n' {
+					q = 0
+				}
+			case c == '"' || c == '\'':
+				q = c
+			case hash && c == '#', !hash && c == '/' && i+1 < len(text) && text[i+1] == '/':
+				end := strings.IndexByte(text[i:], '\n')
+				if end < 0 {
+					end = len(text) - i
+				}
+				blank(i, i+end)
+				i += end - 1
+			case !hash && c == '/' && i+1 < len(text) && text[i+1] == '*':
+				end := strings.Index(text[i+2:], "*/")
+				if end < 0 {
+					blank(i, len(b))
+					return string(b)
+				}
+				blank(i, i+end+4)
+				i += end + 3
+			}
+		}
+	}
+	return string(b)
+}
+
 // settings reads what a build file sets across lines: the buildpack's
-// BP_JVM_VERSION and a Jib base image. A BP_JVM_VERSION written in a form
-// that is not read is not checked.
+// BP_JVM_VERSION and a Jib base image, never from a comment. A
+// BP_JVM_VERSION written in a form that is not read is not checked.
 func (s *scanner) settings(rel, text string) {
+	text = uncomment(rel, text)
 	lineOf := func(off int) (int, int) {
 		return strings.Count(text[:off], "\n") + 1, off - (strings.LastIndex(text[:off], "\n") + 1)
 	}
@@ -1081,7 +1167,8 @@ func (s *scanner) settings(rel, text string) {
 		if i < 0 {
 			break
 		}
-		if at := off + i; !read[at] {
+		// </BP_JVM_VERSION> closes the element that set it.
+		if at := off + i; !read[at] && !(at >= 2 && text[at-2:at] == "</") {
 			line, _ := lineOf(at)
 			s.unread(rel, line, "BP_JVM_VERSION", "BP_JVM_VERSION (Cloud Native Buildpacks)")
 		}
@@ -1091,6 +1178,116 @@ func (s *scanner) settings(rel, text string) {
 		line, col := lineOf(m[2])
 		s.jibRef(rel, line, col, text[m[2]:m[3]])
 	}
+	s.jibBlocks(rel, text, lineOf)
+}
+
+// jibBlocks reads the base image of Jib's from block (Gradle) and <from>
+// element (Maven) wherever it stands in it: after platforms { }, auth { }
+// or their elements, as image = "x", image "x" or image("x"), or as a
+// property of the same pom. A block whose image this scan cannot read (a
+// variable, a property set elsewhere, none: Jib then picks a base image of
+// its own) is not checked.
+func (s *scanner) jibBlocks(rel, text string, lineOf func(int) (int, int)) {
+	notRead := func(off int, what string) {
+		line, _ := lineOf(off)
+		s.add(Finding{Rule: RuleNotChecked, File: rel, Line: line, Level: "note", Status: StatusUnknown,
+			Reason:  "Jib's base image is " + what + ": only the image that is built on can show which Java release it holds",
+			Message: "Jib's from block names no base image this scan can read: not checked for the Java4Shell fix",
+			Fix:     "Check the base image Jib builds on: 17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later of the same update have the fix.",
+			Props:   map[string]string{"source": "jib"}})
+	}
+	if strings.HasSuffix(strings.ToLower(rel), ".xml") {
+		for n, m := range jibElement.FindAllStringSubmatchIndex(text, 64) {
+			body := text[m[2]:m[3]]
+			im := jibTag.FindStringSubmatchIndex(body)
+			if im == nil {
+				if n < 64 && !strings.Contains(body, "<") {
+					continue // <from>text</from>: another plugin's element
+				}
+				notRead(m[0], "not set in the from element (Jib picks one by the project's Java version)")
+				continue
+			}
+			img, at := body[im[2]:im[3]], m[2]+im[2]
+			if ref := pomRef.FindStringSubmatch(img); ref != nil {
+				p := regexp.MustCompile(`<` + regexp.QuoteMeta(ref[1]) + `>\s*([^<\s]+)\s*</` + regexp.QuoteMeta(ref[1]) + `>`).FindStringSubmatchIndex(text)
+				if p == nil {
+					notRead(at, "the property "+refs.CleanText(ref[1], 60)+", which this file does not set")
+					continue
+				}
+				img, at = text[p[2]:p[3]], p[2]
+				line, col := lineOf(at)
+				first, _ := lineOf(m[2] + im[2])
+				// Reported where the from element uses it; fix edits the
+				// property's own line.
+				before := len(s.findings)
+				s.jibRef(rel, line, col, img)
+				for k := before; k < len(s.findings); k++ {
+					s.findings[k].Line = first
+				}
+				continue
+			}
+			if img == "" || strings.Contains(img, "$") {
+				notRead(at, "written with a value this file does not give")
+				continue
+			}
+			line, col := lineOf(at)
+			s.jibRef(rel, line, col, img)
+		}
+		return
+	}
+	for _, m := range jibBlock.FindAllStringIndex(text, 64) {
+		// The block's own text: what nested blocks hold is blanked out.
+		depth, end := 1, -1
+		own := []byte(text[m[1]:])
+		var q byte
+		for i := 0; i < len(own) && end < 0; i++ {
+			c := own[i]
+			switch {
+			case q != 0:
+				if c == '\\' {
+					if depth > 1 {
+						own[i] = ' '
+					}
+					i++
+				} else if c == q || c == '\n' {
+					q = 0
+				}
+			case c == '"' || c == '\'':
+				q = c
+			case c == '{':
+				depth++
+			case c == '}':
+				if depth--; depth == 0 {
+					end = i
+				}
+			}
+			if depth > 1 && i < len(own) && own[i] != '\n' {
+				own[i] = ' '
+			}
+		}
+		if end < 0 {
+			continue // not a block that closes: not Jib's
+		}
+		body := string(own[:end])
+		im := jibImage.FindStringSubmatchIndex(body)
+		switch {
+		case im != nil && !strings.Contains(body[im[2]:im[3]], "$"):
+			line, col := lineOf(m[1] + im[2])
+			s.jibRef(rel, line, col, body[im[2]:im[3]])
+		case regexp.MustCompile(`\bimage\b`).MatchString(body):
+			notRead(m[0], "set from a value this file does not give")
+		case jibInFile(text[:m[0]]):
+			notRead(m[0], "not set in the from block (Jib picks one by the project's Java version)")
+		}
+	}
+}
+
+// jibInFile reports whether the text before a from block opens Jib's
+// configuration: a from { } elsewhere (a copy spec, a Docker task) is not
+// Jib's.
+func jibInFile(before string) bool {
+	i := strings.LastIndex(before, "jib")
+	return i >= 0 && strings.Count(before[i:], "{") > strings.Count(before[i:], "}")
 }
 
 func (s *scanner) maven(rel, text string) {
@@ -1158,7 +1355,11 @@ func (s *scanner) buildpack(rel string, line int, ver string) {
 	}
 	if strings.Count(ver, ".") >= 2 {
 		s.judgeVersion(rel, line, false, ver, "BP_JVM_VERSION (Cloud Native Buildpacks)", "")
+		return
 	}
+	// 21, 21.0, 21.*: the newest release of the line at build time, of
+	// BellSoft Liberica, whose fixed releases are not known here.
+	s.movingPin(rel, line, n, "liberica", ver, "BP_JVM_VERSION (Cloud Native Buildpacks)")
 }
 
 // jibRef judges a Jib base image like an image reference.

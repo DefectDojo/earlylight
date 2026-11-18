@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -73,4 +74,90 @@ func scanTree(t *testing.T, files map[string]string) Result {
 		t.Fatal(err)
 	}
 	return res
+}
+
+// Second final review: Jib's base image wherever it stands in the from
+// block, and never from a comment. A from block whose image this scan
+// cannot read is not checked.
+func TestJibFromBlock(t *testing.T) {
+	const vuln, fixed = "eclipse-temurin:21.0.13_9-jre", "eclipse-temurin:21.0.13.1_2-jre"
+	for name, c := range map[string]struct{ file, body, want string }{
+		"image first":                     {"build.gradle", "jib {\n  from {\n    image = \"" + vuln + "\"\n  }\n}\n", "build.gradle:3 image-pin vulnerable"},
+		"platforms first":                 {"build.gradle", "jib {\n  from {\n    platforms {\n      platform {\n        architecture = \"amd64\"\n        os = \"linux\"\n      }\n    }\n    image = \"" + vuln + "\"\n  }\n}\n", "build.gradle:9 image-pin vulnerable"},
+		"auth first":                      {"build.gradle", "jib {\n  from {\n    auth {\n      username = \"u\"\n    }\n    image = \"" + vuln + "\"\n  }\n}\n", "build.gradle:6 image-pin vulnerable"},
+		"a commented fixed image first":   {"build.gradle", "jib {\n  from {\n    // image = \"" + fixed + "\"\n    image = \"" + vuln + "\"\n  }\n}\n", "build.gradle:4 image-pin vulnerable"},
+		"a block comment first":           {"build.gradle", "jib {\n  from {\n    /* image = \"" + fixed + "\"\n     */\n    image = \"" + vuln + "\"\n  }\n}\n", "build.gradle:5 image-pin vulnerable"},
+		"only a commented image":          {"build.gradle", "jib {\n  from {\n    // image = \"" + vuln + "\"\n  }\n}\n", "build.gradle:2 not-checked unknown"},
+		"the call form":                   {"build.gradle", "jib {\n  from {\n    image \"" + vuln + "\"\n  }\n}\n", "build.gradle:3 image-pin vulnerable"},
+		"Kotlin, with parentheses":        {"build.gradle.kts", "jib {\n  from {\n    image(\"" + vuln + "\")\n  }\n}\n", "build.gradle.kts:3 image-pin vulnerable"},
+		"an image from a variable":        {"build.gradle", "jib {\n  from {\n    image = baseImage\n  }\n}\n", "build.gradle:2 not-checked unknown"},
+		"platforms only":                  {"build.gradle", "jib {\n  from {\n    platforms {\n      platform {\n        os = \"linux\"\n      }\n    }\n  }\n}\n", "build.gradle:2 not-checked unknown"},
+		"the to block's image is not it":  {"build.gradle", "jib {\n  from {\n    image = \"" + fixed + "\"\n  }\n  to {\n    image = \"registry.example.com/app:" + "21.0.13_9-jre\"\n  }\n}\n", ""},
+		"a URL in a string is no comment": {"build.gradle", "jib {\n  from {\n    auth { helper = \"https://x\" }\n    image = \"" + vuln + "\"\n  }\n}\n", "build.gradle:4 image-pin vulnerable"},
+		"pom, image first":                {"pom.xml", "<configuration>\n<from>\n<image>" + vuln + "</image>\n</from>\n</configuration>\n", "pom.xml:3 image-pin vulnerable"},
+		"pom, platforms first":            {"pom.xml", "<configuration>\n<from>\n<platforms><platform><architecture>amd64</architecture><os>linux</os></platform></platforms>\n<image>" + vuln + "</image>\n</from>\n</configuration>\n", "pom.xml:4 image-pin vulnerable"},
+		"pom, auth first":                 {"pom.xml", "<configuration>\n<from>\n<auth><username>u</username></auth>\n<image>" + vuln + "</image>\n</from>\n</configuration>\n", "pom.xml:4 image-pin vulnerable"},
+		"pom, a commented fixed image":    {"pom.xml", "<configuration>\n<from>\n<!-- <image>" + fixed + "</image> -->\n<image>" + vuln + "</image>\n</from>\n</configuration>\n", "pom.xml:4 image-pin vulnerable"},
+		"pom, a property of the file":     {"pom.xml", "<project>\n<properties>\n<base.image>" + vuln + "</base.image>\n</properties>\n<from>\n<image>${base.image}</image>\n</from>\n</project>\n", "pom.xml:6 image-pin vulnerable"},
+		"pom, a property from elsewhere":  {"pom.xml", "<project>\n<from>\n<image>${base.image}</image>\n</from>\n</project>\n", "pom.xml:3 not-checked unknown"},
+		"pom, a fixed image":              {"pom.xml", "<configuration>\n<from>\n<image>" + fixed + "</image>\n</from>\n</configuration>\n", ""},
+	} {
+		if g := strings.Join(got(t, tree(t, map[string]string{c.file: c.body})), ", "); g != c.want {
+			t.Errorf("%s: [%s], want [%s]", name, g, c.want)
+		}
+	}
+}
+
+// BP_JVM_VERSION with a line and no update installs the newest BellSoft
+// Liberica release of the line when the image is built: a moving pin,
+// whose status FACTS.md gives as not checked. It was passed in silence.
+// The closing tag of a pom property is not a second, unread setting, and a
+// commented setting is not one.
+func TestBuildpackShortVersion(t *testing.T) {
+	const notChecked, noFix = "not-checked unknown", "java-line vulnerable"
+	for name, c := range map[string]struct{ file, body, want string }{
+		"gradle 21":             {"build.gradle", "bootBuildImage {\n  environment = [\"BP_JVM_VERSION\": \"21\"]\n}\n", "build.gradle:2 " + notChecked},
+		"gradle 17":             {"build.gradle", "bootBuildImage {\n  environment = [\"BP_JVM_VERSION\": \"17\"]\n}\n", "build.gradle:2 " + notChecked},
+		"gradle 21.*":           {"build.gradle", "bootBuildImage {\n  environment = [\"BP_JVM_VERSION\": \"21.*\"]\n}\n", "build.gradle:2 " + notChecked},
+		"gradle 21.0":           {"build.gradle", "bootBuildImage {\n  environment = [\"BP_JVM_VERSION\": \"21.0\"]\n}\n", "build.gradle:2 " + notChecked},
+		"gradle 11":             {"build.gradle", "bootBuildImage {\n  environment = [\"BP_JVM_VERSION\": \"11\"]\n}\n", ""},
+		"gradle 22":             {"build.gradle", "bootBuildImage {\n  environment = [\"BP_JVM_VERSION\": \"22\"]\n}\n", "build.gradle:2 " + noFix},
+		"project.toml 21":       {"project.toml", "[[build.env]]\nname = \"BP_JVM_VERSION\"\nvalue = \"21\"\n", "project.toml:2 " + notChecked},
+		"pom 21":                {"pom.xml", "<properties><BP_JVM_VERSION>21</BP_JVM_VERSION></properties>\n", "pom.xml:1 " + notChecked},
+		"pom 22":                {"pom.xml", "<properties><BP_JVM_VERSION>22</BP_JVM_VERSION></properties>\n", "pom.xml:1 " + noFix},
+		"pom 21.0.13":           {"pom.xml", "<properties><BP_JVM_VERSION>21.0.13</BP_JVM_VERSION></properties>\n", "pom.xml:1 java-pin vulnerable"},
+		"pom 21.0.13.1":         {"pom.xml", "<properties><BP_JVM_VERSION>21.0.13.1</BP_JVM_VERSION></properties>\n", ""},
+		"a commented setting":   {"build.gradle", "bootBuildImage {\n  // environment = [\"BP_JVM_VERSION\": \"21.0.13\"]\n  environment = [\"BP_JVM_VERSION\": \"21.0.13.1\"]\n}\n", ""},
+		"a commented fixed pin": {"build.gradle", "bootBuildImage {\n  // environment = [\"BP_JVM_VERSION\": \"21.0.13.1\"]\n  environment = [\"BP_JVM_VERSION\": \"21.0.13\"]\n}\n", "build.gradle:3 java-pin vulnerable"},
+	} {
+		if g := strings.Join(got(t, tree(t, map[string]string{c.file: c.body})), ", "); g != c.want {
+			t.Errorf("%s: [%s], want [%s]", name, g, c.want)
+		}
+	}
+}
+
+// FACTS.md, "Version-manager names in vendors' own numbers": Azul Zulu's
+// own numbers start with the Java line, and a line that received no fix is
+// vulnerable from that number alone. That held for .tool-versions and
+// mise; an image tag, a jenv name and setup-java's zulu distribution said
+// "not a Java version" (they were vulnerable before the rule that X.Y with
+// Y not 0 is no Java version).
+func TestZuluOwnNumbers(t *testing.T) {
+	const sj = "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-java@v4\n        with:\n          distribution: %s\n          java-version: %s\n"
+	for name, c := range map[string]struct{ file, body, want string }{
+		"image tag, 22":               {"Dockerfile", "FROM azul/zulu-openjdk:22.32.15\n", "Dockerfile:1 image-pin vulnerable"},
+		"image tag, alpine 20":        {"Dockerfile", "FROM azul/zulu-openjdk-alpine:20.32.11\n", "Dockerfile:1 image-pin vulnerable"},
+		"image tag, 21: a fixed line": {"Dockerfile", "FROM azul/zulu-openjdk:21.38.21\n", "Dockerfile:1 not-checked unknown"},
+		"image tag of another vendor": {"Dockerfile", "FROM eclipse-temurin:22.32.15\n", "Dockerfile:1 not-checked unknown"},
+		"jenv name":                   {".java-version", "zulu64-22.32.15\n", ".java-version:1 java-line vulnerable"},
+		"jenv name, a fixed line":     {".java-version", "zulu64-21.38.21\n", ".java-version:1 not-checked unknown"},
+		"a bare number":               {".java-version", "22.32.15\n", ".java-version:1 not-checked unknown"},
+		"setup-java zulu":             {".github/workflows/ci.yml", fmt.Sprintf(sj, "zulu", "22.32.15"), ".github/workflows/ci.yml:9 java-line vulnerable"},
+		"setup-java temurin":          {".github/workflows/ci.yml", fmt.Sprintf(sj, "temurin", "22.32.15"), ".github/workflows/ci.yml:9 not-checked unknown"},
+		".tool-versions, as before":   {".tool-versions", "java zulu-22.32.15\n", ".tool-versions:1 java-line vulnerable"},
+	} {
+		if g := strings.Join(got(t, tree(t, map[string]string{c.file: c.body})), ", "); g != c.want {
+			t.Errorf("%s: [%s], want [%s]", name, g, c.want)
+		}
+	}
 }
