@@ -210,6 +210,23 @@ const (
 // release.
 const maxPatch = 3
 
+// Backports are lines whose OpenJDK releases do not have the decoder but
+// whose vendor builds do: the last update known to carry the decoder
+// without the fix. Oracle names Java SE 8u511b33-perf (its Performance
+// Pack build of Java 8) as affected; no fixed 8u-perf build is known.
+var Backports = map[int][]int{8: {8, 0, 511}}
+
+// JudgeBackport judges a runtime of a line without the decoder whose VM
+// library carries it anyway (a vendor backport such as Oracle's Java 8
+// Performance Pack).
+func JudgeBackport(v Version) (Status, string) {
+	last, ok := Backports[v.Feature()]
+	if ok && Compare(v.Nums, last) <= 0 {
+		return Vulnerable, fmt.Sprintf("Java %s carries the AVX-512 VBMI Base64 decoder as a vendor backport (Oracle names Java SE 8u511b33-perf as affected), and no fixed build of it was known on %s", v, Checked)
+	}
+	return Unknown, fmt.Sprintf("Java %s should predate the AVX-512 VBMI Base64 decoder, but this VM library carries its stubs: a vendor backport, and whether it has the fix is not known", v)
+}
+
 // LineOf returns the release line of a feature release.
 func LineOf(feature int) (Line, bool) {
 	for _, l := range Lines {

@@ -195,7 +195,7 @@ var javaish = []string{"java", "jdk", "jre", "temurin", "corretto", "zulu", "lib
 	"maven", "gradle", "tomcat", "jetty", "wildfly", "jboss", "keycloak", "jenkins", "atlassian", "jira", "confluence", "bitbucket",
 	"bamboo", "elasticsearch", "logstash", "opensearch", "kafka", "zookeeper", "solr", "cassandra", "neo4j", "sonarqube", "sonatype",
 	"nexus", "artifactory", "spring", "quarkus", "liberty", "payara", "glassfish", "flink", "spark", "hadoop", "hive", "trino", "presto",
-	"druid", "pinot", "nifi", "activemq", "teamcity", "youtrack", "gerrit", "minecraft", "openliberty", "websphere", "weblogic", "distroless/java"}
+	"druid", "pinot", "nifi", "activemq", "teamcity", "youtrack", "gerrit", "pingfederate", "pingidentity", "spinnaker", "struts", "minecraft", "openliberty", "websphere", "weblogic", "distroless/java"}
 
 // Javaish reports an image whose name suggests a Java runtime.
 func Javaish(image string) bool {

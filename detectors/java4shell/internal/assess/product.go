@@ -34,6 +34,7 @@ var products = []struct{ part, name string }{
 	{"/jenkins", "Jenkins"}, {"/solr", "Apache Solr"}, {"/kafka", "Apache Kafka"}, {"/confluent", "Confluent Platform"},
 	{"/BurpSuite", "Burp Suite"}, {"Burp Suite", "Burp Suite"}, {"/dbeaver", "DBeaver"}, {"DBeaver", "DBeaver"}, {"/eclipse", "Eclipse IDE"},
 	{"/netbeans", "Apache NetBeans"}, {"/minecraft", "Minecraft"}, {"/tableau", "Tableau"}, {"/MATLAB", "MATLAB"},
+	{"/pingfederate", "PingFederate"}, {"/pingaccess", "PingAccess"}, {"/spinnaker", "Spinnaker"}, {"/gerrit", "Gerrit"},
 	{"/cassandra", "Apache Cassandra"}, {"/neo4j", "Neo4j"}, {"/gitbucket", "GitBucket"}, {"/rundeck", "Rundeck"},
 }
 

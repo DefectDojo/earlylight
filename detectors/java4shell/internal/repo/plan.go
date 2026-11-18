@@ -61,24 +61,34 @@ func Plan(ctx context.Context, root string, f Finding, reg Registry, opts Option
 // style that has the fix.
 func target(tags []string, e *pinEdit) (string, bool) {
 	type cand struct {
-		tag string
-		tv  TagVersion
+		tag    string
+		tv     TagVersion
+		moving bool
 	}
+	fixed, _ := knowledge.LineOf(e.feature)
 	var cs []cand
 	for _, t := range tags {
 		tv, ok := e.family.ParseTag(t)
 		if !ok || tv.Variant != e.tv.Variant || tv.Exact != e.tv.Exact || tv.Nums[0] != e.feature || len(tv.Nums) < 3 {
 			continue
 		}
-		if st, _ := JudgeTag(tv); st != knowledge.Fixed {
-			continue
+		switch st, _ := JudgeTag(tv); {
+		case st == knowledge.Fixed:
+			cs = append(cs, cand{t, tv, false})
+		case !tv.Exact && fixed.Fixed != nil && len(tv.Nums) == 3 && knowledge.Compare(tv.Nums, fixed.Fixed[:3]) == 0:
+			// A moving tag of the fixed update (Corretto republishes
+			// "21.0.13" with 21.0.13.1.2): only reading the image shows
+			// which release it holds, and Verify does.
+			cs = append(cs, cand{t, tv, true})
 		}
-		cs = append(cs, cand{t, tv})
 	}
 	if len(cs) == 0 {
 		return "", false
 	}
 	sort.Slice(cs, func(i, j int) bool {
+		if cs[i].moving != cs[j].moving {
+			return !cs[i].moving
+		}
 		if c := knowledge.Compare(cs[i].tv.Nums, cs[j].tv.Nums); c != 0 {
 			return c < 0
 		}

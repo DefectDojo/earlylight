@@ -48,12 +48,15 @@ type Detector struct{}
 
 func init() { engine.Register(&Detector{}) }
 
-const about = " HotSpot's AVX-512 VBMI Base64 decoder (x86-64, JDK 18 and later, 17.0.6 and later) writes up to 64 bytes" +
-	" past its output when the input ends in a padded fragment shorter than four characters, so a Java program that" +
-	" decodes untrusted Base64 (tokens, headers, certificates, JSON) can have its heap corrupted once the decoder is" +
-	" compiled. It runs on CPUs with AVX-512 VBMI (Intel Ice Lake and later, AMD Zen 4 and later). Fixed in OpenJDK" +
-	" 17.0.21.1, 21.0.13.1, 25.0.5.1 and 27.0.1.1 (JDK-8393212); Java 18 to 20, 22 to 24 and 26 received no fix." +
-	" -XX:-UseBASE64Intrinsics or -XX:UseAVX=2 keep the decoder from being generated until the runtime is updated."
+const about = " HotSpot's AVX-512 VBMI Base64 decoder (x86-64, JDK 18 and later, 17.0.6 and later, and Oracle's Java 8" +
+	" Performance Pack) writes up to 64 bytes past its output when the input ends in a padded fragment shorter than four" +
+	" characters (64 'A' then '=' is enough), so a Java program that decodes untrusted Base64 (tokens, headers," +
+	" certificates, JSON) can have its heap corrupted once the decoder is compiled: pre-authentication remote code" +
+	" execution was shown on default Keycloak, Jira, Confluence, Artifactory, Jenkins and PingFederate. It runs on CPUs" +
+	" with AVX-512F, AVX-512BW, AVX-512 VBMI and BMI2 (Intel Ice Lake and later, AMD Zen 4 and later, common on cloud" +
+	" instances). Fixed in OpenJDK 17.0.21.1, 21.0.13.1, 25.0.5.1 and 27.0.1.1 (JDK-8393212); Java 18 to 20, 22 to 24" +
+	" and 26 received no fix. -XX:-UseBASE64Intrinsics (or, on x86-64 only, -XX:UseAVX=2) keeps the decoder from being" +
+	" generated until the runtime is updated."
 
 // Manifest describes the detector.
 func (d *Detector) Manifest() engine.Manifest {
@@ -63,16 +66,19 @@ func (d *Detector) Manifest() engine.Manifest {
 		Title: "Java4Shell: HotSpot AVX-512 Base64 decoder out-of-bounds write (" + knowledge.CVE + ")",
 		CVEs:  []string{knowledge.CVE},
 		Advisories: []string{
+			"https://calif.io/java4shell/",
+			"https://openjdk.org/groups/vulnerability/advisories/2026-11-17",
+			"https://www.oracle.com/security-alerts/cspunov2026.html",
 			"https://github.com/openjdk/jdk/commit/5177a70b385c16f26ede191fdac7aaba0bed0f8b",
-			"https://openjdk.org/groups/vulnerability/advisories/",
+			"https://semgrep.dev/blog/2026/java4shell-openjdk-base64-vulnerability",
 			"https://github.com/corretto/corretto-21/blob/21.0.13.1.2/CHANGELOG.md",
 		},
 		Disclosed: "2026-11-17",
 		Targets:   []engine.TargetKind{engine.Filesystem, engine.Image, engine.Repository},
 		Kinds: append([]engine.Kind{
-			{ID: KindRuntime, Title: "Java runtime vulnerable to Java4Shell", Level: "error", SecuritySeverity: "8.1", CWEs: cwe,
+			{ID: KindRuntime, Title: "Java runtime vulnerable to Java4Shell", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,
 				Description: "A HotSpot Java runtime for x86-64 with the AVX-512 VBMI Base64 decoder and without the fix: an installed JDK or JRE, a packaged OpenJDK, a jlink image or a runtime in a container image." + about},
-			{ID: KindBundled, Title: "Java runtime bundled in a product is vulnerable to Java4Shell", Level: "error", SecuritySeverity: "8.1", CWEs: cwe,
+			{ID: KindBundled, Title: "Java runtime bundled in a product is vulnerable to Java4Shell", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,
 				Description: "A Java runtime that a product ships inside its own install directory (Atlassian Jira and Confluence, Elasticsearch, Artifactory, JetBrains IDEs and others) without the fix. Updating the operating system's Java does not fix it: upgrade the product." + about},
 		}, repoKinds()...),
 		Tags: []string{"security", "java", "openjdk", "hotspot", "Java4Shell"},

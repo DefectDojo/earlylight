@@ -232,10 +232,10 @@
   ]
  },
  {
-  "name": "corretto-21-al2023",
-  "what": "Amazon Corretto 21.0.13.0.11, an rpm on Amazon Linux 2023, before 21.0.13.1.2",
+  "name": "corretto-21-al2023-unfixed",
+  "what": "Amazon Corretto 21.0.13.0.11, an rpm on Amazon Linux 2023 (the amazoncorretto:21.0.13-al2023-headless image of 2026-11-17, pinned by digest)",
   "mode": "registry",
-  "ref": "amazoncorretto:21.0.13-al2023-headless",
+  "ref": "amazoncorretto@sha256:21a9456bd7fee7045c545bf089e63ffc69ceb7d594b3c5bfb25bace199d3f566",
   "expected": [
    [
     "linux/amd64",
@@ -247,10 +247,25 @@
   ]
  },
  {
-  "name": "corretto-17-alpine",
-  "what": "Amazon Corretto 17.0.21 on Alpine, before 17.0.21.1.2",
+  "name": "corretto-21-al2023",
+  "what": "amazoncorretto:21.0.13-al2023-headless as republished on 2026-11-18 with Corretto 21.0.13.1.2 (the tag 21.0.13 moves to the out-of-band release)",
   "mode": "registry",
-  "ref": "amazoncorretto:17.0.21-alpine3.22",
+  "ref": "amazoncorretto:21.0.13-al2023-headless",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/lib/jvm/java-21-amazon-corretto.x86_64",
+    "runtime",
+    "fixed",
+    "fixed"
+   ]
+  ]
+ },
+ {
+  "name": "corretto-17-alpine-unfixed",
+  "what": "Amazon Corretto 17.0.21 on Alpine (the amazoncorretto:17.0.21-alpine3.22 image of 2026-11-17, pinned by digest)",
+  "mode": "registry",
+  "ref": "amazoncorretto@sha256:92cdff306e26329894ef0fab79f8d120ac0acc08f3b675206b66a7da85316043",
   "expected": [
    [
     "linux/amd64",
@@ -258,6 +273,21 @@
     "runtime",
     "vulnerable",
     "vulnerable"
+   ]
+  ]
+ },
+ {
+  "name": "corretto-17-alpine",
+  "what": "amazoncorretto:17.0.21-alpine3.22 as republished on 2026-11-18 with Corretto 17.0.21.1.2",
+  "mode": "registry",
+  "ref": "amazoncorretto:17.0.21-alpine3.22",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/lib/jvm/java-17-amazon-corretto",
+    "runtime",
+    "fixed",
+    "fixed"
    ]
   ]
  },

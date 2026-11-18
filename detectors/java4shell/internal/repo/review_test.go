@@ -53,4 +53,16 @@ func TestReviewRepo(t *testing.T) {
 	if got, _ := target([]string{"21.0.13.1_10-jre", "21.0.13.1_2-jre"}, e); got != "21.0.13.1_2-jre" {
 		t.Errorf("target %s", got)
 	}
+
+	// Corretto: the moving tag of the fixed update is a candidate (the
+	// image is read before any edit), after tags that name the fix.
+	c := &pinEdit{feature: 21}
+	c.family, _, _ = FamilyOf("amazoncorretto:x")
+	c.tv, _ = c.family.ParseTag("21.0.12-al2023")
+	if got, _ := target([]string{"21.0.12-al2023", "21.0.13-al2023", "21.0.13-alpine", "21-al2023", "21.0.14-al2023"}, c); got != "21.0.13-al2023" {
+		t.Errorf("corretto target %q", got)
+	}
+	if got, _ := target([]string{"21.0.13-al2023", "21.0.13.1-al2023"}, c); got != "21.0.13.1-al2023" {
+		t.Errorf("corretto target prefers the named fix: %q", got)
+	}
 }

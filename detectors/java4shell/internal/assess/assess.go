@@ -208,8 +208,16 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	switch ks {
 	case knowledge.NotAffected:
 		if read && lib.VBMIStubs {
-			return f.set(Unknown, fmt.Sprintf("Java %s should predate the AVX-512 VBMI Base64 decoder, but this VM library carries its stubs: a vendor backport, and whether it has the fix is not known", v),
-				what+" carries the AVX-512 VBMI Base64 decoder of later releases")
+			bs, bwhy := knowledge.JudgeBackport(v)
+			f.Release = bs
+			if bs == knowledge.Vulnerable {
+				if ok, how := mitigation(in, env, root, v.Feature(), &f); ok {
+					f.Mitigation = how
+					return f.set(Mitigated, bwhy+"; "+how, what+" carries a backported AVX-512 VBMI Base64 decoder without the fix, mitigated by its JVM options until it is updated")
+				}
+				return f.set(Vulnerable, bwhy, what+" carries a backported AVX-512 VBMI Base64 decoder and is vulnerable to Java4Shell")
+			}
+			return f.set(Unknown, bwhy, what+" carries the AVX-512 VBMI Base64 decoder of later releases")
 		}
 		if !read {
 			return f.set(NotAffected, kwhy+" (judged by the release file: no HotSpot version line was found in the VM library)", what+" is not affected by Java4Shell")
@@ -468,7 +476,10 @@ func fixText(f Finding, v knowledge.Version, ok bool) string {
 		interim = " The JVM options keep the vulnerable decoder from running until then; keep them until it is updated."
 	}
 	target := "a release with the fix (17.0.21.1, 21.0.13.1, 25.0.5.1 or 27.0.1.1 and later on the same update)"
-	if ok {
+	if ok && v.Feature() < 17 {
+		// A backported decoder (Oracle's Java 8 Performance Pack).
+		target = fmt.Sprintf("a build of Java %d from the same vendor with the fix (none was known on %s), or one without the backported AVX-512 decoder", v.Feature(), knowledge.Checked)
+	} else if ok {
 		if fx := knowledge.FixedVersion(v.Feature()); fx != "" {
 			target = fx + " or later of the same update"
 		} else if v.Feature() >= 17 {
