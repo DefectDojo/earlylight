@@ -97,7 +97,8 @@ of the binary.
 - A build without a readable version (renamed, `server_tokens`-patched or stripped of the line) is unknown, never
   cleared. A build is not affected for lack of HTTP/2 only when its configure arguments were read to their end and its
   module list (1.9.11 and later) is present, and neither has HTTP/2; a cut or missing witness leaves it unknown.
-  HTTP/2 compiled into a core older than nginx's own (1.9.5) is a vendor backport: unknown, except Tengine 2.1.2 to
+  HTTP/2 compiled into a core older than nginx's own (1.9.5) is a vendor backport: unknown (also when the witness of
+  HTTP/2 is cut or missing on a Tengine or NGINX Plus build on such a core), except Tengine 2.1.2 to
   2.2.x (cores 1.6.2 and 1.8.1), whose source carries nginx's unfixed flow-control code and predates the reuse change
   (alibaba/tengine `src/http/v2` at `tengine-2.1.2` and `tengine-2.2.2`; the change reached Tengine in 2.4.0).
 - Each CVE is judged on its own: a binary below 1.19.7 can be vulnerable to CVE-2026-123007 and not affected by
@@ -110,18 +111,26 @@ of the binary.
 - The configuration decides **exposure**, never the verdict: HTTP/2 off everywhere is reported as "not exposed" on a
   finding that stays vulnerable, because the binary still needs the update.
 - Exposure reads "not exposed" only when the command that starts nginx was read and every file it loads was read:
-  - the command is the image's (`docker-entrypoint.sh` trusted with the official image's four
-    `/docker-entrypoint.d` scripts only; tini, dumb-init, env and exec pass through) or, on a host, the `ExecStart` of
-    the systemd unit that runs that binary, drop-ins applied; nginx's own option parsing is followed (`-qc file`,
-    `-p`, `-g` whose includes are loaded); a `sh -c` text is read with quotes and line continuations and may run
-    nothing but nginx. Another wrapper (`/init`, a start script, supervisord, forego), another command before nginx,
-    a custom entrypoint script, no command, or more than one unit is unknown;
-  - an include the walk could not read (the engine's not-scanned records), one that is not kept, a glob the scan
-    does not read whole, a configuration generated at start (ingress-nginx, the F5 controller), a template variable
-    left unset anywhere in `listen`, in `http2` or standing for a directive, or more than the loader's budget across
-    all includes (2 Mi tokens, 16 MiB) is unknown;
+  - the command is the image's or, on a host, the `ExecStart` of the systemd unit that runs that binary: the unit of
+    the first directory that has it (`/etc`, `/run`, `/lib`, `/usr/lib`), links followed, every drop-in applied, read
+    from disk below a system root; a unit, drop-in or unit directory not read, or an `ExecStartPre`, `ExecStartPost`
+    or `ExecCondition` other than an nginx test, is unknown;
+  - a word before nginx is passed over only when its content is the official nginx image's entrypoint (SHA-256 of
+    every version in nginx/docker-nginx and docker-nginx-unprivileged), and every `.sh` and `.envsh` entry it runs
+    from `/docker-entrypoint.d` (links followed, as `find -follow` does) was read and is that name's official script;
+    tini, dumb-init, env and exec pass through; another wrapper, a custom or unread script, or no command is unknown;
+  - nginx's own option parsing is followed (`-qc file`, `-p`, `-g` whose includes are loaded); a `sh -c` text is read
+    with quotes and line continuations, calls that only test, show or signal (`-t`, `-T`, `-v`, `-V`, `-s`, `-h`) are
+    passed over, and any other command before the start is unknown;
+  - an include the walk could not read (the engine's not-scanned records), one that is not kept, a glob the scan does
+    not read whole, a configuration generated at start (ingress-nginx, the F5 controller), a template variable left
+    unset in `listen`, in `http2` or standing for a whole directive (not inside `map`, `geo`, `split_clients`,
+    `types` or `charset_map`, whose keys may hold `$`), or more than the loader's budget across all includes
+    (2 Mi tokens, 16 MiB; reading stops there) is unknown;
   - in a source tree, an image read from its registry under a deployment that sets its command, arguments,
-    environment or mounts (Compose, Kubernetes), or that a Dockerfile builds on, has unknown exposure.
+    environment or mounts is unknown: a Compose service (with its override files, `extends` and `volumes_from`), a
+    Kubernetes container, a GitLab CI service, Helm values whose chart templates set them or are not in the tree, and
+    a Dockerfile that builds on the image through any chain of stage aliases.
 - The configuration read is the one nginx loads: the compiled-in path (a relative one moved by `-p`), or the command's
   `-c`; the official image's templates with the image's environment put in as its entrypoint does. Globs follow
   glob(3) (`[!x]`, `[[:digit:]]`, no leading dots); symbolic and hard links are followed inside the target. nginx keeps
