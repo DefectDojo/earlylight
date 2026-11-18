@@ -306,29 +306,6 @@ func (r Release) Version() string {
 	return r["JAVA_VERSION"]
 }
 
-// Arch is the release file's OS_ARCH as an Arch, "" when it does not say.
-func (r Release) Arch() Arch {
-	switch strings.ToLower(r["OS_ARCH"]) {
-	case "":
-		return ""
-	case "x86_64", "amd64", "x64":
-		return X8664
-	case "aarch64", "arm64":
-		return AArch64
-	case "x86", "i386", "i586", "i686":
-		return X86
-	case "arm":
-		return ARM
-	case "ppc64le", "ppc64":
-		return PPC64
-	case "s390x":
-		return S390X
-	case "riscv64":
-		return RISCV64
-	}
-	return Other
-}
-
 // OpenJ9 reports a release file that names the OpenJ9 VM.
 func (r Release) OpenJ9() bool { return strings.EqualFold(r["JVM_VARIANT"], "openj9") }
 

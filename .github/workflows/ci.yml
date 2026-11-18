@@ -37,6 +37,11 @@ jobs:
           go test ./detectors/java4shell/internal/jvm -run '^$' -fuzz '^FuzzSettings$' -fuzztime 30s
           go test ./detectors/java4shell/internal/knowledge -run '^$' -fuzz '^FuzzParse$' -fuzztime 20s
           go test ./detectors/java4shell/internal/repo -run '^$' -fuzz '^FuzzScanText$' -fuzztime 30s
+          go test ./detectors/java4shell/internal/jvm -run '^$' -fuzz '^FuzzParseRelease$' -fuzztime 15s
+          go test ./detectors/java4shell/internal/assess -run '^$' -fuzz '^FuzzAPKOwners$' -fuzztime 15s
+          go test ./detectors/java4shell/internal/assess -run '^$' -fuzz '^FuzzDpkgOwners$' -fuzztime 15s
+          go test ./detectors/java4shell/internal/assess -run '^$' -fuzz '^FuzzRun$' -fuzztime 30s
+          go test ./detectors/java4shell -run '^$' -fuzz '^FuzzReadCrash$' -fuzztime 15s
           for f in FuzzParseDpkgStatus FuzzParseAPKInstalled FuzzParseHeaderBlob FuzzReadBDB FuzzReadNDB FuzzResolver; do
             go test ./detectors/php2shell/internal/pkgdb -run '^$' -fuzz "^$f\$" -fuzztime 15s
           done

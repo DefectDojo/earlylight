@@ -76,9 +76,6 @@ func (s Setting) ApplyTo(o *Options, feature int) {
 	}
 }
 
-// Mentions reports whether the file sets either option at all.
-func (s Setting) Mentions() bool { return len(s.lines) > 0 || len(s.ExecOpts) > 0 || len(s.Env) > 0 }
-
 // SettingKind classifies a path, "" when it is not a settings file.
 func SettingKind(p string) string {
 	base := path.Base(p)

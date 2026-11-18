@@ -93,11 +93,11 @@ func TestRoot(t *testing.T) {
 
 func TestRelease(t *testing.T) {
 	r, ok := ParseRelease(testlib.Release("JAVA_VERSION", "21.0.13", "JAVA_RUNTIME_VERSION", "21.0.13+9-LTS", "OS_ARCH", "aarch64", "JVM_VARIANT", "Openj9", "MODULES", "java.base java.se"))
-	if !ok || r.Version() != "21.0.13+9-LTS" || r.Arch() != AArch64 || !r.OpenJ9() || r.JLinked() {
+	if !ok || r.Version() != "21.0.13+9-LTS" || !r.OpenJ9() || r.JLinked() {
 		t.Errorf("release: %v", r)
 	}
 	jl, ok := ParseRelease([]byte("JAVA_VERSION=\"21.0.13\"\nMODULES=\"java.base java.logging\"\n"))
-	if !ok || !jl.JLinked() || jl.Version() != "21.0.13" || jl.Arch() != "" {
+	if !ok || !jl.JLinked() || jl.Version() != "21.0.13" {
 		t.Errorf("jlink release: %v", jl)
 	}
 	if _, ok := ParseRelease(bytes.Repeat([]byte("JAVA_VERSION=\"21\"\n"), 10000)); ok {

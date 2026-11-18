@@ -69,11 +69,8 @@ type Finding struct {
 	// Pull is set for an image reference that only reading the image can
 	// decide (a moving tag, a product image).
 	Pull string `json:"pull,omitempty"`
-	// Optional is a clearly labelled edit fix offers but does not apply: the
-	// interim mitigation for an image whose runtime cannot be updated here.
-	Optional string `json:"optional,omitempty"`
-	ref      *refs.Ref
-	edit     *pinEdit
+	ref  *refs.Ref
+	edit *pinEdit
 }
 
 // pinEdit locates a version or tag to replace on one line.

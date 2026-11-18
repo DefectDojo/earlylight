@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/sys/cpu"
 )
@@ -58,10 +59,10 @@ var (
 func readCrash(p string, b []byte) crash {
 	c := crash{Path: p}
 	if m := jreLine.FindSubmatch(b); m != nil {
-		c.Version = string(m[1])
+		c.Version = clip(string(m[1]), 61)
 	}
 	if m := frameLine.FindSubmatch(b); m != nil {
-		c.Frame = strings.TrimSpace(string(m[1]))
+		c.Frame = clip(strings.TrimSpace(string(m[1])), 300)
 		lf := strings.ToLower(c.Frame)
 		c.Base64 = strings.Contains(lf, "base64") || strings.Contains(lf, "decodeblock")
 	}
@@ -69,4 +70,18 @@ func readCrash(p string, b []byte) crash {
 		c.CPUVBMI = strings.Contains(string(m), "avx512_vbmi") || strings.Contains(string(m), "avx512vbmi")
 	}
 	return c
+}
+
+// clip bounds untrusted crash-log text in bytes (the patterns count
+// characters), keeping it valid UTF-8.
+func clip(s string, n int) string {
+	s = strings.ToValidUTF8(s, "?")
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
 }

@@ -68,9 +68,6 @@ func (o Options) Mitigates() (bool, string) {
 	return false, ""
 }
 
-// Set reports whether either option was given at all.
-func (o Options) Set() bool { return o.Base64 != nil || o.UseAVX != nil }
-
 // Words splits an option string the way a shell or the JVM's option
 // variables do: on white space, with single and double quotes grouping.
 func Words(s string) []string {

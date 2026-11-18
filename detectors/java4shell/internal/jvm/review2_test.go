@@ -68,3 +68,20 @@ func TestSettingsOnlyWhatLaunches(t *testing.T) {
 		t.Error("jvm11-server.options not applied to Java 11")
 	}
 }
+
+func FuzzParseRelease(f *testing.F) {
+	f.Add([]byte("JAVA_VERSION=\"21.0.13\"\nJAVA_RUNTIME_VERSION=\"21.0.13+9-LTS\"\nOS_ARCH=\"x86_64\"\nMODULES=\"java.base\"\n"))
+	f.Add([]byte("JAVA_VERSION=21\r\nJVM_VARIANT=Openj9\n"))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		r, ok := ParseRelease(b)
+		if !ok {
+			return
+		}
+		if r["JAVA_VERSION"] == "" {
+			t.Fatal("accepted without JAVA_VERSION")
+		}
+		_ = r.Version()
+		_ = r.OpenJ9()
+		_ = r.JLinked()
+	})
+}
