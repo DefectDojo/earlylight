@@ -667,3 +667,117 @@ func TestRound3Names(t *testing.T) {
 		t.Errorf("openjdk-17 (17.0.0) reported: %+v", f)
 	}
 }
+
+// Round 4, item 1: a package file path containing '=' is still a file.
+func TestFilePathWithEquals(t *testing.T) {
+	lines := []string{
+		"FROM registry.access.redhat.com/ubi9/ubi",
+		"RUN rpm -i /cache/jdk=17/java-17-openjdk-17.0.9.0.9-1.el9.x86_64.rpm",           // 2
+		"RUN dnf install -y /mnt/v=1/java-17-openjdk-17.0.9.0.9-1.el9.x86_64.rpm",        // 3
+		"RUN rpm -i https://example.com/java-17-openjdk-17.0.9.0.9-1.el9.x86_64.rpm?x=1", // 4
+		"RUN rpm -i https://example.com/java-17-openjdk-17.0.9.0.9-1.el9.x86_64.rpm#x=1", // 5
+		"RUN rpm -i /a=b/java-17-openjdk-*.rpm",                                          // 6
+		"RUN rpm -i /a=b/*.rpm",                                                          // 7
+		"RUN rpm -i /a=b/jdk-17.0.9_linux-x64_bin.rpm",                                   // 8
+		"RUN apt-get install -y openjdk-17-jdk=17.*",                                     // 9 a pin, not a file
+	}
+	res := scan(t, tree(t, map[string]string{"Dockerfile": strings.Join(lines, "\n") + "\n"}))
+	checkAll(t, res, []want{
+		{"Dockerfile", 2, RulePackage, StatusVulnerable},
+		{"Dockerfile", 3, RulePackage, StatusVulnerable},
+		{"Dockerfile", 4, RulePackage, StatusVulnerable},
+		{"Dockerfile", 5, RulePackage, StatusVulnerable},
+		{"Dockerfile", 6, RulePackage, StatusUnknown},
+		{"Dockerfile", 7, RulePackage, StatusUnknown},
+		{"Dockerfile", 8, RulePackage, StatusVulnerable},
+		{"Dockerfile", 9, RulePackage, StatusVulnerable},
+	})
+}
+
+// Round 4, item 2: mise resolves a short version to the newest release, so
+// it is a moving pin judged by the vendor's status, as setup-java's is; in
+// .tool-versions only asdf's own GA names (openjdk-21, sapmachine-21,
+// java-se-ri-22) are exact.
+func TestMiseMovingPins(t *testing.T) {
+	mise := func(v string) string { return "[tools]\njava = \"" + v + "\"\n" }
+	files := map[string]string{
+		"a/mise.toml":      mise("temurin-17"),
+		"b/mise.toml":      mise("17"),
+		"c/mise.toml":      mise("corretto-21"),
+		"d/mise.toml":      mise("sapmachine-21"),
+		"e/mise.toml":      mise("graalvm-community-17"),
+		"f/mise.toml":      mise("oracle-graalvm-17.0"),
+		"g/mise.toml":      mise("liberica-17"),
+		"h/mise.toml":      mise("microsoft-17"),
+		"i/mise.toml":      mise("oracle-17"),
+		"j/mise.toml":      mise("dragonwell-17"),
+		"k/mise.toml":      mise("temurin-22"),
+		"l/mise.toml":      mise("openjdk-21"),
+		"m/mise.toml":      mise("temurin-21.0.5+11.0.LTS"),
+		"a/.tool-versions": "java temurin-17\n",
+		"b/.tool-versions": "java openjdk-21\n",
+		"c/.tool-versions": "java corretto-25\n",
+		"d/.tool-versions": "java kona-17\n",
+	}
+	res := scan(t, tree(t, files))
+	checkAll(t, res, []want{
+		{"a/mise.toml", 2, RuleJavaPin, StatusVulnerable},
+		{"b/mise.toml", 2, RuleNotChecked, StatusUnknown},
+		{"e/mise.toml", 2, RuleJavaPin, StatusVulnerable},
+		{"f/mise.toml", 2, RuleJavaPin, StatusVulnerable},
+		{"g/mise.toml", 2, RuleNotChecked, StatusUnknown},
+		{"h/mise.toml", 2, RuleJavaPin, StatusVulnerable},
+		{"i/mise.toml", 2, RuleNotChecked, StatusUnknown},
+		{"j/mise.toml", 2, RuleNotChecked, StatusUnknown},
+		{"k/mise.toml", 2, RuleLine, StatusVulnerable},
+		{"l/mise.toml", 2, RuleNotChecked, StatusUnknown},
+		{"m/mise.toml", 2, RuleJavaPin, StatusVulnerable},
+		{"a/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"b/.tool-versions", 1, RuleJavaPin, StatusVulnerable}, // asdf's 21 GA
+		{"d/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+	})
+	for _, f := range []string{"c/mise.toml", "d/mise.toml", "c/.tool-versions"} {
+		if x, ok := find(res, f, 2); ok || func() bool { _, ok := find(res, f, 1); return ok }() {
+			t.Errorf("%s: Corretto and SapMachine published fixed releases, mise installs them: %+v", f, x)
+		}
+	}
+}
+
+// Round 4, item 3.
+func TestRound4Nits(t *testing.T) {
+	files := map[string]string{
+		"Dockerfile": strings.Join([]string{
+			"FROM ubuntu:24.04",
+			"RUN rpm -ivh /tmp/ibm-semeru-open-17-jdk-17.0.9.9-1.x86_64.rpm",            // 2 OpenJ9
+			"RUN dpkg -i /tmp/jdk-17.0.9_linux-x64_bin.deb",                             // 3
+			"RUN apt-get install -y ./zulu17.46.19-ca-jdk17.0.9-linux_amd64.deb",        // 4
+			"RUN dpkg -i /tmp/bellsoft-jdk17.0.9+11-linux-amd64.deb",                    // 5
+			"RUN dpkg -i /tmp/openjdk-17-jre-headless_17.0.9+9-1_amd64.deb",             // 6
+			"RUN rpm -i /tmp/java-17-openjdk-headless-17.0.21.1.2.3.4-1.el9.x86_64.rpm", // 7
+			"RUN dpkg -l", // 8
+		}, "\n") + "\n",
+		"a/.tool-versions": "java openjdk-17.0.21.1-eabeta.1\n",
+		"b/.tool-versions": "java openjdk-17.0.21.1-rc1\n",
+		"c/.tool-versions": "java openjdk-17.0.21.1-EA\n",
+		"d/.tool-versions": "java liberica-17.0.21.1+2-ea\n",
+	}
+	res := scan(t, tree(t, files))
+	checkAll(t, res, []want{
+		{"Dockerfile", 3, RulePackage, StatusVulnerable},
+		{"Dockerfile", 4, RulePackage, StatusVulnerable},
+		{"Dockerfile", 5, RulePackage, StatusVulnerable},
+		{"Dockerfile", 6, RulePackage, StatusVulnerable},
+		{"a/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"b/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"c/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"d/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+	})
+	for _, l := range []int{2, 8} {
+		if f, ok := find(res, "Dockerfile", l); ok {
+			t.Errorf("Dockerfile:%d reported: %+v", l, f)
+		}
+	}
+	if f, ok := find(res, "Dockerfile", 7); !ok || f.Status == StatusVulnerable && false || strings.Contains(f.Reason, "named by a pattern or a URL") {
+		t.Errorf("seven-number rpm file: %+v", f)
+	}
+}
