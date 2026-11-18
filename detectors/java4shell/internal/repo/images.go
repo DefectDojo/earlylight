@@ -112,6 +112,8 @@ type TagVersion struct {
 	// OpenJDKBuild is the OpenJDK build number the tag names, -1 when it
 	// names none (a vendor's own build number, or no build).
 	OpenJDKBuild int
+	// EA is a pre-release (a version name such as 21-ea+26).
+	EA bool
 }
 
 // ParseTag reads the Java release a family's tag names. ok is false for a
@@ -172,7 +174,7 @@ func JudgeTag(tv TagVersion) (knowledge.Status, string) {
 		what = "the tag names the newest Java " + tv.Text + " release at build time"
 	}
 	if tv.Exact || feature < 17 {
-		st, why := knowledge.Judge(knowledge.Version{Nums: nums, Build: tv.OpenJDKBuild})
+		st, why := knowledge.Judge(knowledge.Version{Nums: nums, Build: tv.OpenJDKBuild, EA: tv.EA})
 		return st, what + ": " + why
 	}
 	l, ok := knowledge.LineOf(feature)

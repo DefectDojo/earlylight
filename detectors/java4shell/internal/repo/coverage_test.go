@@ -622,3 +622,48 @@ func TestVendorPackageFiles(t *testing.T) {
 		t.Errorf("non-Java files reported: %+v", f)
 	}
 }
+
+// Round 3, item 5: javafx and crac names, GA and EA names without an
+// update, Corretto's apk packages, Zulu's own numbers for a line without a
+// fix, and JetBrains Runtime versions.
+func TestRound3Names(t *testing.T) {
+	files := map[string]string{
+		"Dockerfile": "FROM alpine:3.23\nRUN apk add amazon-corretto-17=17.0.20.13.1-r0\nRUN apk add amazon-corretto-22\n",
+	}
+	add := func(name, value string) { files[name+"/.tool-versions"] = "java " + value + "\n" }
+	add("a", "liberica-javafx-17.0.9+11")
+	add("b", "liberica-crac-17.0.9+16")
+	add("c", "zulu-crac-22.32.17")
+	add("d", "openjdk-21")
+	add("e", "sapmachine-21")
+	add("f", "liberica-21+37")
+	add("g", "openjdk-21-ea+26")
+	add("h", "java-se-ri-22+36")
+	add("i", "zulu-22.32.15")
+	add("j", "jetbrains-17.0.9b1087.7")
+	add("k", "openjdk-17")             // 17.0.0: before the decoder
+	add("l", "openjdk-17.0.21.1-ea+2") // pre-release of the fixed update
+	add("m", "jetbrains-17.0.21b1234.5")
+	files["a/.sdkmanrc"] = "java=21-tem\n"
+	res := scan(t, tree(t, files))
+	checkAll(t, res, []want{
+		{"a/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"b/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"c/.tool-versions", 1, RuleLine, StatusVulnerable},
+		{"d/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"e/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"f/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"g/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"h/.tool-versions", 1, RuleLine, StatusVulnerable},
+		{"i/.tool-versions", 1, RuleLine, StatusVulnerable},
+		{"j/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"l/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"m/.tool-versions", 1, RuleNotChecked, StatusUnknown},
+		{"a/.sdkmanrc", 1, RuleJavaPin, StatusVulnerable},
+		{"Dockerfile", 2, RulePackage, StatusVulnerable},
+		{"Dockerfile", 3, RuleLine, StatusVulnerable},
+	})
+	if f, ok := find(res, "k/.tool-versions", 1); ok {
+		t.Errorf("openjdk-17 (17.0.0) reported: %+v", f)
+	}
+}

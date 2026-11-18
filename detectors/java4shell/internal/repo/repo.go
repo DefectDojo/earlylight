@@ -321,8 +321,12 @@ var versionInText = regexp.MustCompile(`(\d{1,3}(?:\.\d{1,9}){0,5})`)
 // fixed or not affected. A version with fewer numbers than the fix is a
 // moving pin (the newest release of that line) and is reported only when
 // its line has no fix at all.
-func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendor string) {
-	tv := TagVersion{Text: verText, Exact: strings.Count(verText, ".") >= 2, OpenJDKBuild: -1}
+//
+// ga is true for a name that pins one release even without an update: asdf
+// openjdk-21 and sdkman 21-tem are 21 GA. verText may end in OpenJDK's
+// build (+26) and be a pre-release (21-ea+26).
+func (s *scanner) judgeVersion(rel string, line int, ga bool, verText, source, vendor string) {
+	tv := TagVersion{Text: verText, Exact: ga || strings.Count(verText, ".") >= 2, OpenJDKBuild: -1}
 	nums := verText
 	if base, b, ok := strings.Cut(verText, "+"); ok {
 		// setup-java 17.0.21.1+1: OpenJDK's build.
@@ -330,6 +334,9 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 		if n, err := strconv.Atoi(b); err == nil && n >= 0 {
 			tv.OpenJDKBuild = n
 		}
+	}
+	if m := preReleaseSuffix.FindStringIndex(nums); m != nil {
+		nums, tv.EA = nums[:m[0]], true
 	}
 	for _, p := range strings.Split(nums, ".") {
 		n := 0
@@ -389,8 +396,11 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 				Fix:     fmt.Sprintf("Check that Java %s includes %s.", verText, knowledge.BugRef), Props: props})
 		}
 	}
-	_ = col
 }
+
+// preReleaseSuffix is a pre-release marker in a version name: 21-ea,
+// 17.0.21.1-ea, 22-beta.
+var preReleaseSuffix = regexp.MustCompile(`-(?:ea|beta|rc)\b.*$`)
 
 func pinFix(feature int, source string) string {
 	if fx := knowledge.FixedVersion(feature); fx != "" {
@@ -416,7 +426,7 @@ func (s *scanner) javaVersionFile(rel, text string) {
 			ver = CorrettoJava(ver)
 		}
 		ver += plusBuild(l[idx[5]:])
-		s.judgeVersion(rel, i+1, 0, ver, ".java-version", vendorWord(l))
+		s.judgeVersion(rel, i+1, false, ver, ".java-version", vendorWord(l))
 		return // jenv reads the first line
 	}
 }
@@ -460,7 +470,7 @@ func (s *scanner) sdkmanrc(rel, text string) {
 			s.ownNumbers(rel, i+1, strings.TrimSpace(strings.SplitN(l, "=", 2)[1]), ".sdkmanrc")
 			continue
 		}
-		s.judgeVersion(rel, i+1, strings.Index(l, m[1]), m[1], ".sdkmanrc", vendor)
+		s.judgeVersion(rel, i+1, true, m[1], ".sdkmanrc", vendor)
 	}
 }
 
@@ -468,7 +478,7 @@ func (s *scanner) sdkmanrc(rel, text string) {
 // corretto-21.0.5.11.1, openjdk-21.0.2, sapmachine-21.0.5, temurin-jre-musl-21.0.5,
 // liberica-lite-21.0.5, zulu-21.38.21
 // (a Zulu version, not a Java version: not judged).
-var asdfJava = regexp.MustCompile(`^(?:(adoptopenjdk|temurin|corretto|openjdk|sapmachine|liberica|microsoft|oracle|semeru-openj9|semeru|dragonwell|kona|zulu|graalvm|graalvm-community|oracle-graalvm|mandrel|jetbrains)-)?(?:(?:jre|jdk|openj9|musl|lite)-)*(\d[\d.]*)`)
+var asdfJava = regexp.MustCompile(`^(?:(adoptopenjdk|temurin|corretto|openjdk|sapmachine|liberica|microsoft|oracle|semeru-openj9|semeru|dragonwell|kona|zulu|graalvm|graalvm-community|oracle-graalvm|mandrel|jetbrains|java-se-ri)-)?(?:(?:jre|jdk|openj9|musl|lite|javafx|fx|crac)-)*(\d[\d.]*)`)
 
 func (s *scanner) asdfValue(rel string, line int, value, source string) {
 	m := asdfJava.FindStringSubmatch(value)
@@ -483,7 +493,34 @@ func (s *scanner) asdfValue(rel string, line int, value, source string) {
 		}
 	}
 	switch m[1] {
-	case "zulu", "graalvm", "mandrel", "jetbrains":
+	case "zulu":
+		// Zulu's own numbers start with the Java line (zulu-22.32.15 is
+		// JDK 22): a line that received no fix is vulnerable whatever the
+		// rest says; others are not checked.
+		if f := atoi(m[2]); f > 17 {
+			if l, ok := knowledge.LineOf(f); ok && l.Fixed == nil {
+				s.lineToolchain(rel, line, f, source+" ("+refs.CleanText(value, 60)+", Azul Zulu)")
+				return
+			}
+		}
+		s.ownNumbers(rel, line, value, source)
+		return
+	case "jetbrains":
+		// JetBrains Runtime: 17.0.9b1087.7 is Java 17.0.9 and JetBrains'
+		// build. Reported where the Java update is older than the fixed
+		// one; JetBrains' fixed builds are not known, so nothing is cleared.
+		// The update the fix came in (17.0.21) is not judged: JetBrains
+		// may backport into it, as Red Hat does.
+		if v, ok := knowledge.Parse(m[2]); ok && len(v.Nums) >= 3 {
+			fx, _ := knowledge.Parse(knowledge.FixedVersion(v.Feature()))
+			if st, _ := knowledge.Judge(v); st == knowledge.Vulnerable && (len(fx.Nums) < 3 || knowledge.Compare(v.Nums[:3], fx.Nums[:3]) < 0) {
+				s.judgeVersion(rel, line, true, m[2], source, m[1])
+				return
+			}
+		}
+		s.ownNumbers(rel, line, value, source)
+		return
+	case "graalvm", "mandrel":
 		s.ownNumbers(rel, line, value, source) // their own version numbers
 		return
 	}
@@ -492,11 +529,17 @@ func (s *scanner) asdfValue(rel string, line int, value, source string) {
 		ver = CorrettoJava(ver)
 	}
 	if !strings.HasSuffix(m[2], ".") {
-		// temurin-17.0.21.1+1: OpenJDK's build after +.
+		// temurin-17.0.21.1+1: OpenJDK's build after +; openjdk-21-ea+26:
+		// a pre-release and its build.
 		idx := asdfJava.FindStringSubmatchIndex(value)
-		ver += plusBuild(value[idx[5]:])
+		rest := value[idx[5]:]
+		if e := asdfPreRelease.FindStringSubmatch(rest); e != nil {
+			ver += "-" + e[1]
+			rest = rest[len(e[0]):]
+		}
+		ver += plusBuild(rest)
 	}
-	s.judgeVersion(rel, line, 0, ver, source, m[1])
+	s.judgeVersion(rel, line, true, ver, source, m[1])
 }
 
 // plusBuild returns "+N" when rest starts with OpenJDK's build (+11 in
@@ -509,6 +552,9 @@ func plusBuild(rest string) string {
 }
 
 var plusBuildRE = regexp.MustCompile(`^\+(\d{1,9})`)
+
+// asdfPreRelease is a pre-release marker after an asdf version.
+var asdfPreRelease = regexp.MustCompile(`^-(ea|beta|rc)\b`)
 
 // CorrettoJava turns an Amazon Corretto version into the Java version it
 // ships. Corretto has written its build number in the fourth place
@@ -634,7 +680,7 @@ func (s *scanner) setupJava(rel string, v *yaml.Node, dist string, text []string
 	if b, ok := strings.CutPrefix(ver, m+"+"); ok && b != "" && strings.Trim(b, "0123456789") == "" {
 		judged = ver // the build decides at a fixed release's boundary
 	}
-	s.judgeVersion(rel, v.Line, 0, judged, "actions/setup-java", dist)
+	s.judgeVersion(rel, v.Line, false, judged, "actions/setup-java", dist)
 	if len(s.findings) == before {
 		s.movingSetupJava(rel, v, m, dist)
 		return
@@ -801,7 +847,7 @@ func (s *scanner) buildpack(rel string, line int, ver string) {
 		return
 	}
 	if strings.Count(ver, ".") >= 2 {
-		s.judgeVersion(rel, line, 0, ver, "BP_JVM_VERSION (Cloud Native Buildpacks)", "")
+		s.judgeVersion(rel, line, false, ver, "BP_JVM_VERSION (Cloud Native Buildpacks)", "")
 	}
 }
 
@@ -946,6 +992,9 @@ func (s *scanner) packages(rel string, line int, run string) {
 			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[3]), op: opOf(m[4]), ver: m[5], mgr: "package", vendor: m[2]})
 		case defaultArg.MatchString(arg):
 			hits = append(hits, pkgHit{name: arg, mgr: "apt", vendor: "distribution"})
+		case apkCorretto.MatchString(arg):
+			m := apkCorretto.FindStringSubmatch(arg)
+			hits = append(hits, pkgHit{name: m[1], feature: atoi(m[2]), op: m[3], ver: m[4], mgr: "apk", vendor: "corretto"})
 		case rpmLatest.MatchString(arg):
 			hits = append(hits, pkgHit{name: arg, mgr: "rpm", vendor: "distribution", latest: true})
 		case varJavaArg.MatchString(arg):
@@ -1027,6 +1076,10 @@ func packageName(w string) string {
 // unreadableArg marks a package file installArgs found but could not
 // name.
 const unreadableArg = "\x00unreadable:"
+
+// apkCorretto is Amazon's Alpine package: amazon-corretto-17,
+// amazon-corretto-17=17.0.20.13.1-r0.
+var apkCorretto = regexp.MustCompile(`^(amazon-corretto-(\d{1,2})(?:-jre|-jdk)?)(?:([=~><]+)(\S+))?$`)
 
 // zypperArg is zypper's java-17-openjdk=17.0.21.0 (or >=, <...).
 var zypperArg = regexp.MustCompile(`^(java-(\d{1,2})-(openjdk|amazon-corretto)(?:-headless|-devel|-jdk)?)(=|>=|<=|>|<)(\S+)$`)
