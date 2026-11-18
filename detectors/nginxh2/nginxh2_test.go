@@ -152,7 +152,7 @@ func TestScanBelowRoot(t *testing.T) {
 }
 
 func TestTemplates(t *testing.T) {
-	s := &source{kept: map[string][]byte{
+	s := &confSource{kept: map[string][]byte{
 		"/etc/nginx/templates/default.conf.template": []byte("server { listen ${PORT} ssl http2; }"),
 		"/srv/t/x.conf.tpl":                          []byte("server { listen 1 ssl http2; }"),
 	}}
@@ -160,7 +160,7 @@ func TestTemplates(t *testing.T) {
 	if _, ok, _ := s.Read("/etc/nginx/conf.d/default.conf"); !ok {
 		t.Error("default template not mapped")
 	}
-	s2 := &source{kept: s.kept}
+	s2 := &confSource{kept: s.kept}
 	s2.templates([]string{"NGINX_ENVSUBST_TEMPLATE_DIR=/srv/t", "NGINX_ENVSUBST_TEMPLATE_SUFFIX=.tpl", "NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/http.d"})
 	if _, ok, _ := s2.Read("/etc/nginx/http.d/x.conf"); !ok {
 		t.Error("template settings from the environment not used")

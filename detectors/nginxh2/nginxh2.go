@@ -272,7 +272,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		ctx.Problem("nginxh2: more nginx binaries than the detector's limit; some were not checked")
 	}
 	links, _ := ctx.Links()
-	src := &source{kept: s.conf, full: s.confFull, tooLarge: s.tooLarge, root: ctx.SystemRoot(), links: links}
+	src := &confSource{kept: s.conf, full: s.confFull, tooLarge: s.tooLarge, root: ctx.SystemRoot(), links: links}
 	if s.kind == engine.Image && s.db["/docker-entrypoint.d/20-envsubst-on-templates.sh"] != nil {
 		src.templates(ctx.Env())
 	}
@@ -309,7 +309,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	return out
 }
 
-func (s *scan) read(src *source, ps ...string) []byte {
+func (s *scan) read(src *confSource, ps ...string) []byte {
 	for _, p := range ps {
 		if b, ok := s.db[p]; ok {
 			return b
@@ -325,7 +325,7 @@ func (s *scan) read(src *source, ps ...string) []byte {
 
 // owners returns a lookup of the package that owns a file, from dpkg's
 // status and .list files and apk's database.
-func (s *scan) owners(src *source) func(string) (*pkgdb.Package, bool) {
+func (s *scan) owners(src *confSource) func(string) (*pkgdb.Package, bool) {
 	var dpkg map[string]pkgdb.Package
 	if st := s.read(src, "/var/lib/dpkg/status"); st != nil {
 		dpkg = pkgdb.DpkgStatus(st)
@@ -426,9 +426,9 @@ func alpineBranch(r string) string {
 	return r
 }
 
-// source serves configuration files: what the scan kept, and below a
+// confSource serves configuration files: what the scan kept, and below a
 // system root, the root's files from disk.
-type source struct {
+type confSource struct {
 	kept     map[string][]byte
 	full     bool
 	tooLarge map[string]bool
@@ -441,7 +441,7 @@ type source struct {
 
 // templates maps the official image's /etc/nginx/templates/*.template to
 // the /etc/nginx/conf.d files its entrypoint writes from them.
-func (s *source) templates(env []string) {
+func (s *confSource) templates(env []string) {
 	dir, out, suffix := "/etc/nginx/templates", "/etc/nginx/conf.d", ".template"
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
@@ -467,7 +467,7 @@ func (s *source) templates(env []string) {
 }
 
 // resolve follows symbolic links within the target, as the kernel would.
-func (s *source) resolve(p string) string {
+func (s *confSource) resolve(p string) string {
 	cur := path.Clean("/" + p)
 	for hops := 0; hops < 40; hops++ {
 		parts := strings.Split(strings.TrimPrefix(cur, "/"), "/")
@@ -492,7 +492,7 @@ func (s *source) resolve(p string) string {
 	return ""
 }
 
-func (s *source) Read(p string) ([]byte, bool, string) {
+func (s *confSource) Read(p string) ([]byte, bool, string) {
 	if b, ok := s.virtual[p]; ok {
 		return b, true, ""
 	}
@@ -522,7 +522,7 @@ func (s *source) Read(p string) ([]byte, bool, string) {
 	return nil, false, "not in the target, or not readable"
 }
 
-func (s *source) Glob(pattern string) ([]string, bool) {
+func (s *confSource) Glob(pattern string) ([]string, bool) {
 	seen := map[string]bool{}
 	var out []string
 	add := func(p string) {
@@ -585,7 +585,7 @@ func (s *source) Glob(pattern string) ([]string, bool) {
 	return out, complete
 }
 
-func (s *source) diskPath(p string) (string, bool) {
+func (s *confSource) diskPath(p string) (string, bool) {
 	clean := path.Clean("/" + p)
 	full := filepath.Join(s.root, filepath.FromSlash(clean))
 	rel, err := filepath.Rel(s.root, full)
@@ -597,7 +597,7 @@ func (s *source) diskPath(p string) (string, bool) {
 
 // disk reads a regular file below the system root, never through a
 // symbolic link in any component of its path.
-func (s *source) disk(p string, limit int64) []byte {
+func (s *confSource) disk(p string, limit int64) []byte {
 	full, ok := s.diskPath(p)
 	if !ok {
 		return nil
