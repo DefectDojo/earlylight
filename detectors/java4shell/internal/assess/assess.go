@@ -77,6 +77,10 @@ type Input struct {
 	// UnreadScripts are files that may be start scripts and were not read
 	// (larger than the scan reads): what they pass to java is unknown.
 	UnreadScripts map[string]bool
+	// UnreadDirs could not be listed; UnreadAll stands for more unread
+	// files than were recorded.
+	UnreadDirs []string
+	UnreadAll  bool
 	// Owners maps installed files to the OS package that installed them.
 	Owners map[string]Package
 	// Resolve follows symbolic links within the target.
@@ -487,16 +491,23 @@ func javaHomeIs(in Input, env map[string]string, root string) bool {
 // unreadCommandScript is a script the container's command runs that was
 // not read, or "".
 func unreadCommandScript(in Input) string {
+	if len(in.Command) > 0 && in.UnreadAll {
+		return "(one of more files than the scan records)"
+	}
 	for _, w := range in.Command {
 		p := w
 		if in.Resolve != nil {
 			p = in.Resolve(w)
 		}
-		if in.UnreadScripts[p] {
-			return p
-		}
-		if in.UnreadScripts[w] {
-			return w
+		for _, c := range []string{p, w} {
+			if in.UnreadScripts[c] {
+				return c
+			}
+			for _, d := range in.UnreadDirs {
+				if strings.HasPrefix(c, strings.TrimSuffix(d, "/")+"/") {
+					return c
+				}
+			}
 		}
 	}
 	return ""

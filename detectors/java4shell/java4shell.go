@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -135,25 +136,83 @@ func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
 	return most
 }
 
-// VisitOverLimit records a JVM settings file over the limit as a coverage
-// gap: an option in it can undo a mitigation the scan would report. A
-// start script not read keeps a mitigation from being reported when the
-// container's command runs it. The other files with a limit are deliberate
-// exclusions: no verdict is cleared on them (a runtime is cleared only by
-// its VM library and release file).
+// VisitOverLimit records a file the scan asked for and did not get, over
+// its limit or --max-file-size. A JVM settings file not read is a coverage
+// gap once a runtime is found (FinishSkips): an option in it can undo a
+// mitigation the scan would report. A start script not read keeps a
+// mitigation from being reported when the container's command runs it.
+// The other files with a limit are deliberate exclusions: no verdict is
+// cleared on them (a runtime is cleared only by its VM library and release
+// file).
 func (s *scan) VisitOverLimit(p string, _ int64) []engine.Skip {
-	// The last entry for a path wins (a tar can hold several).
-	delete(s.scripts, p)
-	if base := path.Base(p); !hsErr.MatchString(base) && p != "/etc/os-release" && p != "/usr/lib/os-release" &&
-		len(s.unreadScripts) < maxScripts {
-		// Its head is not known here: it may be a start script, which
-		// keeps a mitigation from being reported for the command it runs.
-		s.unreadScripts[p] = true
+	s.notRead(p)
+	return nil
+}
+
+// VisitUnread records a file or directory the walk could not read, as
+// VisitOverLimit does.
+func (s *scan) VisitUnread(p string, dir bool) {
+	if !dir {
+		s.notRead(p)
+	} else if len(s.unreadDirs) < maxScripts {
+		s.unreadDirs = append(s.unreadDirs, p)
+	} else {
+		s.unreadAll = true
 	}
-	if jvm.SettingKind(p) == "" {
+}
+
+func (s *scan) notRead(p string) {
+	if jvm.SettingKind(p) != "" && len(s.overSettings) < maxSettings {
+		s.overSettings[p] = true
+	}
+	if hsErr.MatchString(path.Base(p)) || p == "/etc/os-release" || p == "/usr/lib/os-release" {
+		return
+	}
+	if len(s.unreadScripts) >= maxScripts {
+		s.unreadAll = true
+		return
+	}
+	// Its head is not known here: it may be a start script, which keeps a
+	// mitigation from being reported for the command it runs.
+	s.unreadScripts[p] = true
+}
+
+// FinishSkips reports the JVM settings files not read as coverage gaps
+// when the target holds a runtime.
+func (s *scan) FinishSkips() []engine.Skip {
+	if len(s.libs) == 0 {
 		return nil
 	}
-	return []engine.Skip{{Path: p, Reason: fmt.Sprintf("larger than the %d MiB java4shell reads of a JVM settings file; its options are not checked", maxSetting>>20)}}
+	var out []engine.Skip
+	for p := range s.overSettings {
+		out = append(out, engine.Skip{Path: p, Reason: "a JVM settings file not read (over a size limit, or unreadable); its options are not checked"})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// Forget drops what was kept of p: an image names it again.
+func (s *scan) Forget(p string) {
+	if b, ok := s.kept[p]; ok {
+		s.keptBytes -= len(b)
+		delete(s.kept, p)
+	}
+	if assess.IsDpkgList(p) {
+		k := strings.TrimSuffix(path.Base(p), ".list")
+		s.keptBytes -= len(s.lists[k])
+		delete(s.lists, k)
+	}
+	delete(s.scripts, p)
+	delete(s.unreadScripts, p)
+	delete(s.overSettings, p)
+	if path.Base(p) == "release" {
+		delete(s.releases, path.Dir(p))
+		delete(s.badReleases, path.Dir(p))
+	}
+	s.libs = slices.DeleteFunc(s.libs, func(l *jvm.Library) bool { return l.Path == p })
+	s.settings = slices.DeleteFunc(s.settings, func(st jvm.Setting) bool { return st.File == p })
+	s.crashes = slices.DeleteFunc(s.crashes, func(c crash) bool { return c.Path == p })
+	s.archives = slices.DeleteFunc(s.archives, func(a string) bool { return a == p })
 }
 
 var hsErr = regexp.MustCompile(`^hs_err_pid\d{1,10}\.log$`)
@@ -220,7 +279,7 @@ const (
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
 	return &scan{kind: kind, releases: map[string]jvm.Release{}, badReleases: map[string]string{},
-		kept: map[string][]byte{}, lists: map[string][]byte{}, scripts: map[string]map[string]bool{}, unreadScripts: map[string]bool{}}
+		kept: map[string][]byte{}, lists: map[string][]byte{}, scripts: map[string]map[string]bool{}, unreadScripts: map[string]bool{}, overSettings: map[string]bool{}}
 }
 
 type scan struct {
@@ -236,10 +295,15 @@ type scan struct {
 	dropped     int
 	keptBytes   int
 	archives    []string // runtime downloads seen by name, not read
-	// unreadScripts may be start scripts and were not read.
+	// unreadScripts may be start scripts and were not read; unreadDirs
+	// could not be listed; unreadAll stands for more than were recorded.
 	unreadScripts map[string]bool
-	optionFiles   int // settings files that set JVM options
-	plainUnits    int // systemd units that set none
+	unreadDirs    []string
+	unreadAll     bool
+	// overSettings are JVM settings files not read.
+	overSettings map[string]bool
+	optionFiles  int // settings files that set JVM options
+	plainUnits   int // systemd units that set none
 	// limits records the caps this target reached; a capped scan clears
 	// nothing.
 	limits []string
@@ -341,9 +405,13 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			s.keptBytes += len(f.Data)
 		}
 	}
-	delete(s.unreadScripts, f.Path)
-	if isScript(f.Data) && len(f.Data) > maxScript && len(s.unreadScripts) < maxScripts {
-		s.unreadScripts[f.Path] = true // read as a settings file or package database only
+	if isScript(f.Data) && len(f.Data) > maxScript {
+		// Read as a settings file or package database only.
+		if len(s.unreadScripts) < maxScripts {
+			s.unreadScripts[f.Path] = true
+		} else {
+			s.unreadAll = true
+		}
 	}
 	if isScript(f.Data) && len(f.Data) <= maxScript {
 		vars := map[string]bool{}
@@ -408,6 +476,8 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Resolve:       res.resolve,
 		Scripts:       s.scripts,
 		UnreadScripts: s.unreadScripts,
+		UnreadDirs:    s.unreadDirs,
+		UnreadAll:     s.unreadAll,
 	}
 	if s.kind == engine.Image {
 		in.Env = ctx.Env()

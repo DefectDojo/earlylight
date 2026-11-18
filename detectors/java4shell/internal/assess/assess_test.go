@@ -292,4 +292,27 @@ func TestMitigationWithUnreadStartScript(t *testing.T) {
 	if f := one(t, in); f.Status != Mitigated {
 		t.Errorf("an unread script the command does not run: %+v", f)
 	}
+	// Behind a wrapper, in a directory that could not be listed, or past
+	// the record limit.
+	in.UnreadScripts = nil
+	in.Command, in.UnreadDirs = []string{"tini", "--", "/opt/app/start.sh"}, []string{"/opt/app"}
+	if f := one(t, in); f.Status != Vulnerable {
+		t.Errorf("a start script in a directory not listed: %+v", f)
+	}
+	in.UnreadDirs, in.UnreadAll = nil, true
+	if f := one(t, in); f.Status != Vulnerable {
+		t.Errorf("past the record limit: %+v", f)
+	}
+
+	// Round-3 review finding 5: the same for a backported decoder (Oracle
+	// 8 Performance Pack).
+	in = Input{Libraries: []*jvm.Library{lib(t, temurin+"/lib/server/libjvm.so", testlib.Lib{Version: "1.8.0_511-perf-b33", VBMI: true})},
+		Env: []string{"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics"}, Command: []string{"/entrypoint.sh"}}
+	if f := one(t, in); f.Status != Mitigated {
+		t.Fatalf("backport, script read: %+v", f)
+	}
+	in.UnreadScripts = map[string]bool{"/entrypoint.sh": true}
+	if f := one(t, in); f.Status != Vulnerable {
+		t.Errorf("backport, script not read: %+v", f)
+	}
 }

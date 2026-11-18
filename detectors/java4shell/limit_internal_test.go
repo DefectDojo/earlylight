@@ -3,12 +3,14 @@ package java4shell
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
 	"github.com/DefectDojo/earlylight/internal/engine"
 )
 
@@ -142,49 +144,63 @@ func TestOSReleaseAtLimit(t *testing.T) {
 	}
 }
 
-// A JVM settings file over the limit is a coverage gap; the other files
-// with a limit are deliberate exclusions.
+// A JVM settings file over the limit is a coverage gap when the target
+// holds a runtime, an exclusion when it does not; the other files with a
+// limit are exclusions.
 func TestOverLimitGaps(t *testing.T) {
-	root := t.TempDir()
-	for rel, size := range map[string]int64{
-		"opt/atlassian/confluence/bin/setenv.sh": maxSetting + 1,
-		"etc/os-release":                         maxOSRelease + 1,
-		"opt/install.sh":                         maxScript + 1,
-		"var/lib/dpkg/status":                    maxKept + 1,
-	} {
-		p := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
+	for _, runtime := range []bool{false, true} {
+		root := t.TempDir()
+		for rel, size := range map[string]int64{
+			"opt/atlassian/confluence/bin/setenv.sh": maxSetting + 1,
+			"etc/os-release":                         maxOSRelease + 1,
+			"opt/install.sh":                         maxScript + 1,
+			"var/lib/dpkg/status":                    maxKept + 1,
+		} {
+			p := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			head := []byte("X=1\n")
+			if strings.HasSuffix(rel, ".sh") {
+				head = []byte("#!/bin/sh\n")
+			}
+			if err := os.WriteFile(p, head, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(p, size); err != nil {
+				t.Fatal(err)
+			}
 		}
-		head := []byte("X=1\n")
-		if strings.HasSuffix(rel, ".sh") {
-			head = []byte("#!/bin/sh\n")
+		if runtime {
+			p := filepath.Join(root, "opt/atlassian/confluence/jre/lib/server/libjvm.so")
+			os.MkdirAll(filepath.Dir(p), 0o755)
+			if err := os.WriteFile(p, testlib.Build(testlib.Lib{Version: "17.0.12+7", VBMI: true}), 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if err := os.WriteFile(p, head, 0o644); err != nil {
-			t.Fatal(err)
+		tg := engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
+		got := map[string][]bool{}
+		for _, s := range tg.Skipped {
+			got[s.Path] = append(got[s.Path], s.Excluded)
 		}
-		if err := os.Truncate(p, size); err != nil {
-			t.Fatal(err)
+		settings := "[true]"
+		if runtime {
+			settings = "[false]" // one record: the gap replaces the exclusion
 		}
-	}
-	tg := engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
-	got := map[string]bool{}
-	for _, s := range tg.Skipped {
-		got[s.Path] = s.Excluded
-	}
-	want := map[string]bool{"/opt/atlassian/confluence/bin/setenv.sh": false, "/etc/os-release": true, "/opt/install.sh": true, "/var/lib/dpkg/status": true}
-	if len(got) != len(want) || tg.Gaps() != 1 {
-		t.Fatalf("skipped %+v", tg.Skipped)
-	}
-	for p, ex := range want {
-		if got[p] != ex {
-			t.Errorf("%s: excluded %v, want %v", p, got[p], ex)
+		want := map[string]string{"/opt/atlassian/confluence/bin/setenv.sh": settings, "/etc/os-release": "[true]", "/opt/install.sh": "[true]", "/var/lib/dpkg/status": "[true]"}
+		if len(got) != len(want) {
+			t.Fatalf("runtime %v: skipped %+v", runtime, tg.Skipped)
+		}
+		for p, ex := range want {
+			if fmt.Sprint(got[p]) != ex {
+				t.Errorf("runtime %v: %s: excluded %v, want %s", runtime, p, got[p], ex)
+			}
 		}
 	}
 }
 
-// A script over the limit is remembered as unread, and of several entries
-// for one path the last decides.
+// A script over the limit is remembered as unread, as is one read only as
+// a settings file (over the script limit); Forget drops either.
 func TestUnreadScripts(t *testing.T) {
 	s := (&Detector{}).NewScan(engine.Image).(*scan)
 	s.VisitOverLimit("/entrypoint.sh", 300<<10)
@@ -192,12 +208,40 @@ func TestUnreadScripts(t *testing.T) {
 	if !s.unreadScripts["/entrypoint.sh"] || s.unreadScripts["/etc/os-release"] {
 		t.Fatalf("unread %v", s.unreadScripts)
 	}
+	s.Forget("/entrypoint.sh")
 	s.Visit(engine.File{Path: "/entrypoint.sh", Data: []byte("#!/bin/sh\nexec java $JAVA_OPTS -jar /app.jar\n")})
 	if s.unreadScripts["/entrypoint.sh"] || !s.scripts["/entrypoint.sh"]["JAVA_OPTS"] {
 		t.Errorf("read after unread: unread %v scripts %v", s.unreadScripts, s.scripts)
 	}
+	s.Forget("/entrypoint.sh")
 	s.VisitOverLimit("/entrypoint.sh", 300<<10)
 	if !s.unreadScripts["/entrypoint.sh"] || s.scripts["/entrypoint.sh"] != nil {
 		t.Errorf("unread after read: unread %v scripts %v", s.unreadScripts, s.scripts)
+	}
+	// setenv.sh is read up to 1 MiB as a settings file, past the script
+	// limit: not checked as a start script.
+	big := append([]byte("#!/bin/sh\nJAVA_OPTS=\"$JAVA_OPTS -XX:+UseBASE64Intrinsics\"\n"), make([]byte, maxScript)...)
+	s.Visit(engine.File{Path: "/opt/app/bin/setenv.sh", Data: big})
+	if !s.unreadScripts["/opt/app/bin/setenv.sh"] {
+		t.Errorf("a %d-byte script read as a settings file: unread %v", len(big), s.unreadScripts)
+	}
+}
+
+// Forget drops everything kept of a path.
+func TestForget(t *testing.T) {
+	s := (&Detector{}).NewScan(engine.Image).(*scan)
+	lib := testlib.Build(testlib.Lib{Version: "21.0.13+9-LTS", VBMI: true})
+	s.Visit(engine.File{Path: "/opt/java/lib/server/libjvm.so", Data: lib})
+	s.Visit(engine.File{Path: "/opt/java/release", Data: testlib.Release("JAVA_VERSION", "21.0.13")})
+	s.Visit(engine.File{Path: "/var/lib/dpkg/status", Data: []byte("Package: x\n")})
+	s.Visit(engine.File{Path: "/opt/app/bin/setenv.sh", Data: []byte("JAVA_OPTS=-XX:-UseBASE64Intrinsics\n")})
+	if len(s.libs) != 1 || len(s.releases) != 1 || len(s.kept) != 1 || len(s.settings) != 1 {
+		t.Fatalf("libs %d releases %d kept %d settings %d", len(s.libs), len(s.releases), len(s.kept), len(s.settings))
+	}
+	for _, p := range []string{"/opt/java/lib/server/libjvm.so", "/opt/java/release", "/var/lib/dpkg/status", "/opt/app/bin/setenv.sh"} {
+		s.Forget(p)
+	}
+	if len(s.libs)+len(s.releases)+len(s.kept)+len(s.settings) != 0 || s.keptBytes != 0 {
+		t.Errorf("libs %d releases %d kept %d settings %d bytes %d", len(s.libs), len(s.releases), len(s.kept), len(s.settings), s.keptBytes)
 	}
 }
