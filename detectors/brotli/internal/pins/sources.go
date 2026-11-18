@@ -270,7 +270,11 @@ func (s *scanner) globalJSON(rel string, b []byte) {
 			Version string `json:"version"`
 		} `json:"sdk"`
 	}
-	if err := json.Unmarshal(b, &doc); err != nil || doc.SDK.Version == "" {
+	if err := json.Unmarshal(b, &doc); err != nil {
+		s.skips = append(s.skips, Skip{File: rel, Reason: "not valid JSON: " + clean(err.Error(), 200)})
+		return
+	}
+	if doc.SDK.Version == "" {
 		return
 	}
 	v := doc.SDK.Version

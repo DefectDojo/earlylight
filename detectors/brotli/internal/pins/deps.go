@@ -292,6 +292,7 @@ func (s *scanner) dependencies(rel string, b []byte) {
 			} `json:"packages"`
 		}
 		if json.Unmarshal(b, &doc) != nil {
+			s.skips = append(s.skips, Skip{File: rel, Reason: "not valid JSON"})
 			return
 		}
 		for key, p := range doc.Packages {
@@ -541,6 +542,7 @@ func (s *scanner) nugetLock(rel string, b []byte) {
 		} `json:"dependencies"`
 	}
 	if json.Unmarshal(b, &doc) != nil {
+		s.skips = append(s.skips, Skip{File: rel, Reason: "not valid JSON"})
 		return
 	}
 	for _, pkgs := range doc.Dependencies {

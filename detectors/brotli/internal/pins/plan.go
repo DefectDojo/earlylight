@@ -3,7 +3,10 @@ package pins
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 // VerifyImage proves an image change before it is planned: target must hold
@@ -16,13 +19,53 @@ func declined(format string, args ...any) error {
 	return &Declined{Reason: clean(fmt.Sprintf(format, args...), 1500)}
 }
 
+// notChecked declines a finding the plan could not check again: it is not
+// known to be fixed, so it must not read as "already fixed".
+func notChecked(format string, args ...any) error {
+	return declined(format+"; rescan to confirm", args...)
+}
+
+// planRules are the rules Plan checks again. A not-checked finding (a skip)
+// and the image check's rules name nothing this package can look up, so
+// they are never "already fixed" here.
+var planRules = map[string]bool{RuleNode: true, RuleDotnet: true, RuleBun: true, RuleDependency: true}
+
 // Plan re-scans file, finds the pin the finding at line names (narrowed by
 // props source and current when given), and plans the one-line edit to the
 // fixed release. The edit is verified by scanning the edited file again in
 // memory: the pin must be fixed and nothing else may change. An image tag is
 // changed only to a tag the registry shows is published for every platform
 // the current one has, on the same base OS. It writes nothing.
+//
+// already is true only when the rescan read the file in full and the pin is
+// gone from it, or the file was deleted. A finding that was not checked, or
+// cannot be checked again now (the file is unreadable, too large or does not
+// parse, the line is past its end, the line pins another release without the
+// fix), declines with "rescan to confirm".
 func Plan(ctx context.Context, root, file string, line int, rule string, props map[string]string) (*Change, bool, error) {
+	if !planRules[rule] {
+		return nil, false, notChecked("%s:%d was not checked for the %s fix (%s), and a plan does not check it", file, line, CVE, clean(rule, 60))
+	}
+	if fi, err := os.Stat(root); err != nil {
+		return nil, false, err
+	} else if !fi.IsDir() {
+		return nil, false, fmt.Errorf("%s is not a directory", root)
+	}
+	// The file as the scan reads it: what it cannot read says nothing about
+	// the pin.
+	probe := &scanner{ctx: ctx, root: root}
+	now, ok := probe.read(file)
+	if !ok {
+		if len(probe.skips) > 0 {
+			return nil, false, notChecked("%s was not read: %s", file, probe.skips[0].Reason)
+		}
+		if p, err := refs.SafePath(root, file); err == nil {
+			if _, err := os.Lstat(p); err == nil {
+				return nil, false, notChecked("%s is not a regular file, so it was not read", file)
+			}
+		}
+		return nil, true, nil // deleted: no pin is left in it
+	}
 	before, err := scanPins(ctx, root, []string{file}, Options{})
 	if err != nil {
 		return nil, false, err
@@ -32,12 +75,8 @@ func Plan(ctx context.Context, root, file string, line int, rule string, props m
 		return nil, false, err
 	}
 	if !found {
-		for _, sk := range before.skips {
-			if sk.File == file {
-				// Not read this time (too large, not parseable): nothing is
-				// known about the pin, so it is not "already fixed".
-				return nil, false, declined("%s was not read: %s", file, sk.Reason)
-			}
+		if err := unchecked(before, file, line, rule, now); err != nil {
+			return nil, false, err
 		}
 		return nil, true, nil
 	}
@@ -131,7 +170,38 @@ func scanPins(ctx context.Context, root string, files []string, opts Options) (*
 	if err := s.images(files); err != nil {
 		return nil, err
 	}
+	// A cancelled scan stops early: what it did not reach is not gone.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// unchecked explains why a pin the rescan did not find is still not known to
+// be gone, or returns nil when the rescan checked the place it was.
+func unchecked(s *scanner, file string, line int, rule string, content []byte) error {
+	if len(s.skips) > 0 {
+		// Not read in full this time (too large, not parseable, an
+		// unresolved reference): nothing is known about the pin.
+		return notChecked("%s was not read: %s", s.skips[0].File, s.skips[0].Reason)
+	}
+	n := strings.Count(string(content), "\n")
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		n++
+	}
+	if line > n {
+		return notChecked("line %d is past the end of %s, which changed since the scan", line, file)
+	}
+	for _, q := range s.pins {
+		if q.file == file && q.line == line && q.prod.rule() == rule {
+			what := q.prod.name()
+			if q.dep != nil {
+				what = q.dep.name
+			}
+			return notChecked("line %d of %s still pins %s %s, without the fix", line, file, what, q.j.current)
+		}
+	}
+	return nil
 }
 
 // choose finds the pin a finding names. found is false when the file no
