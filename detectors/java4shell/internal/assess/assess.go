@@ -326,6 +326,7 @@ func owner(in Input, root string, lib *jvm.Library) (Package, bool) {
 func mitigation(in Input, env map[string]string, root string, feature int, f *Finding) (bool, string) {
 	// Settings files of the product the runtime is bundled in.
 	var o jvm.Options
+	var b64, avx, argfile bool
 	if in.Env != nil {
 		if v, ok := env["JAVA_TOOL_OPTIONS"]; ok {
 			o.Apply(v, "the image's JAVA_TOOL_OPTIONS")
@@ -347,6 +348,13 @@ func mitigation(in Input, env map[string]string, root string, feature int, f *Fi
 				o.ApplyWord(w, "the container's command")
 			}
 		}
+		// Words that turn the decoder back on count wherever the command
+		// starts java (a "sh -c" script, a java this scan cannot place):
+		// a mitigation has to hold for every launch.
+		b64, avx, argfile = jvm.Undoes(jvm.CommandWords(in.Command))
+		if argfile {
+			return false, ""
+		}
 	}
 	for _, s := range in.Settings {
 		if s.Kind == "systemd" || s.Scope == "" {
@@ -355,6 +363,12 @@ func mitigation(in Input, env map[string]string, root string, feature int, f *Fi
 		if within(root, s.Scope) || in.Env != nil && launches(in, env, s) && javaHomeIs(in, env, root) {
 			s.ApplyTo(&o, feature)
 		}
+	}
+	if b64 {
+		o.ApplyWord("-XX:+UseBASE64Intrinsics", "the container's command")
+	}
+	if avx {
+		o.ApplyWord("-XX:UseAVX=3", "the container's command")
 	}
 	if in.Env != nil {
 		if v, ok := env["_JAVA_OPTIONS"]; ok {

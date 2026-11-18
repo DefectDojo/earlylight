@@ -203,3 +203,44 @@ func baseName(p string) string {
 	}
 	return strings.TrimSuffix(strings.ToLower(p), ".exe")
 }
+
+// CommandWords returns every word of a container command, with the words
+// of a "sh -c" script split out.
+func CommandWords(cmd []string) []string {
+	if len(cmd) > 1024 {
+		cmd = cmd[:1024]
+	}
+	var out []string
+	for i, w := range cmd {
+		if i > 0 && cmd[i-1] == "-c" && i >= 2 {
+			if b := baseName(cmd[i-2]); b == "sh" || b == "bash" || b == "ash" || b == "dash" {
+				out = append(out, Words(w)...)
+				continue
+			}
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// Undoes reports what in a command or option text can turn the decoder
+// back on, wherever the java it starts is: -XX:+UseBASE64Intrinsics,
+// -XX:UseAVX=3 or higher, or a java @argfile this scan cannot read.
+func Undoes(words []string) (base64, avx, argfile bool) {
+	java := false
+	for _, w := range words {
+		switch {
+		case baseName(w) == "java":
+			java = true
+		case w == "-XX:+UseBASE64Intrinsics" || w == "-XX:UseBASE64Intrinsics=true":
+			base64 = true
+		case strings.HasPrefix(w, "-XX:UseAVX="):
+			if n, err := strconv.Atoi(strings.TrimPrefix(w, "-XX:UseAVX=")); err != nil || n >= 3 {
+				avx = true
+			}
+		case java && strings.HasPrefix(w, "@") && len(w) > 1:
+			argfile = true
+		}
+	}
+	return
+}

@@ -159,7 +159,26 @@ func EnvMitigation(root string, r refs.Ref, overlay map[string][]byte) string {
 				}
 			}
 		}
-		o := jvm.FromEnv(env, nil, 17, nil)
+		// The command the file sets can turn the decoder back on.
+		var cmd []string
+		for _, k := range []string{"entrypoint", "command", "args"} {
+			n := mapGet(m, k)
+			switch {
+			case n == nil:
+			case n.Kind == yaml.SequenceNode:
+				var arr []string
+				for _, c := range n.Content {
+					arr = append(arr, c.Value)
+				}
+				cmd = append(cmd, jvm.CommandWords(arr)...)
+			case n.Kind == yaml.ScalarNode:
+				cmd = append(cmd, jvm.Words(n.Value)...)
+			}
+		}
+		if len(cmd) > 0 && !strings.Contains(strings.Join(cmd, " "), "java") {
+			cmd = append([]string{"java"}, cmd...) // Kubernetes args go to the image's own java entrypoint
+		}
+		o := undo(jvm.FromEnv(withoutJavaOptions(env), nil, 17, nil), cmd, env)
 		if ok, how := o.Mitigates(); ok {
 			return strings.Replace(how, "(from ", "(from "+r.File+" ", 1)
 		}

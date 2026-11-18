@@ -39,3 +39,33 @@ func TestReleaseContradiction(t *testing.T) {
 		t.Errorf("HotSpot library, OpenJ9 release: %s (%s)", f.Status, f.Reason)
 	}
 }
+
+// Review finding 4: a command that turns the intrinsic back on voids the
+// image's mitigation, even when it cannot be tied to one runtime.
+func TestCommandReenables(t *testing.T) {
+	for _, c := range []struct {
+		env string
+		cmd []string
+	}{
+		{"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics", []string{"/bin/sh", "-c", "exec java -XX:+UseBASE64Intrinsics -jar /app.jar"}},
+		{"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics", []string{"java", "-XX:+UseBASE64Intrinsics", "-jar", "/app.jar"}}, // no PATH in the image config
+		{"JAVA_TOOL_OPTIONS=-XX:UseAVX=2", []string{"java", "-XX:UseAVX=3", "-jar", "/app.jar"}},
+		{"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics", []string{"java", "@/app/jvm.args", "-jar", "/app.jar"}}, // options from a file this scan cannot see
+	} {
+		in := Input{Libraries: []*jvm.Library{vulnLib(t, temurin)}, Env: []string{c.env}, Command: c.cmd}
+		if f := one(t, in); f.Status != Vulnerable || f.Mitigation != "" {
+			t.Errorf("%q: %s (%s)", c.cmd, f.Status, f.Mitigation)
+		}
+	}
+	// Turning AVX-512 back on leaves -XX:-UseBASE64Intrinsics in force.
+	in := Input{Libraries: []*jvm.Library{vulnLib(t, temurin)}, Env: []string{"JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics"}, Command: []string{"java", "-XX:UseAVX=3", "-jar", "/a.jar"}}
+	if f := one(t, in); f.Status != Mitigated {
+		t.Errorf("UseAVX=3 with -UseBASE64Intrinsics: %s", f.Status)
+	}
+	// _JAVA_OPTIONS is applied after the command line, so it still holds.
+	in = Input{Libraries: []*jvm.Library{vulnLib(t, temurin)}, Env: []string{"_JAVA_OPTIONS=-XX:-UseBASE64Intrinsics"},
+		Command: []string{"/bin/sh", "-c", "exec java -XX:+UseBASE64Intrinsics -jar /app.jar"}}
+	if f := one(t, in); f.Status != Mitigated {
+		t.Errorf("_JAVA_OPTIONS after the command: %s", f.Status)
+	}
+}

@@ -20,6 +20,7 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -718,6 +719,7 @@ var (
 	apkJava  = regexp.MustCompile(`\b(openjdk(\d{1,2})(?:-jre|-jdk|-jre-headless|-jmods)?)(?:[=~><]+([^\s;&|]+))?`)
 	rpmJava  = regexp.MustCompile(`\b(java-(\d{1,2})-(?:openjdk|amazon-corretto)(?:-headless|-devel)?)(?:-(\d[\w.:-]*))?`)
 	envJTO   = regexp.MustCompile(`(?i)^\s*ENV\s+`)
+	cmdLine  = regexp.MustCompile(`(?i)^\s*(?:ENTRYPOINT|CMD)\s+`)
 	fromLine = regexp.MustCompile(`(?i)^\s*FROM\s`)
 )
 
@@ -729,8 +731,9 @@ func (s *scanner) dockerfile(rel, text string) {
 	// stage sets the mitigation (before or after the install: ENV applies
 	// to the image the stage makes).
 	stageEnv := map[string]string{}
+	var stageCmd []string // ENTRYPOINT and CMD words of the stage
 	endStage := func() {
-		o := jvm.FromEnv(stageEnv, nil, 17, nil)
+		o := undo(jvm.FromEnv(withoutJavaOptions(stageEnv), nil, 17, nil), stageCmd, stageEnv)
 		ok, how := o.Mitigates()
 		if !ok || from == 0 {
 			return
@@ -761,7 +764,9 @@ func (s *scanner) dockerfile(rel, text string) {
 		switch {
 		case fromLine.MatchString(trim):
 			endStage()
-			from, stageStart, stageEnv = i+1, len(s.findings), map[string]string{}
+			from, stageStart, stageEnv, stageCmd = i+1, len(s.findings), map[string]string{}, nil
+		case cmdLine.MatchString(trim):
+			stageCmd = append(stageCmd, commandWords(cmdLine.ReplaceAllString(trim, ""))...)
 		case envJTO.MatchString(trim):
 			// The last ENV of each variable in the stage is what the
 			// image keeps; the mitigation is decided when the stage ends.
@@ -886,4 +891,46 @@ func mapGet(m *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+// commandWords reads a Dockerfile ENTRYPOINT or CMD: the JSON form or the
+// shell form.
+func commandWords(text string) []string {
+	text = strings.TrimSpace(text)
+	var arr []string
+	if strings.HasPrefix(text, "[") && json.Unmarshal([]byte(text), &arr) == nil {
+		return jvm.CommandWords(arr)
+	}
+	return jvm.Words(text)
+}
+
+// withoutJavaOptions drops _JAVA_OPTIONS, which undo applies last.
+func withoutJavaOptions(env map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range env {
+		if k != "_JAVA_OPTIONS" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// undo applies what a command can turn back on (its words count wherever
+// the java it starts is) and then _JAVA_OPTIONS, which HotSpot applies
+// last. A java @argfile makes the result unknowable: no mitigation.
+func undo(o jvm.Options, cmd []string, env map[string]string) jvm.Options {
+	b64, avx, argfile := jvm.Undoes(cmd)
+	if argfile {
+		return jvm.Options{}
+	}
+	if b64 {
+		o.ApplyWord("-XX:+UseBASE64Intrinsics", "the command")
+	}
+	if avx {
+		o.ApplyWord("-XX:UseAVX=3", "the command")
+	}
+	if v, ok := env["_JAVA_OPTIONS"]; ok {
+		o.Apply(v, "_JAVA_OPTIONS")
+	}
+	return o
 }

@@ -82,3 +82,24 @@ func TestTargetBelowFixedBuild(t *testing.T) {
 		t.Errorf("21.0.13.1_1: %s (%s)", st, why)
 	}
 }
+
+// Review finding 9: a command in the tree that turns the intrinsic back on
+// voids the mitigation the stage or service sets.
+func TestTreeCommandReenables(t *testing.T) {
+	root := tree(t, map[string]string{
+		"a/Dockerfile": "FROM eclipse-temurin:21.0.13_9-jre\nENV JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics\nENTRYPOINT [\"java\",\"-XX:+UseBASE64Intrinsics\",\"-jar\",\"/a.jar\"]\n",
+		"b/Dockerfile": "FROM eclipse-temurin:21.0.13_9-jre\nENV JAVA_TOOL_OPTIONS=-XX:UseAVX=2\nCMD java -XX:UseAVX=3 -jar /a.jar\n",
+		"compose.yaml": "services:\n  a:\n    image: amazoncorretto:21.0.12-al2023\n    environment:\n      JAVA_TOOL_OPTIONS: -XX:-UseBASE64Intrinsics\n    command: [\"java\", \"-XX:+UseBASE64Intrinsics\", \"-jar\", \"/a.jar\"]\n",
+		"k8s.yaml":     "apiVersion: v1\nkind: Pod\nmetadata:\n  name: a\nspec:\n  containers:\n    - name: a\n      image: amazoncorretto:21.0.12-al2023\n      env:\n        - name: JAVA_TOOL_OPTIONS\n          value: -XX:-UseBASE64Intrinsics\n      args: [\"-XX:+UseBASE64Intrinsics\"]\n",
+	})
+	res := scan(t, root)
+	for _, c := range []struct {
+		file string
+		line int
+	}{{"a/Dockerfile", 1}, {"b/Dockerfile", 1}, {"compose.yaml", 3}, {"k8s.yaml", 8}} {
+		f, ok := find(res, c.file, c.line)
+		if !ok || f.Status != StatusVulnerable || f.Props["mitigation"] != "" {
+			t.Errorf("%s:%d: %+v (found %v)", c.file, c.line, f, ok)
+		}
+	}
+}
