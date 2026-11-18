@@ -126,7 +126,8 @@ func TestLimiterWithAnotherReader(t *testing.T) {
 	}
 }
 
-// A file over the limits of two detectors is recorded for each.
+// A file over the limits of two detectors has one record naming each
+// (final review finding 6).
 func TestLimiterTwoLimits(t *testing.T) {
 	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 100<<10)})
 	_, ds := capped("t-two1k", osRelease, func(string) int64 { return 1 << 10 })
@@ -136,8 +137,9 @@ func TestLimiterTwoLimits(t *testing.T) {
 	for _, s := range tg.Skipped {
 		got = append(got, s.Reason)
 	}
-	want := "excluded: larger than the 1024-byte limit of t-two1k for this file (102400 bytes)|" +
-		"excluded: larger than the 65536-byte limit of t-two64k for this file (102400 bytes)"
+	// One record for the path, naming both.
+	want := "excluded: larger than the 1024-byte limit of t-two1k for this file (102400 bytes); " +
+		"larger than the 65536-byte limit of t-two64k for this file (102400 bytes)"
 	if strings.Join(got, "|") != want {
 		t.Errorf("skipped %q", got)
 	}
@@ -651,5 +653,20 @@ func TestReplacedInDockerExport(t *testing.T) {
 	sort.Strings(*u.forgot)
 	if strings.Join(*u.forgot, ",") != "/etc/a,/etc/d" || fmt.Sprint(exists) != "[false false true]" {
 		t.Errorf("forgot %v exists %v", *u.forgot, exists)
+	}
+}
+
+// A gap and an exclusion for one path are one record: a gap, with both
+// reasons.
+func TestOneRecordPerPath(t *testing.T) {
+	got := oneRecordPerPath([]source.Skip{
+		{Path: "/a", Reason: "excluded: larger than the 10-byte limit of x for this file (20 bytes)", Excluded: true},
+		{Path: "/b", Reason: "permission denied"},
+		{Path: "/a", Reason: "not read, and y's verdict depends on it"},
+		{Path: "/a", Reason: "detector z failed on this file", DetectorFailed: true},
+	})
+	if len(got) != 2 || got[0].Path != "/a" || got[0].Excluded || !got[0].DetectorFailed ||
+		got[0].Reason != "not read, and y's verdict depends on it; larger than the 10-byte limit of x for this file (20 bytes); detector z failed on this file" {
+		t.Errorf("%+v", got)
 	}
 }

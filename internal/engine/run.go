@@ -571,6 +571,7 @@ func (w *walker) visitHeadSafely(id string, h HeadVisitor, p string, head []byte
 }
 
 func (w *walker) finish() {
+	defer func() { w.t.Skipped = oneRecordPerPath(w.t.Skipped) }()
 	for i, s := range w.scans {
 		fs, err := finishSafely(s, w.ctx)
 		if err != nil {
@@ -590,6 +591,33 @@ func (w *walker) finish() {
 			}
 		}
 	}
+}
+
+// oneRecordPerPath merges the records of one path (two detectors that
+// left it unchecked, or a source record and a detector's): a coverage gap
+// if any record is one, a deliberate exclusion otherwise, with every
+// distinct reason. Paths keep the order they were first recorded in.
+func oneRecordPerPath(skips []source.Skip) []source.Skip {
+	at := map[string]int{}
+	var out []source.Skip
+	for _, s := range skips {
+		i, ok := at[s.Path]
+		if !ok {
+			at[s.Path] = len(out)
+			out = append(out, s)
+			continue
+		}
+		m := &out[i]
+		switch {
+		case m.Excluded && !s.Excluded:
+			// The gap leads; the exclusion's reason follows.
+			m.Reason, m.Excluded = s.Reason+"; "+strings.TrimPrefix(m.Reason, "excluded: "), false
+		case !strings.Contains(m.Reason, strings.TrimPrefix(s.Reason, "excluded: ")):
+			m.Reason += "; " + strings.TrimPrefix(s.Reason, "excluded: ")
+		}
+		m.DetectorFailed = m.DetectorFailed || s.DetectorFailed
+	}
+	return out
 }
 
 // dropExclusion removes the exclusion record made for scan i on p: the
