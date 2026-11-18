@@ -277,31 +277,33 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 			limited = true
 		}
 	}
-	if limited {
+	var decide func(p string, head []byte, exe bool) (bool, int64)
+	switch {
+	case limited:
 		w.limits = make([]fileLimit, len(w.dets))
-		so.Read = func(p string, head []byte, exe bool) (bool, source.Limit) {
-			visitHead(p, head)
-			return w.limit(w.abs(p), head, exe, readers, limiters)
+		decide = func(p string, head []byte, exe bool) (bool, int64) {
+			return w.limit(p, head, exe, readers, limiters)
 		}
-		return so
-	}
-	if all {
-		if len(heads) > 0 {
-			so.Read = func(p string, head []byte, _ bool) (bool, source.Limit) {
-				visitHead(p, head)
-				return true, source.Limit{}
+		so.Over = func(p string, size int64) []source.Skip { return w.tooLarge(w.abs(p), size) }
+	case all:
+		decide = func(string, []byte, bool) (bool, int64) { return true, 0 }
+	default:
+		decide = func(p string, head []byte, exe bool) (bool, int64) {
+			for _, r := range readers {
+				if r.Wants(p, head, exe) {
+					return true, 0
+				}
 			}
+			return false, 0
 		}
-		return so
 	}
-	so.Read = func(p string, head []byte, exe bool) (bool, source.Limit) {
+	so.Read = func(p string, head []byte, exe bool) (bool, int64) {
+		abs := w.abs(p)
+		// The file exists whether or not any detector reads it, so Exists
+		// does not depend on which detectors ran.
+		w.ctx.seen[abs] = true
 		visitHead(p, head)
-		for _, r := range readers {
-			if r.Wants(w.abs(p), head, exe) {
-				return true, source.Limit{}
-			}
-		}
-		return false, source.Limit{}
+		return decide(abs, head, exe)
 	}
 	return so
 }
@@ -310,11 +312,10 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 // own: it is read when any detector wants it, as far as the largest limit of
 // those that do (--max-file-size when one has none). Each detector's limit
 // is kept for handing the file out.
-func (w *walker) limit(p string, head []byte, exe bool, readers []Reader, limiters []Limiter) (bool, source.Limit) {
+func (w *walker) limit(p string, head []byte, exe bool, readers []Reader, limiters []Limiter) (bool, int64) {
 	w.limited = p
 	read, unlimited := false, false
 	var most int64
-	var capped []int // the detectors that want it, each with a limit
 	for i := range w.dets {
 		l := fileLimit{wants: readers[i] == nil || readers[i].Wants(p, head, exe)}
 		if limiters[i] != nil {
@@ -328,24 +329,57 @@ func (w *walker) limit(p string, head []byte, exe bool, readers []Reader, limite
 		default:
 			read = true
 			most = max(most, l.bytes)
-			capped = append(capped, i)
 		}
 	}
-	switch {
-	case !read || unlimited:
-		return read, source.Limit{}
-	case len(capped) == 1:
-		return true, source.Limit{Bytes: most, Name: ownLimit(most, w.ids[capped[0]])}
+	if unlimited {
+		return read, 0
 	}
-	by := make([]string, len(capped))
-	for k, i := range capped {
-		by[k] = fmt.Sprintf("%s (%d bytes)", w.ids[i], w.limits[i].bytes)
-	}
-	return true, source.Limit{Bytes: most, Name: "the limits of " + strings.Join(by, " and ")}
+	return read, most
 }
 
-// ownLimit names one detector's limit, for the record.
-func ownLimit(n int64, id string) string { return fmt.Sprintf("the %d-byte limit of %s", n, id) }
+// tooLarge records a file that was not read because it is over the limit
+// of every detector that wants it (size -1 when found while reading).
+func (w *walker) tooLarge(p string, size int64) []source.Skip {
+	var out []source.Skip
+	for i, l := range w.limits {
+		if l.wants && l.bytes > 0 && (size < 0 || size > l.bytes) {
+			out = append(out, w.overLimit(i, p, size)...)
+		}
+	}
+	return out
+}
+
+// overLimit records that scan i did not check p, which is over its limit:
+// what its VisitOverLimit returns (coverage gaps), or else a deliberate
+// exclusion.
+func (w *walker) overLimit(i int, p string, size int64) []source.Skip {
+	if lv, ok := w.scans[i].(LimitVisitor); ok {
+		if skips := w.visitOverLimitSafely(i, lv, p, size); len(skips) > 0 {
+			out := make([]source.Skip, len(skips))
+			for k, sk := range skips {
+				out[k] = source.Skip{Path: sk.Path, Reason: sk.Reason, DetectorFailed: sk.failed}
+			}
+			return out
+		}
+	}
+	what := fmt.Sprintf("(%d bytes)", size)
+	if size < 0 {
+		what = "(found while reading)"
+	}
+	return []source.Skip{{Path: p, Excluded: true,
+		Reason: fmt.Sprintf("excluded: larger than the %d-byte limit of %s for this file %s", w.limits[i].bytes, w.ids[i], what)}}
+}
+
+// visitOverLimitSafely runs one detector's VisitOverLimit, containing a
+// panic as Visit does.
+func (w *walker) visitOverLimitSafely(i int, lv LimitVisitor, p string, size int64) (skips []Skip) {
+	defer func() {
+		if r := recover(); r != nil {
+			skips = []Skip{{Path: p, Reason: fmt.Sprintf("detector %s failed on this file (%v); not checked", w.ids[i], r), failed: true}}
+		}
+	}()
+	return lv.VisitOverLimit(p, size)
+}
 
 // over reports whether f is over scan i's own limit, which keeps it from
 // that detector.
@@ -379,7 +413,7 @@ func (w *walker) visit(f source.File) error {
 
 // send gives f to every scan, except those skip(i) rules out and those
 // whose own limit it is over: read for another detector, it is recorded
-// as not checked by one that asked for it.
+// as not checked by each one that asked for it.
 func (w *walker) send(f File, skip func(int) bool) {
 	for i, s := range w.scans {
 		if skip != nil && skip(i) {
@@ -387,8 +421,7 @@ func (w *walker) send(f File, skip func(int) bool) {
 		}
 		if w.over(i, f) {
 			if w.limits[i].wants {
-				w.t.Skipped = append(w.t.Skipped, source.Skip{Path: f.Path, Excluded: true,
-					Reason: fmt.Sprintf("excluded: larger than %s for this file (%d bytes); not checked by it", ownLimit(w.limits[i].bytes, w.ids[i]), len(f.Data))})
+				w.t.Skipped = append(w.t.Skipped, w.overLimit(i, f.Path, int64(len(f.Data)))...)
 			}
 			continue
 		}

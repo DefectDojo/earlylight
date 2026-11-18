@@ -3,9 +3,11 @@ package engine
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -52,7 +54,7 @@ func limit64K(p string) int64 {
 func ownSkips(t *Target) []source.Skip {
 	var out []source.Skip
 	for _, s := range t.Skipped {
-		if strings.Contains(s.Reason, "-byte limit of") || strings.Contains(s.Reason, "limits of") {
+		if strings.Contains(s.Reason, "-byte limit of") {
 			out = append(out, s)
 		}
 	}
@@ -123,15 +125,20 @@ func TestLimiterWithAnotherReader(t *testing.T) {
 	}
 }
 
-// A file over the limits of two detectors names both.
+// A file over the limits of two detectors is recorded for each.
 func TestLimiterTwoLimits(t *testing.T) {
 	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 100<<10)})
 	_, ds := capped("t-two1k", osRelease, func(string) int64 { return 1 << 10 })
 	_, db := capped("t-two64k", osRelease, limit64K)
 	tg := ScanFS([]Detector{ds, db}, root, Options{AsRoot: true})
-	want := "excluded: larger than the limits of t-two1k (1024 bytes) and t-two64k (65536 bytes) for this file (102400 bytes)"
-	if len(tg.Skipped) != 1 || tg.Skipped[0].Reason != want {
-		t.Errorf("skipped %+v", tg.Skipped)
+	var got []string
+	for _, s := range tg.Skipped {
+		got = append(got, s.Reason)
+	}
+	want := "excluded: larger than the 1024-byte limit of t-two1k for this file (102400 bytes)|" +
+		"excluded: larger than the 65536-byte limit of t-two64k for this file (102400 bytes)"
+	if strings.Join(got, "|") != want {
+		t.Errorf("skipped %q", got)
 	}
 }
 
@@ -203,4 +210,152 @@ func tarFile(t *testing.T, files map[string][]byte) []byte {
 	}
 	tw.Close()
 	return buf.Bytes()
+}
+
+// gapScan is a capped detector whose scan says an over-limit file is a gap.
+type gapScan struct {
+	limitedReader
+	gap   bool
+	sizes *[]int64
+}
+
+func (g gapScan) NewScan(TargetKind) Scan { return g }
+func (g gapScan) Visit(f File) []Skip     { return g.limited.fake.Visit(f) }
+func (g gapScan) Finish(ctx TargetContext) []Finding {
+	return g.limited.fake.Finish(ctx)
+}
+func (g gapScan) VisitOverLimit(p string, size int64) []Skip {
+	*g.sizes = append(*g.sizes, size)
+	if !g.gap {
+		return nil
+	}
+	return []Skip{{Path: p, Reason: "an include over the limit; not cleared"}}
+}
+
+func gapDetector(id string, gap bool) (*fake, gapScan) {
+	f := &fake{id: id, wants: osRelease, seen: &[]string{}}
+	return f, gapScan{limitedReader{limited{f, limit64K}, fakeReader{f}}, gap, &[]int64{}}
+}
+
+// A scan that implements LimitVisitor turns an over-limit file into a
+// coverage gap, whether the file was left unread or read for another
+// detector; returning nothing leaves it a deliberate exclusion.
+func TestLimitVisitor(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 100<<10)})
+	f, g := gapDetector("t-gap", true)
+	tg := ScanFS([]Detector{g}, root, Options{AsRoot: true})
+	if len(*f.seen) != 0 || len(tg.Skipped) != 1 || tg.Skipped[0].Excluded || tg.Gaps() != 1 || strings.Join(fmtSizes(*g.sizes), ",") != "102400" {
+		t.Errorf("unread: seen %v skipped %+v sizes %v", *f.seen, tg.Skipped, *g.sizes)
+	}
+	f, g = gapDetector("t-gap2", true)
+	other := &fake{id: "t-reads", wants: osRelease}
+	tg = ScanFS([]Detector{g, detector(other)}, root, Options{AsRoot: true})
+	if len(*f.seen) != 0 || len(*other.seen) != 1 || len(tg.Skipped) != 1 || tg.Gaps() != 1 {
+		t.Errorf("read for another: seen %v skipped %+v", *f.seen, tg.Skipped)
+	}
+	f, g = gapDetector("t-nogap", false)
+	tg = ScanFS([]Detector{g}, root, Options{AsRoot: true})
+	if len(tg.Skipped) != 1 || !tg.Skipped[0].Excluded || tg.Gaps() != 0 || len(*g.sizes) != 1 {
+		t.Errorf("no gap: skipped %+v sizes %v", tg.Skipped, *g.sizes)
+	}
+}
+
+func fmtSizes(s []int64) []string {
+	var out []string
+	for _, n := range s {
+		out = append(out, strconv.FormatInt(n, 10))
+	}
+	return out
+}
+
+// Exists is true for every regular file the walk met: one over a
+// detector's limit, one over --max-file-size and one no detector wants.
+// It does not depend on which detectors ran.
+func TestExistsWithLimits(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/os-release": make([]byte, 100<<10), "bin/big": make([]byte, 2000), "etc/x": []byte("x")})
+	for _, extra := range [][]Detector{nil, {detector(&fake{id: "t-ex-all"})}} {
+		var got []bool
+		f := &fake{id: "t-ex", wants: osRelease, seen: &[]string{}, finish: func(ctx TargetContext) []Finding {
+			got = []bool{ctx.Exists("/etc/os-release"), ctx.Exists("/bin/big"), ctx.Exists("/etc/x"), ctx.Exists("/etc/none")}
+			return nil
+		}}
+		d := limitedReader{limited{f, limit64K}, fakeReader{f}}
+		ScanFS(append([]Detector{d}, extra...), root, Options{AsRoot: true, MaxFileSize: 1000})
+		if fmt.Sprint(got) != "[true true true false]" {
+			t.Errorf("with %d other detectors: exists %v", len(extra), got)
+		}
+	}
+}
+
+// The limit decision, checked against a model for any file size, limits and
+// wants: who sees the file, what is recorded, and that Exists holds.
+func FuzzLimits(f *testing.F) {
+	for _, s := range [][5]uint16{{100, 100, 0, 3, 0}, {101, 100, 0, 3, 0}, {4096, 4096, 4097, 3, 1}, {4097, 4096, 0, 1, 2}, {5000, 4096, 5000, 2, 3}, {0, 1, 1, 3, 3}, {1, 0, 0, 0, 0}} {
+		f.Add(s[0], s[1], s[2], uint8(s[3]), uint8(s[4]))
+	}
+	f.Fuzz(func(t *testing.T, size, limA, limB uint16, wants, maxSel uint8) {
+		size %= 9000
+		maxSize := []int64{0, 4096, 5000, 100}[maxSel%4]
+		lims := []int64{int64(limA % 9000), int64(limB % 9000)}
+		want := []bool{wants&1 != 0, wants&2 != 0}
+		root := tree(t, map[string][]byte{"etc/os-release": make([]byte, size)})
+		var fakes []*fake
+		var dets []Detector
+		for i := range lims {
+			i := i
+			fk := &fake{id: fmt.Sprintf("t-fz%d", i), wants: func(string) bool { return want[i] }, seen: &[]string{}}
+			fakes = append(fakes, fk)
+			dets = append(dets, limitedReader{limited{fk, func(string) int64 { return lims[i] }}, fakeReader{fk}})
+		}
+		var exists bool
+		fakes[0].finish = func(ctx TargetContext) []Finding { exists = ctx.Exists("/etc/os-release"); return nil }
+		tg := ScanFS(dets, root, Options{AsRoot: true, MaxFileSize: maxSize})
+
+		over := func(i int) bool { return lims[i] > 0 && int64(size) > lims[i] }
+		// The read limit: the largest limit of those who want it, or
+		// --max-file-size when one of them has none; a limit at or above
+		// --max-file-size is --max-file-size.
+		read := false
+		var bound int64
+		unlimited := false
+		for i := range lims {
+			if !want[i] {
+				continue
+			}
+			read = true
+			if lims[i] <= 0 {
+				unlimited = true
+			}
+			bound = max(bound, lims[i])
+		}
+		if unlimited || maxSize > 0 && bound >= maxSize {
+			bound = maxSize
+		}
+		readIt := read && (bound <= 0 || int64(size) <= bound)
+		ownSkip := read && !unlimited && bound != maxSize && int64(size) > bound
+		for i := range lims {
+			sees := readIt && !over(i)
+			if (len(*fakes[i].seen) == 1) != sees {
+				t.Fatalf("size %d lims %v want %v max %d: detector %d saw %v, want %v (skipped %+v)", size, lims, want, maxSize, i, *fakes[i].seen, sees, tg.Skipped)
+			}
+		}
+		recorded := 0
+		for _, s := range tg.Skipped {
+			if s.Excluded {
+				recorded++
+			}
+		}
+		wantRecords := 0
+		for i := range lims {
+			if want[i] && over(i) && (readIt || ownSkip) {
+				wantRecords++
+			}
+		}
+		if recorded != wantRecords {
+			t.Fatalf("size %d lims %v want %v max %d: %d own-limit records, want %d: %+v", size, lims, want, maxSize, recorded, wantRecords, tg.Skipped)
+		}
+		if !exists {
+			t.Fatalf("Exists false for a file the walk met")
+		}
+	})
 }

@@ -138,7 +138,8 @@ type Skip struct {
 // it decides verdicts.
 type TargetContext interface {
 	Kind() TargetKind
-	// Exists reports whether a regular file at that absolute path was scanned.
+	// Exists reports whether the walk met a regular file at that absolute
+	// path, read or not: it does not depend on which detectors ran.
 	Exists(path string) bool
 	// Env is the image configuration's environment ("KEY=value"), nil otherwise.
 	Env() []string
@@ -191,13 +192,24 @@ type Reader interface {
 // package database is never hundreds of MiB, and one that is should cost
 // nothing. Limit returns the most bytes of the file the detector checks,
 // from its path, first bytes and executable flag; 0 or less means no limit
-// of its own. A file over its limit is never shown to the detector. It is
-// not read past its first bytes unless another detector wants more of it,
-// and it is recorded as skipped for that detector: a deliberate exclusion,
-// not a coverage gap, since the detector would not check a file that size.
-// The limit applies to the files the walk meets, not to archive members.
+// of its own. A file over its limit is never shown to the detector, and is
+// not read past its first bytes unless another detector wants more of it.
+// It is recorded as not checked by each detector that asked for it: a
+// deliberate exclusion, not a coverage gap, unless the detector's scan says
+// otherwise (LimitVisitor). The limit applies to the files the walk meets,
+// not to archive members.
 type Limiter interface {
 	Limit(path string, head []byte, executable bool) int64
+}
+
+// LimitVisitor is implemented by a Limiter's Scan when a file it asked for
+// and did not get, over its limit, can change a verdict: an sshd_config
+// include that may turn PAM off must not let the scan clear a server.
+// VisitOverLimit is called instead of Visit, with the file's size (-1 when
+// it was found larger while reading). The skips it returns are recorded as
+// coverage gaps; when it returns none, the file is a deliberate exclusion.
+type LimitVisitor interface {
+	VisitOverLimit(path string, size int64) []Skip
 }
 
 // HeadVisitor is implemented by a Scan that wants to see the first bytes
