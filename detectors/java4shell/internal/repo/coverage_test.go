@@ -149,6 +149,11 @@ func TestRedHatRepo(t *testing.T) {
 			"FROM registry.access.redhat.com/ubi8/openjdk-11",
 			"FROM registry.access.redhat.com/ubi8/openjdk-8-runtime:1.20",
 			"FROM registry.access.redhat.com/ubi9/openjdk-17-runtime@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			"FROM registry.access.redhat.com/ubi9/openjdk-22",
+			"FROM registry.access.redhat.com/ubi9/openjdk-28",
+			"FROM registry.access.redhat.com/ubi9/openjdk-99",
+			"FROM registry.access.redhat.com/ubi8/openjdk-1",
+			"FROM registry.access.redhat.com/ubi8/openjdk-16",
 		}, "\n") + "\n",
 		"Dockerfile.pkg": strings.Join([]string{
 			"FROM registry.access.redhat.com/ubi9/ubi-minimal",
@@ -166,6 +171,11 @@ func TestRedHatRepo(t *testing.T) {
 		{"Dockerfile", 3, RuleImagePin, StatusVulnerable},
 		{"Dockerfile", 4, RuleImagePin, StatusVulnerable},
 		{"Dockerfile", 7, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 8, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 9, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 10, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 11, RuleNotChecked, StatusUnknown},
+		{"Dockerfile", 12, RuleNotChecked, StatusUnknown},
 		{"Dockerfile.pkg", 2, RulePackage, StatusVulnerable},
 		{"Dockerfile.pkg", 3, RulePackage, StatusVulnerable},
 		{"Dockerfile.pkg", 4, RulePackage, StatusVulnerable},
@@ -195,9 +205,13 @@ func TestRedHatRepo(t *testing.T) {
 	// install may get it: only the image can tell.
 	saved := knowledge.RedHatFixed
 	t.Cleanup(func() { knowledge.RedHatFixed = saved })
-	knowledge.RedHatFixed = []knowledge.RedHatFix{{Package: "java-17-openjdk", EL: 9, EVR: "1:17.0.21.0.9-2.el9", Advisory: "RHSA-2026:0000"},
-		{Package: "java-21-openjdk", EL: 9, EVR: "1:21.0.13.0.9-2.el9", Advisory: "RHSA-2026:0001"}}
-	files["Dockerfile.pkg"] += "RUN dnf install -y java-17-openjdk-headless-17.0.21.0.9-2.el9\n"
+	knowledge.RedHatFixed = []knowledge.RedHatFix{{Package: "java-17-openjdk", Dist: "el9", EVR: "1:17.0.21.0.9-2.el9", Advisory: "RHSA-2026:0000"},
+		{Package: "java-21-openjdk", Dist: "el9_6", EVR: "1:21.0.13.0.9-2.el9_6", Advisory: "RHSA-2026:0001"}}
+	files["Dockerfile.pkg"] += "RUN dnf install -y java-17-openjdk-headless-17.0.21.0.9-2.el9\n" +
+		// The row is for 17.0.21+9: a later update's build 1 and an Oracle
+		// Linux rebuild are judged by their upstream version.
+		"RUN dnf install -y java-17-openjdk-headless-17.0.21.1.1-1.el9\n" +
+		"RUN dnf install -y java-17-openjdk-headless-17.0.21.0.9-2.0.1.el9\n"
 	res = scan(t, tree(t, files))
 	checkAll(t, res, []want{
 		{"Dockerfile", 2, RuleNotChecked, StatusUnknown},
@@ -205,6 +219,8 @@ func TestRedHatRepo(t *testing.T) {
 		{"Dockerfile", 4, RuleImagePin, StatusVulnerable}, // no java-25 entry
 		{"Dockerfile.pkg", 2, RulePackage, StatusUnknown},
 		{"Dockerfile.pkg", 4, RulePackage, StatusVulnerable},
+		{"Dockerfile.pkg", 8, RulePackage, StatusVulnerable},
+		{"Dockerfile.pkg", 9, RulePackage, StatusVulnerable},
 	})
 	if f, ok := find(res, "Dockerfile.pkg", 7); ok {
 		t.Errorf("the listed fixed build reported: %+v", f)

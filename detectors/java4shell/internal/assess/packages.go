@@ -134,7 +134,7 @@ func distroStatus(p Package) string {
 	case "rpm":
 		if pkg, el, ok := knowledge.RedHatPackage(p.Name, p.Version); ok {
 			if fx, ok := knowledge.RedHatFixFor(pkg, el); ok {
-				return fmt.Sprintf("Red Hat's first fixed RHEL %d build is %s, %s", el, fx.EVR, fx.Advisory)
+				return fmt.Sprintf("Red Hat's first fixed %s build is %s, %s", el, fx.EVR, fx.Advisory)
 			}
 			return knowledge.RedHatStatus()
 		}

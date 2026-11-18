@@ -25,9 +25,11 @@ func (s *scanner) redHatRef(r refs.Ref, img string, props map[string]string, mit
 	if m == nil {
 		return false
 	}
-	feature, el := atoi(m[2]), atoi(m[1]+m[3])
-	if feature < 17 {
-		return true // Java 8 and 11: no decoder
+	feature, el := atoi(m[2]), m[1]+m[3]
+	if feature == 8 || feature == 11 {
+		// Red Hat's Java 8 and 11 builds: OpenJDK 8 and 11 have no decode
+		// intrinsic (skipped by name, as eclipse-temurin:11 is; FACTS.md).
+		return true
 	}
 	props["vendor"] = "Red Hat"
 	pkg := fmt.Sprintf("java-%d-openjdk", feature)
@@ -35,7 +37,11 @@ func (s *scanner) redHatRef(r refs.Ref, img string, props map[string]string, mit
 		s.add(Finding{Rule: RuleNotChecked, File: r.File, Line: r.Line, Level: "note", Status: StatusUnknown, Pull: img, ref: &r, Props: props,
 			Reason: why, Message: fmt.Sprintf("image %s: %s", img, why)})
 	}
-	if fx, ok := knowledge.RedHatFixFor(pkg, el); ok {
+	if !redHatLines[feature] {
+		pull(fmt.Sprintf("Red Hat's OpenJDK %d images are not in this detector's release data: only the image can show which Java it holds", feature))
+		return true
+	}
+	if fx, ok := redHatRowFor(pkg, el); ok {
 		pull(fmt.Sprintf("Red Hat published %s %s (%s); whether this image has it, only the image can show: its tag names the image's release, not the Java update", pkg, fx.EVR, fx.Advisory))
 		return true
 	}
@@ -63,6 +69,25 @@ func (s *scanner) redHatRef(r refs.Ref, img string, props map[string]string, mit
 	return true
 }
 
+// redHatLines are the Java lines of Red Hat's OpenJDK images this
+// detector judges by name: the lines Red Hat ships with the decoder.
+var redHatLines = map[int]bool{17: true, 21: true, 25: true}
+
+// redHatRowFor returns a table row for a package in any stream of a RHEL
+// major release ("9" matches el9, el9_6...); el "" (openjdk/openjdk-11-rhel7
+// has a release) matches any.
+func redHatRowFor(pkg, el string) (knowledge.RedHatFix, bool) {
+	for _, f := range knowledge.RedHatFixed {
+		if f.Package != pkg {
+			continue
+		}
+		if d := strings.TrimPrefix(f.Dist, "el"); el == "" || d == el || strings.HasPrefix(d, el+"_") {
+			return f, true
+		}
+	}
+	return knowledge.RedHatFix{}, false
+}
+
 // redHatPin judges a pinned rpm of Red Hat's OpenJDK
 // (java-17-openjdk-headless-17.0.21.0.9-1.el9) by the backport table. ok is
 // false when the table does not decide it.
@@ -83,7 +108,7 @@ func redHatPublished(name string) (string, bool) {
 	var out []string
 	for _, f := range knowledge.RedHatFixed {
 		if f.Package == m[1] {
-			out = append(out, fmt.Sprintf("%s on RHEL %d (%s)", f.EVR, f.EL, f.Advisory))
+			out = append(out, fmt.Sprintf("%s for %s (%s)", f.EVR, f.Dist, f.Advisory))
 		}
 	}
 	return strings.Join(out, ", "), len(out) > 0

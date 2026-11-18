@@ -277,25 +277,48 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	return f.set(Vulnerable, kwhy, what+" is vulnerable to Java4Shell")
 }
 
+// redHatVendor is what Red Hat's release files name as IMPLEMENTOR.
+const redHatVendor = "Red Hat, Inc."
+
 // redHat applies Red Hat's backport table to a runtime its rpm installed:
 // a fixed Red Hat build keeps the upstream version in its VM library, so
-// only the rpm release shows the fix.
+// only the rpm release shows the fix. The rpm is named by the install path
+// alone (the rpm database is not read), so the table clears a runtime only
+// when the runtime confirms it: its VM library is a released HotSpot (not
+// GraalVM, not a pre-release or self-built JDK) of exactly the upstream
+// update and build the rpm packages, and its release file names Red Hat as
+// the implementor. Otherwise the verdict is unknown: the path says fixed,
+// the runtime does not show it.
 func redHat(f Finding) Finding {
-	if f.Package == nil || f.Package.Manager != "rpm" || f.VersionFrom != "vm-library" || f.Status != Vulnerable && f.Status != Mitigated {
+	if f.Package == nil || f.Package.Manager != "rpm" || f.Status != Vulnerable && f.Status != Mitigated {
 		return f
 	}
 	st, why, known := knowledge.JudgeRedHat(f.Package.Name, f.Package.Version)
 	if !known || st != knowledge.Fixed {
 		return f
 	}
-	// The VM library has to be the update the rpm packages.
-	up, ok := knowledge.Parse(knowledge.RPMUpstream(f.Package.Version))
+	up, uok := knowledge.Parse(knowledge.RPMUpstream(f.Package.Version))
 	v, vok := knowledge.Parse(f.Version)
-	if !ok || !vok || len(up.Nums) < 3 || len(v.Nums) < 3 || knowledge.Compare(up.Nums[:3], v.Nums[:3]) != 0 {
-		return f
+	var doubt string
+	switch {
+	case f.VersionFrom != "vm-library" || !vok:
+		doubt = "its VM library's version line could not be read"
+	case f.GraalVM:
+		doubt = "its VM library is a GraalVM build, not Red Hat's"
+	case v.EA || v.SelfBuilt:
+		doubt = "its VM library is a pre-release or self-built JDK (" + f.Version + ")"
+	case !uok || up.Build < 0 || v.Build != up.Build || knowledge.Compare(v.Nums, up.Nums) != 0:
+		doubt = "its VM library is Java " + f.Version + ", not the update and build the rpm packages"
+	case f.Vendor != redHatVendor:
+		doubt = "its release file does not name Red Hat as the implementor"
+	}
+	if doubt != "" {
+		f.Release = knowledge.Unknown
+		return f.set(Unknown, why+", by its install path; but "+doubt+", so the runtime does not show that it is that build",
+			describe(f, v, vok)+": the install path names Red Hat's fixed build, the runtime does not confirm it")
 	}
 	f.Release, f.Mitigation, f.MitigatedFor = knowledge.Fixed, "", nil
-	return f.set(Fixed, why+"; its VM library reads Java "+f.Version+", the update Red Hat backported the fix into",
+	return f.set(Fixed, why+"; its VM library reads Java "+f.Version+", the update and build Red Hat backported the fix into, and its release file names Red Hat",
 		describe(f, v, true)+" has Red Hat's backported Java4Shell fix (judged by its rpm release)")
 }
 

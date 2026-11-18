@@ -37,23 +37,32 @@ func TestRedHatTable(t *testing.T) {
 	}
 	saved := RedHatFixed
 	t.Cleanup(func() { RedHatFixed = saved })
-	RedHatFixed = []RedHatFix{{Package: "java-17-openjdk", EL: 9, EVR: "1:17.0.21.0.9-2.el9", Advisory: "RHSA-2026:0000"}}
+	RedHatFixed = []RedHatFix{{Package: "java-17-openjdk", Dist: "el9_6", EVR: "1:17.0.21.0.9-2.el9_6", Advisory: "RHSA-2026:0000"}}
 	for _, c := range []struct {
 		name, evr string
 		want      Status
 		known     bool
 	}{
-		{"java-17-openjdk-headless", "17.0.21.0.9-1.el9", Vulnerable, true},
-		{"java-17-openjdk-headless", "1:17.0.21.0.9-1.el9", Vulnerable, true},
-		{"java-17-openjdk-headless", "1:17.0.21.0.9-2.el9", Fixed, true},
+		{"java-17-openjdk-headless", "17.0.21.0.9-1.el9_6", Vulnerable, true},
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-1.el9_6", Vulnerable, true},
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-2.el9_6", Fixed, true},
 		// An install path or a dnf argument omits the epoch: compared without it.
-		{"java-17-openjdk-headless", "17.0.21.0.9-2.el9", Fixed, true},
-		{"java-17-openjdk", "1:17.0.21.0.9-3.el9_7", Fixed, true},
-		{"java-17-openjdk-devel", "1:17.0.21.0.9-2.el9", Fixed, true},
-		{"java-17-openjdk-headless", "1:17.0.21.0.9-9.el8", "", false}, // no RHEL 8 entry
-		{"java-21-openjdk-headless", "1:21.0.13.0.9-1.el9", "", false},
+		{"java-17-openjdk-headless", "17.0.21.0.9-2.el9_6", Fixed, true},
+		{"java-17-openjdk", "1:17.0.21.0.9-3.el9_6", Fixed, true},
+		{"java-17-openjdk-devel", "1:17.0.21.0.9-2.el9_6", Fixed, true},
+		// Another stream of RHEL 9 (el9, el9_4, el9_7): the row does not speak to it.
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-9.el9", "", false},
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-9.el9_7", "", false},
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-9.el8_10", "", false},
+		// Rebuilds that are not Red Hat's: Oracle Linux, AlmaLinux.
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-2.0.1.el9_6", "", false},
+		{"java-17-openjdk-headless", "1:17.0.21.0.9-2.el9_6.alma.1", "", false},
+		// Another upstream update or build: the row does not speak to it.
+		{"java-17-openjdk-headless", "1:17.0.21.1.1-1.el9_6", "", false},
+		{"java-17-openjdk-headless", "1:17.0.21.0.10-1.el9_6", "", false},
+		{"java-21-openjdk-headless", "1:21.0.13.0.9-1.el9_6", "", false},
 		{"java-17-openjdk-headless", "17.0.21.0.9-1.fc41", "", false}, // not Red Hat
-		{"java-17-amazon-corretto-headless", "17.0.21.0.9-1.el9", "", false},
+		{"java-17-amazon-corretto-headless", "17.0.21.0.9-2.el9_6", "", false},
 	} {
 		st, why, known := JudgeRedHat(c.name, c.evr)
 		if known != c.known || known && (st != c.want || why == "") {
