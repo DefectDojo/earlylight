@@ -80,3 +80,16 @@ func TestSameBaseMajor(t *testing.T) {
 		t.Errorf("unbounded reason: %d bytes", len(err.Error()))
 	}
 }
+
+// Round-3 nit: Ubuntu's YY.04 and YY.10 are different releases.
+func TestSameBaseUbuntu(t *testing.T) {
+	if err := SameBase("ubuntu 24.04", "ubuntu 24.10"); err == nil {
+		t.Error("Ubuntu 24.04 to 24.10 accepted")
+	}
+	if err := SameBase("ubuntu 24.04", "ubuntu 24.04"); err != nil {
+		t.Error(err)
+	}
+	if err := SameBase("rhel 9.4", "rhel 9.6"); err != nil {
+		t.Error(err)
+	}
+}

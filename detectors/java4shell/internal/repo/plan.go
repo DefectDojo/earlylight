@@ -347,11 +347,16 @@ func NamesBaseOS(variant string) bool {
 // major version: moving a deployment to another distribution or major
 // release (Ubuntu 24.04 to 26.04, Debian 12 to 13) is not this fix's call,
 // while a minor update (Oracle Linux 9.5 to 9.6, Alpine 3.21 to 3.22) is
-// what a rebuilt tag brings anyway.
+// what a rebuilt tag brings anyway. Ubuntu is compared on its full
+// VERSION_ID (24.04 and 24.10 are different releases).
 func SameBase(current, target string) error {
 	major := func(s string) string {
 		id, ver, _ := strings.Cut(s, " ")
-		ver, _, _ = strings.Cut(ver, ".")
+		if id != "ubuntu" {
+			// Ubuntu's YY.04 and YY.10 are different releases; elsewhere
+			// the first number is the release.
+			ver, _, _ = strings.Cut(ver, ".")
+		}
 		return id + " " + ver
 	}
 	switch {
