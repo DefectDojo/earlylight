@@ -25,6 +25,9 @@ type Setting struct {
 	// the JVM options its ExecStart gives java.
 	Env      map[string]string `json:"env,omitempty"`
 	ExecOpts []string          `json:"exec_options,omitempty"`
+	// WindowsOnly is a batch file (setenv.bat): it applies only to Windows
+	// runtimes.
+	WindowsOnly bool `json:"windows_only,omitempty"`
 	// ExecSet is true when the file sets ExecStart (a drop-in may not).
 	ExecSet bool `json:"-"`
 	lines   []optLine
@@ -107,8 +110,13 @@ func systemdDir(p string) bool {
 const maxSetting = 1 << 20
 
 var (
-	xxRE       = regexp.MustCompile(`-XX:(?:[+-]UseBASE64Intrinsics|UseBASE64Intrinsics=(?:true|false)|UseAVX=\d{1,2})\b`)
-	selectorRE = regexp.MustCompile(`^(\d{1,3})(-(\d{1,3})?)?:`)
+	xxRE          = regexp.MustCompile(`-XX:(?:[+-]UseBASE64Intrinsics|UseBASE64Intrinsics=(?:true|false)|UseAVX=\d{1,2})\b`)
+	selectorRE    = regexp.MustCompile(`^(\d{1,3})(-(\d{1,3})?)?:`)
+	fileReleaseRE = regexp.MustCompile(`^jvm(\d{1,2})-`)
+	assignRE      = regexp.MustCompile(`^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
+	batSetRE      = regexp.MustCompile(`(?i)^set\s+"?([A-Za-z_][A-Za-z0-9_]*)=(.*?)"?\s*$`)
+	shVarRE       = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
+	batVarRE      = regexp.MustCompile(`%([A-Za-z_][A-Za-z0-9_]*)%`)
 )
 
 // ReadSetting reads a settings file. ok is false when p is not one, or it
@@ -143,6 +151,16 @@ func ReadSetting(p string, b []byte) (Setting, bool) {
 		s.Unit = u
 		s.Env = map[string]string{}
 	}
+	if kind == "setenv" {
+		s.WindowsOnly = strings.HasSuffix(p, ".bat")
+		readSetenv(&s, string(b))
+		return s, true
+	}
+	// Cassandra names the Java release a file is for: jvm11-server.options.
+	fileLo := 0
+	if m := fileReleaseRE.FindStringSubmatch(path.Base(p)); m != nil && kind == "jvm.options" {
+		fileLo, _ = strconv.Atoi(m[1])
+	}
 	for _, raw := range strings.Split(string(b), "\n") {
 		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
 		if line == "" || line[0] == '#' || line[0] == ';' || strings.HasPrefix(strings.ToLower(line), "rem ") {
@@ -161,12 +179,11 @@ func ReadSetting(p string, b []byte) (Setting, bool) {
 				}
 				line = line[len(m[0]):]
 			}
+			if fileLo > 0 {
+				lo, hi = fileLo, fileLo
+			}
 			if xxRE.MatchString(line) && strings.HasPrefix(line, "-XX:") {
 				s.lines = append(s.lines, optLine{lo, hi, strings.TrimSpace(line)})
-			}
-		case "setenv":
-			for _, w := range xxRE.FindAllString(stripComment(line), -1) {
-				s.lines = append(s.lines, optLine{0, 0, w})
 			}
 		case "systemd":
 			s.systemdLine(line)
@@ -311,6 +328,121 @@ func (s *Setting) systemdLine(line string) {
 					s.ExecOpts = append(s.ExecOpts, w)
 				}
 			}
+		}
+	}
+}
+
+// launcherVars are the variables a start script passes to java.
+func launcherVar(name string) bool {
+	for _, n := range EnvVars {
+		if n == name {
+			return true
+		}
+	}
+	for _, n := range ScriptVars {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// shellControl are the words that make what follows conditional or
+// repeated.
+var shellControl = map[string]bool{"if": true, "then": true, "else": true, "elif": true, "fi": true, "case": true, "esac": true,
+	"for": true, "while": true, "until": true, "do": true, "done": true, "&&": true, "||": true, "{": true, "}": true, "function": true}
+
+// readSetenv reads a start script's settings file the way the script
+// uses it: only the variables the launcher passes to java count, the last
+// assignment wins ("$VAR ..." appends), and a file that sets one of them
+// under a condition, in a loop or in a function counts for nothing, since
+// which value java gets cannot be known without running it. Batch files
+// (setenv.bat) are read the same way with "set NAME=value" and %NAME%.
+func readSetenv(s *Setting, text string) {
+	vals := map[string]string{}
+	var order []string
+	depth := 0
+	uncertain := false
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		var name, value string
+		if s.WindowsOnly {
+			low := strings.ToLower(line)
+			if line == "" || strings.HasPrefix(low, "rem") && (len(low) == 3 || low[3] == ' ') || strings.HasPrefix(line, "::") || strings.HasPrefix(line, "@rem") {
+				continue
+			}
+			if strings.HasPrefix(low, "if ") || strings.HasPrefix(low, "for ") || strings.HasPrefix(low, "goto") || strings.HasPrefix(line, ":") || strings.Contains(line, "(") || strings.Contains(line, ")") {
+				for _, n := range append(append([]string{}, EnvVars...), ScriptVars...) {
+					if strings.Contains(line, n) {
+						uncertain = true
+					}
+				}
+				continue
+			}
+			m := batSetRE.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			name = m[1]
+			value = batVarRE.ReplaceAllStringFunc(m[2], func(v string) string { return vals[strings.Trim(v, "%")] })
+		} else {
+			line = strings.TrimSpace(stripComment(line))
+			if line == "" {
+				continue
+			}
+			words := Words(line)
+			cond := depth > 0
+			for _, w := range words {
+				w = strings.TrimSuffix(w, ";")
+				if shellControl[w] {
+					cond = true
+				}
+				switch w {
+				case "if", "case", "for", "while", "until":
+					depth++
+				case "fi", "esac", "done":
+					if depth > 0 {
+						depth--
+					}
+				}
+			}
+			m := assignRE.FindStringSubmatch(line)
+			if m == nil {
+				if cond {
+					for _, n := range append(append([]string{}, EnvVars...), ScriptVars...) {
+						if strings.Contains(line, n+"=") {
+							uncertain = true
+						}
+					}
+				}
+				continue
+			}
+			if cond {
+				if launcherVar(m[1]) {
+					uncertain = true
+				}
+				continue
+			}
+			name = m[1]
+			value = strings.Join(Words(m[2]), " ")
+			value = shVarRE.ReplaceAllStringFunc(value, func(v string) string {
+				return vals[strings.Trim(v, "${}")]
+			})
+		}
+		if !launcherVar(name) {
+			continue
+		}
+		if _, seen := vals[name]; !seen {
+			order = append(order, name)
+		}
+		vals[name] = value
+	}
+	if uncertain {
+		return
+	}
+	for _, n := range order {
+		for _, w := range xxRE.FindAllString(vals[n], -1) {
+			s.lines = append(s.lines, optLine{0, 0, w})
 		}
 	}
 }

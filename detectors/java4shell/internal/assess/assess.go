@@ -357,7 +357,7 @@ func mitigation(in Input, env map[string]string, root string, feature int, f *Fi
 		}
 	}
 	for _, s := range in.Settings {
-		if s.Kind == "systemd" || s.Scope == "" {
+		if s.Kind == "systemd" || s.Scope == "" || s.WindowsOnly && (f.Library == nil || f.Library.Format != "pe") {
 			continue
 		}
 		if within(root, s.Scope) || in.Env != nil && launches(in, env, s) && javaHomeIs(in, env, root) {

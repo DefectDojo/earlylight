@@ -69,3 +69,17 @@ func TestCommandReenables(t *testing.T) {
 		t.Errorf("_JAVA_OPTIONS after the command: %s", f.Status)
 	}
 }
+
+// Review finding 5: a Windows batch file does not cover a Linux runtime.
+func TestBatchFileWindowsOnly(t *testing.T) {
+	bat, _ := jvm.ReadSetting("/opt/tomcat/bin/setenv.bat", []byte("set \"CATALINA_OPTS=-XX:-UseBASE64Intrinsics\"\n"))
+	in := Input{Libraries: []*jvm.Library{vulnLib(t, "/opt/tomcat/jre")}, Settings: []jvm.Setting{bat}}
+	if f := one(t, in); f.Status != Vulnerable {
+		t.Errorf("setenv.bat on Linux: %s", f.Status)
+	}
+	win := lib(t, "/opt/tomcat/jre/bin/server/jvm.dll", testlib.Lib{Format: "pe", OS: "windows", Version: "21.0.13+9-LTS", VBMI: true})
+	in = Input{Libraries: []*jvm.Library{win}, Settings: []jvm.Setting{bat}}
+	if f := one(t, in); f.Status != Mitigated {
+		t.Errorf("setenv.bat on Windows: %s", f.Status)
+	}
+}
