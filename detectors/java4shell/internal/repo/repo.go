@@ -406,14 +406,16 @@ func (s *scanner) javaVersionFile(rel, text string) {
 			continue
 		}
 		// jenv names: temurin64-21.0.13, openjdk64-17.0.21, 21.0.13.
-		m := jenvName.FindStringSubmatch(l)
-		if m == nil {
+		idx := jenvName.FindStringSubmatchIndex(l)
+		if idx == nil {
 			return
 		}
+		m := jenvName.FindStringSubmatch(l)
 		ver := m[2]
 		if strings.HasPrefix(strings.ToLower(m[1]), "corretto") {
 			ver = CorrettoJava(ver)
 		}
+		ver += plusBuild(l[idx[5]:])
 		s.judgeVersion(rel, i+1, 0, ver, ".java-version", vendorWord(l))
 		return // jenv reads the first line
 	}
@@ -485,12 +487,28 @@ func (s *scanner) asdfValue(rel string, line int, value, source string) {
 		s.ownNumbers(rel, line, value, source) // their own version numbers
 		return
 	}
-	ver := m[2]
+	ver := strings.TrimSuffix(m[2], ".")
 	if m[1] == "corretto" {
-		ver = CorrettoJava(strings.TrimSuffix(ver, "."))
+		ver = CorrettoJava(ver)
 	}
-	s.judgeVersion(rel, line, 0, strings.TrimSuffix(ver, "."), source, m[1])
+	if !strings.HasSuffix(m[2], ".") {
+		// temurin-17.0.21.1+1: OpenJDK's build after +.
+		idx := asdfJava.FindStringSubmatchIndex(value)
+		ver += plusBuild(value[idx[5]:])
+	}
+	s.judgeVersion(rel, line, 0, ver, source, m[1])
 }
+
+// plusBuild returns "+N" when rest starts with OpenJDK's build (+11 in
+// 21.0.5+11.0.LTS), "" otherwise.
+func plusBuild(rest string) string {
+	if m := plusBuildRE.FindStringSubmatch(rest); m != nil {
+		return "+" + m[1]
+	}
+	return ""
+}
+
+var plusBuildRE = regexp.MustCompile(`^\+(\d{1,9})`)
 
 // CorrettoJava turns an Amazon Corretto version into the Java version it
 // ships. Corretto has written its build number in the fourth place
@@ -1155,9 +1173,16 @@ func pinnedVersion(h pkgHit) string {
 	up = strings.ReplaceAll(up, "_p", "+")
 	switch {
 	case h.vendor == "corretto":
-		// Without the rpm or deb release: 17.0.21+9-1.amzn2023.1.
-		up, _, _ = strings.Cut(up, "-")
-		up = CorrettoJava(up)
+		// Without the rpm or deb release: 17.0.21+9-1.amzn2023.1. A
+		// four-number version whose fourth is a patch number puts the build
+		// in the release: 17.0.21.1-1 is 17.0.21.1 build 1.
+		base, release, _ := strings.Cut(up, "-")
+		up = CorrettoJava(base)
+		if p := strings.Split(base, "."); len(p) == 4 && !strings.Contains(base, "+") && atoi(p[3]) <= 3 {
+			if b, _, _ := strings.Cut(release, "."); b != "" && strings.Trim(b, "0123456789") == "" {
+				up += "+" + b
+			}
+		}
 	case h.mgr == "rpm":
 		// Red Hat and Fedora append the build: 17.0.21.0.9 is 17.0.21+9.
 		up = knowledge.RPMUpstream(h.ver)

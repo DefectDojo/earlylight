@@ -534,3 +534,48 @@ func TestDragonwell(t *testing.T) {
 		{"Dockerfile", 2, RulePackage, StatusVulnerable},
 	})
 }
+
+// Round 3, items 2 and 3: the build after + in asdf, mise and .java-version
+// names, and Corretto's build in the rpm or deb release, are carried.
+func TestBuildsCarried(t *testing.T) {
+	saved := knowledge.GraalVMFixed
+	t.Cleanup(func() { knowledge.GraalVMFixed = saved })
+	knowledge.GraalVMFixed = map[knowledge.GraalVMKey]knowledge.Build{{Dist: knowledge.GraalVMCommunity, Feature: 17}: {Version: []int{17, 0, 21, 1}, Build: 2}}
+	res := scan(t, tree(t, map[string]string{
+		"a/.tool-versions": "java temurin-17.0.21.1+1\n",
+		"b/.tool-versions": "java liberica-17.0.21.1+1\n",
+		"c/.tool-versions": "java liberica-27.0.1.1+3\n",
+		"d/.tool-versions": "java graalvm-community-17.0.21.1+1\n",
+		"e/.tool-versions": "java temurin-17.0.21.1+2\n",
+		"mise.toml":        "[tools]\njava = \"temurin-17.0.21.1+1\"\n",
+		".java-version":    "temurin64-17.0.21.1+1\n",
+		"Dockerfile": strings.Join([]string{
+			"FROM amazonlinux:2023",
+			"RUN yum install -y java-17-amazon-corretto-devel-17.0.21.1-1",
+			"RUN rpm -i /tmp/java-17-amazon-corretto-devel-17.0.21.1-1.x86_64.rpm",
+			"RUN dnf install -y java-27-amazon-corretto-devel-27.0.1.1-3",
+			"RUN dnf install -y java-17-amazon-corretto-devel-17.0.21.1-2",
+		}, "\n") + "\n",
+		"d/Dockerfile": "FROM ubuntu:24.04\nRUN apt-get install -y java-17-amazon-corretto-jdk=1:17.0.21.1-1\n",
+	}))
+	checkAll(t, res, []want{
+		{"a/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"b/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"c/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"d/.tool-versions", 1, RuleJavaPin, StatusVulnerable},
+		{"mise.toml", 2, RuleJavaPin, StatusVulnerable},
+		{".java-version", 1, RuleJavaPin, StatusVulnerable},
+		{"Dockerfile", 2, RulePackage, StatusVulnerable},
+		{"Dockerfile", 3, RulePackage, StatusVulnerable},
+		{"Dockerfile", 4, RulePackage, StatusVulnerable},
+		{"d/Dockerfile", 2, RulePackage, StatusVulnerable},
+	})
+	for _, w := range []struct {
+		file string
+		line int
+	}{{"e/.tool-versions", 1}, {"Dockerfile", 5}} {
+		if f, ok := find(res, w.file, w.line); ok {
+			t.Errorf("%s:%d, a fixed build, reported: %+v", w.file, w.line, f)
+		}
+	}
+}
