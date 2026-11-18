@@ -186,6 +186,14 @@ type Reader interface {
 	Wants(path string, head []byte, executable bool) bool
 }
 
+// HeadVisitor is implemented by a Scan that wants to see the first bytes
+// of every file the walk meets, read in full or not: a record of files
+// it does not need to read (a runtime download inside an image) without
+// the cost of reading them.
+type HeadVisitor interface {
+	VisitHead(path string, head []byte)
+}
+
 // ErrNotApplicable is what a Prober returns when the address does not run
 // the service it checks (no SSH server where a TLS check was asked for). The
 // host scan skips that detector, and fails only when every detector did.

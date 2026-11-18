@@ -237,15 +237,38 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 		Symlink:      func(p, t string) { w.ctx.symlinks[w.abs(p)] = t },
 		Hardlink:     func(p, t string) { w.ctx.hardlinks[w.abs(p)] = w.abs(t) },
 	}
+	var heads []HeadVisitor
+	for _, s := range w.scans {
+		if h, ok := s.(HeadVisitor); ok {
+			heads = append(heads, h)
+		}
+	}
+	visitHead := func(p string, head []byte) {
+		for _, h := range heads {
+			h.VisitHead(w.abs(p), head)
+		}
+	}
 	var readers []Reader
+	all := false
 	for _, d := range w.dets {
 		r, ok := d.(Reader)
 		if !ok {
-			return so // this detector wants everything
+			all = true // this detector wants everything
+			break
 		}
 		readers = append(readers, r)
 	}
+	if all {
+		if len(heads) > 0 {
+			so.Read = func(p string, head []byte, _ bool) bool {
+				visitHead(p, head)
+				return true
+			}
+		}
+		return so
+	}
 	so.Read = func(p string, head []byte, exe bool) bool {
+		visitHead(p, head)
 		for _, r := range readers {
 			if r.Wants(w.abs(p), head, exe) {
 				return true

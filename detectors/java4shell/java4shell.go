@@ -106,18 +106,31 @@ func (d *Detector) Wants(p string, head []byte, _ bool) bool {
 		return archive.IsExecutable(head)
 	case base == "release", keep(p), jvm.SettingKind(p) != "", hsErr.MatchString(base):
 		return true
-	case jdkArchive.MatchString(base) && archive.IsArchive(head):
-		return true
 	}
 	return isScript(head)
 }
 
 var hsErr = regexp.MustCompile(`^hs_err_pid\d{1,10}\.log$`)
 
-// jdkArchive names a Java runtime download (OpenJDK21U-jre_x64_linux_...,
-// amazon-corretto-21-x64-linux-jdk.tar.gz, jdk-21_linux-x64_bin.tar.gz):
-// a runtime that is not installed, which this detector does not unpack.
-var jdkArchive = regexp.MustCompile(`(?i)(jdk|jre|corretto|zulu|temurin|liberica|sapmachine|semeru).*\.(tar\.gz|tgz|zip|tar\.xz|tar)$`)
+// jdkArchive names a Java runtime download as vendors publish it:
+// OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz (Temurin),
+// amazon-corretto-21-x64-linux-jdk.tar.gz, zulu21.42.19-ca-jdk21.0.13-linux_x64.tar.gz,
+// jdk-21_linux-x64_bin.tar.gz (Oracle), bellsoft-jre21.0.13+11-linux-amd64.tar.gz,
+// sapmachine-jre-21.0.13.1_linux-x64_bin.tar.gz, microsoft-jdk-21.0.13-linux-x64.tar.gz,
+// ibm-semeru-open-jre_x64_linux_21.0.13_11_openj9-0.53.0.tar.gz, openjdk-21.0.2_linux-x64_bin.tar.gz.
+var jdkArchive = regexp.MustCompile(`(?i)^(?:OpenJDK\d{1,2}U-(?:jdk|jre)_|amazon-corretto-\d{1,2}[.\w-]*-(?:jdk|jre)|zulu\d[\w.]*-ca-(?:jdk|jre|fx-jdk|fx-jre)\d|jdk-\d{1,2}[\w.]*_(?:linux|windows|macos|osx)-|bellsoft-(?:jdk|jre)\d|sapmachine-(?:jdk|jre)-\d|microsoft-jdk-\d|ibm-semeru-open-(?:jdk|jre)_|openjdk-\d{1,2}[\w.]*_(?:linux|windows|macos|osx)-|graalvm-(?:community-)?jdk-\d)[^/]*\.(?:tar\.gz|tgz|zip|tar\.xz|tar)$`)
+
+// maxArchivesNoted bounds the runtime downloads recorded per target.
+const maxArchivesNoted = 256
+
+// VisitHead records runtime downloads by name and first bytes, without
+// reading them: the detector does not unpack archives, and a runtime that
+// is not installed is context, not a file left unscanned.
+func (s *scan) VisitHead(p string, head []byte) {
+	if len(s.archives) < maxArchivesNoted && jdkArchive.MatchString(path.Base(p)) && archive.IsArchive(head) {
+		s.archives = append(s.archives, p)
+	}
+}
 
 func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head[1] == '!' }
 
@@ -140,11 +153,13 @@ const (
 	maxSetting = 1 << 20
 	// Caps on what one target can make the detector keep: an image layer
 	// of many small files compresses to almost nothing.
-	maxReleases  = 4096
-	maxSettings  = 4096
-	maxLists     = 512
-	maxScripts   = 8192
-	maxKeptTotal = 128 << 20
+	maxReleases = 4096
+	maxSettings = 4096
+	// Plain systemd units are small records; a host has thousands.
+	maxPlainUnits = 1 << 16
+	maxLists      = 512
+	maxScripts    = 8192
+	maxKeptTotal  = 128 << 20
 )
 
 // NewScan starts a filesystem or image scan.
@@ -165,6 +180,9 @@ type scan struct {
 	crashes     []crash
 	dropped     int
 	keptBytes   int
+	archives    []string // runtime downloads seen by name, not read
+	optionFiles int      // settings files that set JVM options
+	plainUnits  int      // systemd units that set none
 	// limits records the caps this target reached; a capped scan clears
 	// nothing.
 	limits []string
@@ -207,8 +225,6 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			}
 		}
 		return nil
-	case jdkArchive.MatchString(base) && archive.IsArchive(f.Data):
-		return []engine.Skip{{Path: f.Path, Reason: "a Java runtime archive, not installed: java4shell does not unpack it; check the runtime it holds before installing it"}}
 	case hsErr.MatchString(base):
 		if len(s.crashes) < maxHsErrs && len(f.Data) <= maxHsErr {
 			s.crashes = append(s.crashes, readCrash(f.Path, f.Data))
@@ -216,17 +232,38 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		return nil
 	}
 	if k := jvm.SettingKind(f.Path); k != "" && len(f.Data) <= maxSetting {
-		if len(s.settings) >= maxSettings {
-			s.limit(fmt.Sprintf("more than %d files that set JVM options", maxSettings))
-		} else if st, ok := jvm.ReadSetting(f.Path, f.Data); ok {
-			s.settings = append(s.settings, st)
+		// Only files that set a JVM option (or, for systemd, a JVM
+		// option variable) are kept and counted: a host has thousands of
+		// plain units.
+		if st, ok := jvm.ReadSetting(f.Path, f.Data); ok {
+			switch {
+			case st.SetsOptions() && s.optionFiles >= maxSettings:
+				s.limit(fmt.Sprintf("more than %d files that set JVM options", maxSettings))
+			case st.SetsOptions():
+				s.settings = append(s.settings, st)
+				s.optionFiles++
+			case st.Kind == "systemd" && s.plainUnits >= maxPlainUnits:
+				s.limit(fmt.Sprintf("more than %d systemd units", maxPlainUnits))
+			case st.Kind == "systemd":
+				// A unit without JVM options still replaces or extends
+				// another file of the same unit: keep it, uncounted.
+				s.settings = append(s.settings, st)
+				s.plainUnits++
+			}
 		}
 	}
 	if keep(f.Path) && len(f.Data) <= maxKept {
 		if assess.IsDpkgList(f.Path) {
-			// Only the lines owners are looked up by.
+			// Only the lines owners are looked up by, without splitting
+			// the whole list.
 			var b []byte
-			for _, l := range bytes.Split(f.Data, []byte("\n")) {
+			for rest := f.Data; len(rest) > 0; {
+				l := rest
+				if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+					l, rest = rest[:i], rest[i+1:]
+				} else {
+					rest = nil
+				}
 				if bytes.HasSuffix(l, []byte("/libjvm.so")) || bytes.HasSuffix(l, []byte("/release")) {
 					b = append(append(b, l...), '\n')
 				}
@@ -273,6 +310,9 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	}
 	if len(s.crashes) > 0 {
 		ctx.Annotate("java4shell_crash_logs", s.crashes)
+	}
+	if len(s.archives) > 0 {
+		ctx.Annotate("java4shell_runtime_archives", s.archives)
 	}
 	if osr := osRelease(s.kept["/etc/os-release"], s.kept["/usr/lib/os-release"]); osr != "" {
 		ctx.Annotate("java4shell_os", osr)

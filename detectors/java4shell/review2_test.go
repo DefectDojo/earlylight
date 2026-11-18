@@ -1,13 +1,13 @@
 package java4shell_test
 
 import (
-	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/DefectDojo/earlylight/detectors/java4shell"
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
-	"github.com/DefectDojo/earlylight/internal/cli"
 	"github.com/DefectDojo/earlylight/internal/engine"
 )
 
@@ -39,14 +39,55 @@ func TestKeptCaps(t *testing.T) {
 	}
 }
 
-// Review finding 14: a JDK archive in the target is recorded as not
-// scanned, not passed over in silence.
+// Review findings 14 and round-2 5: a JDK download in the target is
+// recorded by name as context, without reading it and without counting it
+// as a file not scanned; other archives are not.
 func TestJDKArchiveRecorded(t *testing.T) {
 	root := t.TempDir()
+	zipHead := []byte("PK\x03\x04")
 	write(t, root, "opt/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz", []byte("\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03"))
-	var out, errb bytes.Buffer
-	cli.Run(cfg, []string{"scan", "fs", "--format", "json", "--detector", "java4shell", "--show-skipped", "--as-root", root}, &out, &errb)
-	if !strings.Contains(out.String(), "OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz") {
-		t.Errorf("JDK archive not recorded: %s", out.String())
+	write(t, root, "opt/amazon-corretto-21-x64-linux-jdk.tar.gz", []byte("\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03"))
+	write(t, root, "docs/openjdk-migration-notes.zip", zipHead)
+	write(t, root, "docs/majreport-2026.zip", zipHead)
+	r, code := run(t, "scan", "fs", "--fail-on-skip", "--as-root", root)
+	got, _ := json.Marshal(r.Targets[0].Annotations["java4shell_runtime_archives"])
+	if !strings.Contains(string(got), "OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz") || !strings.Contains(string(got), "amazon-corretto-21-x64-linux-jdk.tar.gz") {
+		t.Errorf("runtime downloads not recorded: %s", got)
+	}
+	if strings.Contains(string(got), "migration") || strings.Contains(string(got), "majreport") {
+		t.Errorf("other archives recorded: %s", got)
+	}
+	if code != 0 {
+		t.Errorf("exit %d: a recorded download counted as a file not scanned", code)
+	}
+	if (&java4shell.Detector{}).Wants("/opt/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz", []byte("\x1f\x8b\x08"), false) {
+		t.Error("a runtime download is read in full")
+	}
+}
+
+// Round-2 finding 4: units that set no JVM option do not count toward the
+// cap.
+func TestPlainUnitsUncapped(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "opt/fixed/lib/server/libjvm.so", testlib.Build(testlib.Lib{Version: "21.0.13.1+2-LTS", VBMI: true}))
+	for i := 0; i < 4100; i++ {
+		write(t, root, fmt.Sprintf("etc/systemd/system/s%d.service", i), []byte("[Service]\nExecStart=/usr/bin/true\n"))
+	}
+	r, code := run(t, "scan", "fs", "--as-root", root)
+	if f := byPath(r)["/opt/fixed"]; f.Verdict != engine.Fixed || code != 0 {
+		t.Errorf("plain units capped the scan: %s (%s) exit %d", f.Verdict, f.Reason, code)
+	}
+}
+
+// A full /etc override without JVM options still replaces the /usr/lib
+// unit that set them.
+func TestEtcOverrideKept(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "opt/acme/jre/lib/server/libjvm.so", testlib.Build(testlib.Lib{Version: "21.0.13+9-LTS", VBMI: true}))
+	write(t, root, "usr/lib/systemd/system/acme.service", []byte("[Service]\nEnvironment=JAVA_TOOL_OPTIONS=-XX:-UseBASE64Intrinsics\nExecStart=/opt/acme/bin/run.sh\n"))
+	write(t, root, "etc/systemd/system/acme.service", []byte("[Service]\nExecStart=/opt/acme/bin/run.sh\n"))
+	r, _ := run(t, "scan", "fs", "--as-root", root)
+	if f := byPath(r)["/opt/acme/jre"]; f.Facts["status"] == "mitigated" {
+		t.Errorf("the /usr/lib unit's mitigation counted over the /etc override: %+v", f.Facts)
 	}
 }

@@ -48,6 +48,13 @@ func (s Setting) Options(feature int) Options {
 	return o
 }
 
+// SetsOptions reports whether the file sets anything this detector
+// reads: a JVM option, or for a systemd unit a JVM option variable (a
+// drop-in that resets JAVA_TOOL_OPTIONS matters too).
+func (s Setting) SetsOptions() bool {
+	return len(s.lines) > 0 || len(s.ExecOpts) > 0 || len(s.Env) > 0
+}
+
 // ApplyTo applies the file's options, in order, on top of o. For a
 // systemd unit the order is HotSpot's: JAVA_TOOL_OPTIONS, JDK_JAVA_OPTIONS,
 // the command line, then _JAVA_OPTIONS.

@@ -226,3 +226,24 @@ func (p *panicky) Visit(f File) []Skip {
 	}
 	return p.fake.Visit(f)
 }
+
+// headFake is a scan that also sees every file's head.
+type headFake struct {
+	*fake
+	heads *[]string
+}
+
+func (h headFake) NewScan(TargetKind) Scan               { return h }
+func (h headFake) VisitHead(p string, _ []byte)          { *h.heads = append(*h.heads, p) }
+func (h headFake) Wants(p string, _ []byte, _ bool) bool { return h.wants(p) }
+
+func TestHeadVisitorSeesUnreadFiles(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/a.conf": []byte("a"), "opt/jdk.tar.gz": []byte("\x1f\x8b")})
+	var heads []string
+	h := headFake{&fake{id: "t-head", wants: func(p string) bool { return strings.HasSuffix(p, ".conf") }, seen: &[]string{}}, &heads}
+	ScanFS([]Detector{h}, root, Options{AsRoot: true})
+	sort.Strings(heads)
+	if strings.Join(heads, ",") != "/etc/a.conf,/opt/jdk.tar.gz" || strings.Join(*h.seen, ",") != "/etc/a.conf" {
+		t.Errorf("heads %v, read %v", heads, *h.seen)
+	}
+}
