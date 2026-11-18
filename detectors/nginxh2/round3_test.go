@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/ngxtest"
 	"github.com/DefectDojo/earlylight/internal/engine"
 )
 
@@ -64,6 +65,80 @@ func TestV1EntrypointContent(t *testing.T) {
 		ok, why := s.launcher(links, nil)(c.word)
 		if ok != c.trust {
 			t.Errorf("%s: trusted %v (%s), want %v", c.name, ok, why, c.trust)
+		}
+	}
+}
+
+// V2: a host's systemd unit is read with its drop-ins and overrides,
+// wherever they are, and anything not read or run first is unknown.
+func TestV2Systemd(t *testing.T) {
+	base := func() map[string][]byte {
+		return map[string][]byte{
+			"/usr/sbin/nginx":                       ngxtest.Default("1.31.8").Bytes(),
+			"/etc/nginx/nginx.conf":                 []byte("http { server { listen 80; } }"),
+			"/etc/nginx/h2.conf":                    []byte("http { server { listen 443 ssl http2; } }"),
+			"/usr/lib/systemd/system/nginx.service": []byte("[Service]\nExecStart=/usr/sbin/nginx -g 'daemon on;'\n"),
+		}
+	}
+	exposure := func(tg *engine.Target) string {
+		if f := find(tg, KindFlow, "/usr/sbin/nginx"); f != nil {
+			return f.Facts["exposure"]
+		}
+		return "no finding"
+	}
+	// A drop-in outside the walk (a scan of /usr below the root).
+	root := t.TempDir()
+	files := base()
+	files["/etc/systemd/system/nginx.service.d/override.conf"] = []byte("[Service]\nExecStart=\nExecStart=/usr/sbin/nginx -c /etc/nginx/h2.conf\n")
+	write(t, root, files)
+	if got := exposure(engine.ScanFS([]engine.Detector{&Detector{}}, filepath.Join(root, "usr"), engine.Options{SystemRoot: root})); got != "exposed" {
+		t.Errorf("drop-in outside the walk: %s", got)
+	}
+	// /etc/systemd/system/nginx.service links to a unit elsewhere.
+	root = t.TempDir()
+	files = base()
+	files["/opt/units/nginx.service"] = []byte("[Service]\nExecStart=/usr/sbin/nginx -c /etc/nginx/h2.conf\n")
+	write(t, root, files)
+	os.MkdirAll(filepath.Join(root, "etc/systemd/system"), 0o755)
+	if err := os.Symlink("/opt/units/nginx.service", filepath.Join(root, "etc/systemd/system/nginx.service")); err != nil {
+		t.Fatal(err)
+	}
+	if got := exposure(engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})); got != "exposed" {
+		t.Errorf("linked override: %s", got)
+	}
+	// A script run first.
+	files = base()
+	files["/usr/lib/systemd/system/nginx.service"] = []byte("[Service]\nExecStartPre=/usr/local/bin/gen-conf.sh\nExecStartPre=/usr/sbin/nginx -t -q\nExecStart=/usr/sbin/nginx\n")
+	if got := exposure(scanFS(t, files, engine.Options{})); got != "unknown" {
+		t.Errorf("ExecStartPre script: %s", got)
+	}
+	// nginx -t first is fine.
+	files["/usr/lib/systemd/system/nginx.service"] = []byte("[Service]\nExecStartPre=/usr/sbin/nginx -t -q -g 'daemon on;'\nExecStart=/usr/sbin/nginx\n")
+	if got := exposure(scanFS(t, files, engine.Options{})); got != "not-exposed" {
+		t.Errorf("nginx -t first: %s", got)
+	}
+}
+
+// V2: an override that cannot be read leaves exposure unknown.
+func TestV2SystemdUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads mode 000 files")
+	}
+	for _, p := range []string{"etc/systemd/system/nginx.service.d", "etc/systemd/system/nginx.service.d/override.conf", "etc/systemd/system/nginx.service"} {
+		root := t.TempDir()
+		write(t, root, map[string][]byte{
+			"/usr/sbin/nginx":                                   ngxtest.Default("1.31.8").Bytes(),
+			"/etc/nginx/nginx.conf":                             []byte("http { server { listen 80; } }"),
+			"/usr/lib/systemd/system/nginx.service":             []byte("[Service]\nExecStart=/usr/sbin/nginx\n"),
+			"/etc/systemd/system/nginx.service":                 []byte("[Service]\nExecStart=/usr/sbin/nginx\n"),
+			"/etc/systemd/system/nginx.service.d/override.conf": []byte("[Service]\nExecStart=\nExecStart=/usr/sbin/nginx -c /x\n"),
+		})
+		full := filepath.Join(root, p)
+		os.Chmod(full, 0)
+		tg := engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
+		os.Chmod(full, 0o755)
+		if f := find(tg, KindFlow, "/usr/sbin/nginx"); f == nil || f.Facts["exposure"] != "unknown" {
+			t.Errorf("%s unreadable: %+v", p, f)
 		}
 	}
 }

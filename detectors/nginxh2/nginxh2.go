@@ -218,7 +218,7 @@ func keepDB(p string) bool {
 		n := pkgdb.DpkgListName(p)
 		return strings.Contains(n, "nginx") || strings.Contains(n, "openresty") || strings.Contains(n, "angie") || strings.Contains(n, "tengine")
 	}
-	return strings.HasPrefix(p, "/docker-entrypoint.d/") || unitPath(p)
+	return strings.HasPrefix(p, "/docker-entrypoint.d/") || unitPath(p) || strings.HasSuffix(p, ".service")
 }
 
 // unitDirs hold systemd units; a unit's drop-ins are in <dir>/<unit>.d.
@@ -366,7 +366,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Release:     release,
 		Command:     ctx.Command(),
 		CommandFrom: "the image's command",
-		CommandFor:  s.commandFor(),
+		CommandFor:  s.commandFor(src),
 		Launcher:    s.launcher(links, hardlinks),
 		Ingress:     s.ingress,
 		Generated:   s.generated(),
@@ -461,16 +461,22 @@ func sha(b []byte) string {
 
 // commandFor returns, for a filesystem, the start command of each binary
 // from the systemd units that run it; an image has its own command.
-func (s *scan) commandFor() func(string) ([]string, string, string) {
+func (s *scan) commandFor(src *confSource) func(string) ([]string, string, string) {
 	if s.kind == engine.Image {
 		return nil
 	}
-	units := systemdStarts(s.db)
+	units, unsure := s.systemdStarts(src)
 	return func(bin string) ([]string, string, string) {
+		if unsure != "" {
+			return nil, "", unsure
+		}
 		var found [][]string
 		var from []string
 		for _, u := range units {
 			if u.cmd[0] == bin || !strings.HasPrefix(u.cmd[0], "/") && path.Base(u.cmd[0]) == path.Base(bin) {
+				if u.unsure != "" {
+					return nil, "", u.unsure
+				}
 				found = append(found, u.cmd)
 				from = append(from, u.unit)
 			}
@@ -491,67 +497,198 @@ func (s *scan) commandFor() func(string) ([]string, string, string) {
 }
 
 type unitStart struct {
-	unit string
-	cmd  []string
+	unit   string
+	cmd    []string
+	unsure string // why this unit's start is not read in full
 }
 
-// systemdStarts reads the ExecStart of every service unit that runs an
-// nginx build, its drop-ins applied in order ("ExecStart=" clears).
-func systemdStarts(db map[string][]byte) []unitStart {
-	byName := map[string]string{} // unit name -> path, the first directory wins
-	for _, d := range unitDirs {
-		var names []string
-		for p := range db {
-			if rest, ok := strings.CutPrefix(p, d); ok && strings.HasSuffix(rest, ".service") && !strings.Contains(rest, "/") {
-				names = append(names, rest)
-			}
+// unitFiles lists the names in a unit directory: files the walk read,
+// links, records of files not read, and below a system root the
+// directory on disk. why is set when the directory could not be listed.
+func (s *scan) unitFiles(src *confSource, dir string) (names map[string]bool, why string) {
+	names = map[string]bool{}
+	add := func(p string) {
+		if rest, ok := strings.CutPrefix(p, dir+"/"); ok && rest != "" && !strings.Contains(rest, "/") {
+			names[rest] = true
 		}
-		sort.Strings(names)
-		for _, n := range names {
-			if _, ok := byName[n]; !ok {
-				byName[n] = d + n
+	}
+	for p := range s.db {
+		add(p)
+	}
+	for _, m := range []map[string]string{src.links, src.hardlinks, s.unread} {
+		for p := range m {
+			add(p)
+		}
+	}
+	if w, ok := src.unreadAt(dir); ok {
+		why = dir + " was not read (" + w + ")"
+	}
+	if src.root != "" {
+		if full, ok := src.diskPath(dir); ok {
+			ents, err := os.ReadDir(full)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				why = dir + " could not be listed (" + err.Error() + ")"
+			}
+			for _, e := range ents {
+				names[e.Name()] = true
 			}
 		}
 	}
-	var out []unitStart
+	return names, why
+}
+
+// unitRead reads a unit or drop-in, following links inside the target.
+func (s *scan) unitRead(src *confSource, p string) ([]byte, string, bool) {
+	r := src.resolve(p)
+	if r == "" {
+		return nil, "", false
+	}
+	if to, ok := src.hardlinks[r]; ok {
+		r = to
+	}
+	if r == "/dev/null" {
+		return nil, "/dev/null", true // masked
+	}
+	if b, ok := s.db[r]; ok {
+		return b, r, true
+	}
+	if src.root != "" {
+		if b := src.disk(r, maxDB); b != nil {
+			return b, r, true
+		}
+	}
+	return nil, r, false
+}
+
+// systemdStarts reads every service unit that runs an nginx build: the
+// unit of the first directory that has it (/etc, /run, /lib, /usr/lib),
+// its drop-ins from every directory applied in order ("ExecStart="
+// clears), links followed inside the target. A unit or drop-in that was
+// not read, or a command run before or after nginx starts other than an
+// nginx test, makes that start unsure; a unit directory that could not
+// be read makes every start unsure.
+func (s *scan) systemdStarts(src *confSource) ([]unitStart, string) {
+	byName := map[string]string{} // unit name -> path, the first directory wins
 	var names []string
-	for n := range byName {
-		names = append(names, n)
+	for _, d := range unitDirs {
+		d = strings.TrimSuffix(d, "/")
+		ns, why := s.unitFiles(src, d)
+		if why != "" {
+			return nil, "a systemd unit directory " + why + ", so the unit that starts nginx is not known"
+		}
+		for n := range ns {
+			if strings.HasSuffix(n, ".service") {
+				if _, ok := byName[n]; !ok {
+					byName[n] = d + "/" + n
+					names = append(names, n)
+				}
+			}
+		}
 	}
 	sort.Strings(names)
+	var out []unitStart
 	for _, n := range names {
-		files := []string{byName[n]}
+		u := unitStart{unit: byName[n]}
+		b, real, ok := s.unitRead(src, byName[n])
+		if real == "/dev/null" {
+			continue // masked: not started
+		}
+		files := [][]byte{b}
+		if !ok {
+			u.unsure = byName[n] + " was not read"
+			if why, un := src.unreadAt(real); un {
+				u.unsure += " (" + why + ")"
+			}
+		}
 		var drops []string
-		for p := range db {
-			for _, d := range unitDirs {
-				if strings.HasPrefix(p, d+n+".d/") {
-					drops = append(drops, p)
+		for _, d := range unitDirs {
+			dd := strings.TrimSuffix(d, "/") + "/" + n + ".d"
+			ns, why := s.unitFiles(src, dd)
+			if why != "" && u.unsure == "" {
+				u.unsure = "the drop-in directory " + why
+			}
+			for f := range ns {
+				if strings.HasSuffix(f, ".conf") {
+					drops = append(drops, dd+"/"+f)
 				}
 			}
 		}
 		sort.Slice(drops, func(i, j int) bool { return path.Base(drops[i]) < path.Base(drops[j]) })
-		files = append(files, drops...)
+		for _, dp := range drops {
+			db, _, ok := s.unitRead(src, dp)
+			if !ok && u.unsure == "" {
+				u.unsure = "the drop-in " + dp + " was not read"
+			}
+			files = append(files, db)
+		}
 		var exec []string
+		var around []string
 		for _, f := range files {
-			for _, l := range strings.Split(string(db[f]), "\n") {
+			for _, l := range strings.Split(string(f), "\n") {
 				l = strings.TrimSpace(l)
-				v, ok := strings.CutPrefix(l, "ExecStart=")
+				k, v, ok := strings.Cut(l, "=")
 				if !ok {
 					continue
 				}
 				v = strings.TrimLeft(strings.TrimSpace(v), "-@:+!")
-				if v == "" {
-					exec = nil
-					continue
+				switch strings.TrimSpace(k) {
+				case "ExecStart":
+					if v == "" {
+						exec = nil
+					} else {
+						exec = unitWords(v)
+					}
+				case "ExecStartPre", "ExecStartPost", "ExecCondition":
+					if v == "" {
+						around = nil
+					} else {
+						around = append(around, v)
+					}
 				}
-				exec = unitWords(v)
 			}
 		}
-		if len(exec) > 0 && nginxStart(path.Base(exec[0])) {
-			out = append(out, unitStart{unit: byName[n], cmd: exec})
+		if len(exec) == 0 || !nginxStart(path.Base(exec[0])) {
+			continue
+		}
+		u.cmd = exec
+		for _, a := range around {
+			w := unitWords(a)
+			if len(w) == 0 || !nginxStart(path.Base(w[0])) || !nginxTest(w[1:]) {
+				if u.unsure == "" {
+					u.unsure = fmt.Sprintf("%s runs %q before or after nginx starts, which can change the configuration", u.unit, a)
+				}
+			}
+		}
+		out = append(out, u)
+	}
+	return out, ""
+}
+
+// nginxTest reports nginx arguments that only test or show the
+// configuration (-t, -T, -q, -g, -c, -p): they serve nothing.
+func nginxTest(args []string) bool {
+	test := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") || len(a) < 2 {
+			return false
+		}
+		for j := 1; j < len(a); j++ {
+			switch a[j] {
+			case 't', 'T':
+				test = true
+			case 'q':
+			case 'g', 'c', 'p', 'e':
+				if j == len(a)-1 {
+					i++
+				}
+				j = len(a)
+			default:
+				return false
+			}
 		}
 	}
-	return out
+	return test
 }
 
 func nginxStart(b string) bool {

@@ -27,6 +27,8 @@ func FuzzSource(f *testing.F) {
 		s.Glob(pattern)
 		envsubst([]byte(tmpl), strings.Split(env, ","))
 		unitWords(unit)
-		systemdStarts(map[string][]byte{"/lib/systemd/system/nginx.service": []byte(unit), "/etc/systemd/system/nginx.service.d/a.conf": []byte(tmpl)})
+		us := &scan{db: map[string][]byte{"/lib/systemd/system/nginx.service": []byte(unit), "/etc/systemd/system/nginx.service.d/a.conf": []byte(tmpl)}}
+		us.systemdStarts(&confSource{links: lm})
+		nginxTest(unitWords(unit))
 	})
 }
