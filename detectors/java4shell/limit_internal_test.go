@@ -141,3 +141,44 @@ func TestOSReleaseAtLimit(t *testing.T) {
 		t.Errorf("skipped %+v", tg.Skipped)
 	}
 }
+
+// A JVM settings file over the limit is a coverage gap; the other files
+// with a limit are deliberate exclusions.
+func TestOverLimitGaps(t *testing.T) {
+	root := t.TempDir()
+	for rel, size := range map[string]int64{
+		"opt/atlassian/confluence/bin/setenv.sh": maxSetting + 1,
+		"etc/os-release":                         maxOSRelease + 1,
+		"opt/install.sh":                         maxScript + 1,
+		"var/lib/dpkg/status":                    maxKept + 1,
+	} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		head := []byte("X=1\n")
+		if strings.HasSuffix(rel, ".sh") {
+			head = []byte("#!/bin/sh\n")
+		}
+		if err := os.WriteFile(p, head, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(p, size); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tg := engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
+	got := map[string]bool{}
+	for _, s := range tg.Skipped {
+		got[s.Path] = s.Excluded
+	}
+	want := map[string]bool{"/opt/atlassian/confluence/bin/setenv.sh": false, "/etc/os-release": true, "/opt/install.sh": true, "/var/lib/dpkg/status": true}
+	if len(got) != len(want) || tg.Gaps() != 1 {
+		t.Fatalf("skipped %+v", tg.Skipped)
+	}
+	for p, ex := range want {
+		if got[p] != ex {
+			t.Errorf("%s: excluded %v, want %v", p, got[p], ex)
+		}
+	}
+}

@@ -135,6 +135,19 @@ func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
 	return most
 }
 
+// VisitOverLimit records a JVM settings file over the limit as a coverage
+// gap: an option in it can undo a mitigation the scan would report. The
+// other files with a limit are deliberate exclusions: no verdict is cleared
+// on them (a runtime is cleared only by its VM library and release file),
+// and an os-release, package database, start script or crash log that
+// large is not a real one.
+func (s *scan) VisitOverLimit(p string, _ int64) []engine.Skip {
+	if jvm.SettingKind(p) == "" {
+		return nil
+	}
+	return []engine.Skip{{Path: p, Reason: fmt.Sprintf("larger than the %d MiB java4shell reads of a JVM settings file; its options are not checked", maxSetting>>20)}}
+}
+
 var hsErr = regexp.MustCompile(`^hs_err_pid\d{1,10}\.log$`)
 
 // jdkArchive names a Java runtime download as vendors publish it:
