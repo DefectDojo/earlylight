@@ -113,12 +113,50 @@ func Run(in Input) []Finding {
 	env := jvm.EnvMap(in.Env)
 	var out []Finding
 	for _, r := range roots {
-		out = append(out, withFix(redHat(in, judge(in, env, r, byRoot[r]))))
+		out = append(out, withFix(redHat(in, judgeAll(in, env, r, byRoot[r]))))
 	}
 	for _, l := range loose {
 		out = append(out, withFix(redHat(in, judge(in, env, path.Dir(l.Path), []*jvm.Library{l}))))
 	}
 	return out
+}
+
+// judgeAll judges a runtime directory by every VM library in it. The
+// libraries are first judged as one runtime (an OpenJ9 runtime's
+// redirector and VM are one VM, and the server VM speaks first). A
+// directory can also hold libraries that are not that VM: a client or
+// minimal VM, a Java 8 lib/amd64/server left by an upgrade in place, a file
+// put in bin/server. Each other library that states a version or carries
+// the decoder is judged on its own, and the worst verdict is the
+// runtime's: a library that clears never hides one that does not.
+func judgeAll(in Input, env map[string]string, root string, libs []*jvm.Library) Finding {
+	f := judge(in, env, root, libs)
+	worst := f
+	for _, l := range libs {
+		if l == f.Library || l.OpenJ9 || !l.HotSpot() && !l.VBMIStubs {
+			continue
+		}
+		if x := judge(in, env, root, []*jvm.Library{l}); rank(x.Status) > rank(worst.Status) {
+			worst = x
+		}
+	}
+	if worst.Library != f.Library {
+		worst.Reason += fmt.Sprintf("; this runtime holds %d VM libraries and the worst decides (%s alone: %s)", len(libs), f.Library.Path, f.Status)
+	}
+	return worst
+}
+
+// rank orders verdicts from cleared to vulnerable.
+func rank(s Status) int {
+	switch s {
+	case Vulnerable:
+		return 3
+	case Mitigated:
+		return 2
+	case Unknown:
+		return 1
+	}
+	return 0
 }
 
 func withFix(f Finding) Finding {
