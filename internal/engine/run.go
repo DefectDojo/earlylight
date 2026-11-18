@@ -197,6 +197,17 @@ type walker struct {
 	// when the target is one file, whose path is the prefix itself.
 	prefix string
 	single bool
+	// limited is the path of the last file read, and limits each scan's own
+	// limit on it, for handing it out (Limiter).
+	limited string
+	limits  []fileLimit
+}
+
+// fileLimit is one detector's own limit on one file, and whether it asked
+// for the file.
+type fileLimit struct {
+	bytes int64
+	wants bool
 }
 
 // abs turns a walked path into its path inside the system root.
@@ -252,35 +263,86 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 			w.visitHeadSafely(h.id, h.h, w.abs(p), head)
 		}
 	}
-	var readers []Reader
-	all := false
-	for _, d := range w.dets {
-		r, ok := d.(Reader)
-		if !ok {
-			all = true // this detector wants everything
-			break
+	readers := make([]Reader, len(w.dets)) // nil: the detector wants everything
+	limiters := make([]Limiter, len(w.dets))
+	all, limited := false, false
+	for i, d := range w.dets {
+		var ok bool
+		if readers[i], ok = d.(Reader); !ok {
+			all = true
 		}
-		readers = append(readers, r)
+		if limiters[i], ok = d.(Limiter); ok {
+			limited = true
+		}
+	}
+	if limited {
+		w.limits = make([]fileLimit, len(w.dets))
+		so.Read = func(p string, head []byte, exe bool) (bool, source.Limit) {
+			visitHead(p, head)
+			return w.limit(w.abs(p), head, exe, readers, limiters)
+		}
+		return so
 	}
 	if all {
 		if len(heads) > 0 {
-			so.Read = func(p string, head []byte, _ bool) bool {
+			so.Read = func(p string, head []byte, _ bool) (bool, source.Limit) {
 				visitHead(p, head)
-				return true
+				return true, source.Limit{}
 			}
 		}
 		return so
 	}
-	so.Read = func(p string, head []byte, exe bool) bool {
+	so.Read = func(p string, head []byte, exe bool) (bool, source.Limit) {
 		visitHead(p, head)
 		for _, r := range readers {
 			if r.Wants(w.abs(p), head, exe) {
-				return true
+				return true, source.Limit{}
 			}
 		}
-		return false
+		return false, source.Limit{}
 	}
 	return so
+}
+
+// limit decides whether to read a file when some detector has limits of its
+// own: it is read when any detector wants it, as far as the largest limit of
+// those that do (--max-file-size when one has none). Each detector's limit
+// is kept for handing the file out.
+func (w *walker) limit(p string, head []byte, exe bool, readers []Reader, limiters []Limiter) (bool, source.Limit) {
+	w.limited = p
+	read, unlimited := false, false
+	var most int64
+	var by []string
+	for i := range w.dets {
+		l := fileLimit{wants: readers[i] == nil || readers[i].Wants(p, head, exe)}
+		if limiters[i] != nil {
+			l.bytes = limiters[i].Limit(p, head, exe)
+		}
+		w.limits[i] = l
+		switch {
+		case !l.wants:
+		case l.bytes <= 0:
+			read, unlimited = true, true
+		default:
+			read = true
+			most = max(most, l.bytes)
+			by = append(by, w.dets[i].Manifest().ID)
+		}
+	}
+	if !read || unlimited {
+		return read, source.Limit{}
+	}
+	return true, source.Limit{Bytes: most, By: strings.Join(by, " and ")}
+}
+
+// over reports whether f is over scan i's own limit, which keeps it from
+// that detector.
+func (w *walker) over(i int, f File) bool {
+	if f.Member || f.Path != w.limited || w.limits == nil {
+		return false
+	}
+	l := w.limits[i]
+	return l.bytes > 0 && int64(len(f.Data)) > l.bytes
 }
 
 func (w *walker) visit(f source.File) error {
@@ -303,10 +365,19 @@ func (w *walker) visit(f source.File) error {
 	return nil
 }
 
-// send gives f to every scan, except those skip(i) rules out.
+// send gives f to every scan, except those skip(i) rules out and those
+// whose own limit it is over: read for another detector, it is recorded
+// as not checked by one that asked for it.
 func (w *walker) send(f File, skip func(int) bool) {
 	for i, s := range w.scans {
 		if skip != nil && skip(i) {
+			continue
+		}
+		if w.over(i, f) {
+			if w.limits[i].wants {
+				w.t.Skipped = append(w.t.Skipped, source.Skip{Path: f.Path, Excluded: true,
+					Reason: fmt.Sprintf("excluded: larger than the %d-byte limit of %s for this file (%d bytes); not checked by it", w.limits[i].bytes, w.dets[i].Manifest().ID, len(f.Data))})
+			}
 			continue
 		}
 		for _, sk := range w.visitSafely(i, s, f) {

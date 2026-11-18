@@ -186,6 +186,20 @@ type Reader interface {
 	Wants(path string, head []byte, executable bool) bool
 }
 
+// Limiter is implemented by detectors that have a size limit of their own
+// on some files, below --max-file-size: an os-release, a start script or a
+// package database is never hundreds of MiB, and one that is should cost
+// nothing. Limit returns the most bytes of the file the detector checks,
+// from its path, first bytes and executable flag; 0 or less means no limit
+// of its own. A file over its limit is never shown to the detector. It is
+// not read past its first bytes unless another detector wants more of it,
+// and it is recorded as skipped for that detector: a deliberate exclusion,
+// not a coverage gap, since the detector would not check a file that size.
+// The limit applies to the files the walk meets, not to archive members.
+type Limiter interface {
+	Limit(path string, head []byte, executable bool) int64
+}
+
 // HeadVisitor is implemented by a Scan that wants to see the first bytes
 // of every file the walk meets, read in full or not: a record of files
 // it does not need to read (a runtime download inside an image) without
