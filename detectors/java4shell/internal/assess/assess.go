@@ -156,10 +156,17 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 	if p, ok := owner(in, root, lib); ok {
 		f.Package = &p
 	}
-	openj9 := hasRel && rel.OpenJ9()
+	// OpenJ9 only from an OpenJ9 library (by name, or the redirector with
+	// no HotSpot version line and no decoder stubs): the release file's
+	// JVM_VARIANT alone does not decide it.
+	relJ9 := hasRel && rel.OpenJ9()
+	openj9, stubs := false, false
 	for _, l := range libs {
 		if l.OpenJ9 {
 			openj9 = true
+		}
+		if l.VBMIStubs {
+			stubs = true
 		}
 	}
 
@@ -193,8 +200,8 @@ func judge(in Input, env map[string]string, root string, libs []*jvm.Library) Fi
 		}
 	}
 	switch {
-	case openj9 && hotspot:
-		return f.set(Unknown, "the runtime's files contradict each other: a HotSpot VM library was read, but the release file or another VM library names OpenJ9",
+	case (openj9 || relJ9) && (hotspot || stubs):
+		return f.set(Unknown, "the runtime's files contradict each other: a VM library carries HotSpot's version line or decoder stubs, but the release file or another VM library names OpenJ9",
 			what+": HotSpot and OpenJ9 evidence disagree")
 	case openj9:
 		return f.set(NotAffected, "an OpenJ9 VM: the vulnerable decoder is HotSpot code that OpenJ9 does not contain",

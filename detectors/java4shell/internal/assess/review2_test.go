@@ -83,3 +83,32 @@ func TestBatchFileWindowsOnly(t *testing.T) {
 		t.Errorf("setenv.bat on Windows: %s", f.Status)
 	}
 }
+
+// Round-2 finding 1: OpenJ9 only from an OpenJ9 library, never from the
+// release file alone, and never when the HotSpot decoder stubs are there.
+func TestOpenJ9NeedsLibrary(t *testing.T) {
+	fastdebug := lib(t, temurin+"/lib/server/libjvm.so", testlib.Lib{VBMI: true, Extra: "\x00OpenJDK 64-Bit Server VM (fastdebug 21.0.13+9) for linux-amd64 JRE (21.0.13+9)\x00"})
+	in := Input{Libraries: []*jvm.Library{fastdebug}, Releases: map[string]jvm.Release{temurin: rel(t, "JAVA_VERSION", "21.0.13", "JVM_VARIANT", "Openj9")}}
+	if f := one(t, in); f.Status != Unknown {
+		t.Errorf("release-only OpenJ9 over a library with the decoder: %s (%s)", f.Status, f.Reason)
+	}
+	// A library without stubs and without a version line, release says
+	// OpenJ9, no OpenJ9 library: not cleared either.
+	plain := lib(t, temurin+"/lib/server/libjvm.so", testlib.Lib{})
+	in = Input{Libraries: []*jvm.Library{plain}, Releases: map[string]jvm.Release{temurin: rel(t, "JAVA_VERSION", "21.0.13", "JVM_VARIANT", "Openj9")}}
+	if f := one(t, in); f.Status == NotAffected {
+		t.Errorf("release-only OpenJ9: %s (%s)", f.Status, f.Reason)
+	}
+	// An OpenJ9 VM library next to a redirector carrying HotSpot stubs: unknown.
+	j9 := lib(t, temurin+"/lib/default/libj9vm29.so", testlib.Lib{})
+	in = Input{Libraries: []*jvm.Library{fastdebug, j9}}
+	if f := one(t, in); f.Status != Unknown {
+		t.Errorf("OpenJ9 library next to HotSpot stubs: %s", f.Status)
+	}
+	// Real Semeru layout: redirector + libj9vm29, release says OpenJ9.
+	redir := lib(t, temurin+"/lib/server/libjvm.so", testlib.Lib{Extra: "OPENJ9_JAVA_OPTIONS"})
+	in = Input{Libraries: []*jvm.Library{redir, j9}, Releases: map[string]jvm.Release{temurin: rel(t, "JAVA_VERSION", "21.0.13.0.3", "JVM_VARIANT", "Openj9")}}
+	if f := one(t, in); f.Status != NotAffected {
+		t.Errorf("Semeru: %s (%s)", f.Status, f.Reason)
+	}
+}
