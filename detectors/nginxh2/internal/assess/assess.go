@@ -185,6 +185,14 @@ func judge(c knowledge.CVE, b *ngx.Binary) (knowledge.Status, string) {
 	default:
 		return knowledge.Unknown, "not an nginx build the detector knows"
 	}
+	if b.HTTP2 == ngx.Unknown && st == knowledge.NotAffected && (b.Product == ngx.Tengine || b.Product == ngx.Plus) {
+		if core, err := knowledge.ParseV(b.Core); err == nil && knowledge.Cmp(core, knowledge.MustV("1.9.5")) < 0 {
+			// A fork may carry HTTP/2 on a core that predates nginx's
+			// (Tengine 2.1.2 to 2.2.x do): without a whole witness of what
+			// is compiled in, the core's age clears nothing.
+			return knowledge.Unknown, fmt.Sprintf("%s is built on nginx %s, older than nginx's own HTTP/2, and whether HTTP/2 is compiled in could not be read (its configure arguments were cut or it has no module list)", b.Name+"/"+b.Version, b.Core)
+		}
+	}
 	if b.HTTP2 == ngx.Yes && b.Product != ngx.Tengine && st == knowledge.NotAffected {
 		if core, err := knowledge.ParseV(b.Core); err == nil && knowledge.Cmp(core, knowledge.MustV("1.9.5")) < 0 {
 			// HTTP/2 compiled into a core that predates nginx's: a

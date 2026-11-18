@@ -335,3 +335,32 @@ func TestR16FixedWording(t *testing.T) {
 		t.Errorf("%s", f.Message)
 	}
 }
+
+// Verification 5: an older core whose HTTP/2 witness is cut or missing is
+// unknown, never not affected.
+func TestV5OldCoreWitness(t *testing.T) {
+	statuses := func(b ngxtest.Build) map[string]knowledge.Status {
+		out := map[string]knowledge.Status{}
+		for _, f := range Run(Input{Binaries: []*ngx.Binary{bin(t, b)}, Source: mem{}}) {
+			out[f.CVE] = f.Status
+		}
+		return out
+	}
+	cut := "--prefix=/x " + strings.Repeat("--with-cc-opt=-Dx ", 246) + "--with-http_v2_module"
+	for name, b := range map[string]ngxtest.Build{
+		"Tengine 2.2.2, cut arguments":  {Tengine: "Tengine/2.2.2 (nginx/1.8.1)", Configure: cut},
+		"Tengine 2.2.2, no module list": {Tengine: "Tengine/2.2.2 (nginx/1.8.1)", Configure: "--prefix=/x"},
+		"Plus R7, cut arguments":        {Line: "nginx/1.9.4 (nginx-plus-r7)", Configure: cut},
+	} {
+		for cve, st := range statuses(b) {
+			if st == knowledge.NotAffected {
+				t.Errorf("%s: %s not affected", name, cve)
+			}
+		}
+	}
+	// Plain nginx before 1.9.5 has no HTTP/2 in its source: not affected
+	// by its version.
+	if st := statuses(ngxtest.Build{Line: "nginx/1.8.1", Configure: cut}); st[knowledge.Flow] != knowledge.NotAffected {
+		t.Errorf("nginx 1.8.1: %v", st)
+	}
+}
