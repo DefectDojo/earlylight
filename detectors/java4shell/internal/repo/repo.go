@@ -19,6 +19,7 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -183,7 +184,7 @@ func scanList(ctx context.Context, root string, list []string, opts Options, res
 		}
 	}
 	sort.Strings(list)
-	s := &scanner{root: root, opts: opts, mitigated: map[string]string{}}
+	s := &scanner{root: root, opts: opts, mitigated: map[string]string{}, buildArgs: map[string]string{}}
 	for _, rel := range list {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
@@ -217,6 +218,8 @@ func scanList(ctx context.Context, root string, list []string, opts Options, res
 			s.maven(rel, text)
 		case "project.toml":
 			s.projectToml(rel, text)
+		case "yaml":
+			s.composeArgs(rel, b)
 		}
 	}
 	s.images(opts)
@@ -272,7 +275,9 @@ func kindOf(rel string) string {
 	case strings.HasPrefix(rel, ".github/workflows/") && (strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml")),
 		lower == "action.yml" || lower == "action.yaml": // a composite action's steps
 		return "workflow"
-	case lower == "build.gradle" || lower == "build.gradle.kts" || lower == "settings.gradle" || lower == "settings.gradle.kts" || lower == "gradle.properties":
+	case strings.HasSuffix(lower, ".gradle") || strings.HasSuffix(lower, ".gradle.kts") || lower == "gradle.properties":
+		// build.gradle, settings.gradle, and convention plugins or
+		// scripts under any name.
 		return "gradle"
 	case lower == "pom.xml" || lower == "toolchains.xml":
 		return "maven"
@@ -324,6 +329,44 @@ type scanner struct {
 	mitigated map[string]string
 	// unparsed are Dockerfiles the instruction parser refused.
 	unparsed []Skip
+	// buildArgs maps a build argument a Compose file sets to that file.
+	buildArgs map[string]string
+}
+
+// composeArgs records the build arguments a Compose file sets
+// (services.*.build.args, as a map or a list of NAME=value): they replace
+// the ARG defaults a Dockerfile's FROM is read with.
+func (s *scanner) composeArgs(rel string, b []byte) {
+	if !bytes.Contains(b, []byte("args")) || !bytes.Contains(b, []byte("build")) {
+		return
+	}
+	var doc yaml.Node
+	if yaml.Unmarshal(b, &doc) != nil {
+		return // the image reference scan records a file it cannot parse
+	}
+	walkYAML(&doc, 0, func(m *yaml.Node) {
+		args := deref(mapGet(deref(mapGet(m, "build")), "args"))
+		if args == nil {
+			return
+		}
+		var names []string
+		switch args.Kind {
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(args.Content); i += 2 {
+				names = append(names, args.Content[i].Value)
+			}
+		case yaml.SequenceNode:
+			for _, a := range args.Content {
+				n, _, _ := strings.Cut(a.Value, "=")
+				names = append(names, n)
+			}
+		}
+		for _, n := range names {
+			if _, ok := s.buildArgs[n]; !ok && n != "" && len(s.buildArgs) < 4096 {
+				s.buildArgs[n] = rel
+			}
+		}
+	})
 }
 
 func (s *scanner) add(f Finding) {
@@ -951,12 +994,17 @@ func orAny(d string) string {
 // ---- Gradle, Maven, buildpacks
 
 var (
-	gradleToolchain = regexp.MustCompile(`JavaLanguageVersion\.of\(\s*["']?(\d{1,2})["']?\s*\)`)
+	gradleToolchain = regexp.MustCompile(`(?:JavaLanguageVersion\.of|\bjvmToolchain)\(\s*["']?(\d{1,2})["']?\s*\)`)
 	gradleRelease   = regexp.MustCompile(`(?:sourceCompatibility|targetCompatibility|options\.release|release\.set)\s*[=(]\s*(?:JavaVersion\.VERSION_|["'])?(\d{1,2})\b`)
-	bpJVM           = regexp.MustCompile(`BP_JVM_VERSION["']?\s*(?:[:=]|to|>)\s*["']?(\d{1,2}(?:\.\d+)*)`)
-	jibFrom         = regexp.MustCompile(`(?:from\s*\{[^}]*?image\s*=\s*|jib\.from\.image\s*=\s*|<from>\s*<image>\s*)["']?([A-Za-z0-9][\w./:@-]*)`)
-	mavenToolchain  = regexp.MustCompile(`<version>\s*\[?(\d{1,2})(?:,\))?\s*</version>`)
-	enforcerJava    = regexp.MustCompile(`(?s)<requireJavaVersion>\s*<version>\s*([^<]{1,60})</version>`)
+	// bpJVM reads BP_JVM_VERSION = "21", "BP_JVM_VERSION": "21",
+	// environment("BP_JVM_VERSION", "21"), environment["BP_JVM_VERSION"] = "21"
+	// and project.toml's name = "BP_JVM_VERSION" with value = "21" after it.
+	bpJVM = regexp.MustCompile(`BP_JVM_VERSION["']?\s*\]?\s*(?:[:=,]|to\b|>|value\s*=)\s*["']?(\d{1,2}(?:\.\d+)*)`)
+	// jibFrom reads a Jib base image across lines: from { image = "..." },
+	// jib.from.image = "...", <from><image>...</image>, <jib.from.image>.
+	jibFrom        = regexp.MustCompile(`(?:\bfrom\s*\{[^}]*?\bimage\s*=\s*|jib\.from\.image\s*=\s*|<from>\s*<image>\s*|<jib\.from\.image>\s*)["']?([A-Za-z0-9][\w./:@-]*)`)
+	mavenToolchain = regexp.MustCompile(`<version>\s*\[?(\d{1,2})(?:,\))?\s*</version>`)
+	enforcerJava   = regexp.MustCompile(`(?s)<requireJavaVersion>\s*<version>\s*([^<]{1,60})</version>`)
 )
 
 // lineToolchain reports a toolchain or release setting that selects a Java
@@ -980,10 +1028,37 @@ func (s *scanner) gradle(rel, text string) {
 			fmt.Sscanf(m[1], "%d", &n)
 			s.lineToolchain(rel, i+1, n, "the Gradle toolchain")
 		}
-		if m := bpJVM.FindStringSubmatch(l); m != nil {
-			s.buildpack(rel, i+1, m[1])
+	}
+	s.settings(rel, text)
+}
+
+// settings reads what a build file sets across lines: the buildpack's
+// BP_JVM_VERSION and a Jib base image. A BP_JVM_VERSION written in a form
+// that is not read is not checked.
+func (s *scanner) settings(rel, text string) {
+	lineOf := func(off int) (int, int) {
+		return strings.Count(text[:off], "\n") + 1, off - (strings.LastIndex(text[:off], "\n") + 1)
+	}
+	read := map[int]bool{} // offsets of BP_JVM_VERSION that were read
+	for _, m := range bpJVM.FindAllStringSubmatchIndex(text, 64) {
+		read[m[0]] = true
+		line, _ := lineOf(m[0])
+		s.buildpack(rel, line, text[m[2]:m[3]])
+	}
+	for off := 0; ; {
+		i := strings.Index(text[off:], "BP_JVM_VERSION")
+		if i < 0 {
+			break
 		}
-		s.jib(rel, i+1, l)
+		if at := off + i; !read[at] {
+			line, _ := lineOf(at)
+			s.unread(rel, line, "BP_JVM_VERSION", "BP_JVM_VERSION (Cloud Native Buildpacks)")
+		}
+		off += i + len("BP_JVM_VERSION")
+	}
+	for _, m := range jibFrom.FindAllStringSubmatchIndex(text, 64) {
+		line, col := lineOf(m[2])
+		s.jibRef(rel, line, col, text[m[2]:m[3]])
 	}
 }
 
@@ -1004,11 +1079,8 @@ func (s *scanner) maven(rel, text string) {
 		if strings.Contains(l, "</toolchain>") || strings.Contains(l, "</jdk>") {
 			inToolchain = false
 		}
-		if m := bpJVM.FindStringSubmatch(l); m != nil {
-			s.buildpack(rel, i+1, m[1])
-		}
-		s.jib(rel, i+1, l)
 	}
+	s.settings(rel, text)
 	for _, m := range enforcerJava.FindAllStringSubmatchIndex(text, -1) {
 		floor := strings.TrimSpace(text[m[2]:m[3]])
 		line := strings.Count(text[:m[2]], "\n") + 1
@@ -1034,10 +1106,8 @@ func (s *scanner) maven(rel, text string) {
 }
 
 func (s *scanner) projectToml(rel, text string) {
+	s.settings(rel, text)
 	for i, l := range lines(text) {
-		if m := bpJVM.FindStringSubmatch(l); m != nil {
-			s.buildpack(rel, i+1, m[1])
-		}
 		if strings.HasSuffix(rel, "jib.yaml") {
 			if m := regexp.MustCompile(`^\s*image\s*:\s*["']?([A-Za-z0-9][\w./:@-]*)`).FindStringSubmatchIndex(l); m != nil {
 				s.jibRef(rel, i+1, m[2], l[m[2]:m[3]])
@@ -1058,14 +1128,6 @@ func (s *scanner) buildpack(rel string, line int, ver string) {
 	if strings.Count(ver, ".") >= 2 {
 		s.judgeVersion(rel, line, false, ver, "BP_JVM_VERSION (Cloud Native Buildpacks)", "")
 	}
-}
-
-func (s *scanner) jib(rel string, line int, l string) {
-	m := jibFrom.FindStringSubmatchIndex(l)
-	if m == nil {
-		return
-	}
-	s.jibRef(rel, line, m[2], l[m[2]:m[3]])
 }
 
 // jibRef judges a Jib base image like an image reference.

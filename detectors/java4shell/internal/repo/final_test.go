@@ -227,3 +227,47 @@ func TestSetupJavaSaysNotChecked(t *testing.T) {
 		t.Errorf("anchored versions: %v %+v", err, res.Findings)
 	}
 }
+
+// Final review B6: Jib, buildpack and toolchain settings were read only
+// when written on one line, in one form.
+func TestBuildSettingsForms(t *testing.T) {
+	const img = "eclipse-temurin:21.0.13_9-jre"
+	for name, c := range map[string]struct{ file, body, want string }{
+		"Jib in a pom, as formatted":    {"pom.xml", "<project><build><plugins><plugin>\n<configuration>\n  <from>\n    <image>" + img + "</image>\n  </from>\n</configuration></plugin></plugins></build></project>\n", "pom.xml:4 image-pin vulnerable"},
+		"Jib in a pom, on one line":     {"pom.xml", "<from><image>" + img + "</image></from>\n", "pom.xml:1 image-pin vulnerable"},
+		"Jib as a Maven property":       {"pom.xml", "<properties>\n  <jib.from.image>" + img + "</jib.from.image>\n</properties>\n", "pom.xml:2 image-pin vulnerable"},
+		"Jib in Gradle, as formatted":   {"build.gradle", "jib {\n  from {\n    image = \"" + img + "\"\n  }\n}\n", "build.gradle:3 image-pin vulnerable"},
+		"Jib in Gradle, on one line":    {"build.gradle", "jib { from { image = '" + img + "' } }\n", "build.gradle:1 image-pin vulnerable"},
+		"project.toml name and value":   {"project.toml", "[[build.env]]\nname = \"BP_JVM_VERSION\"\nvalue = \"22\"\n", "project.toml:2 java-line vulnerable"},
+		"project.toml value first":      {"project.toml", "[[build.env]]\nvalue = \"22\"\nname = \"BP_JVM_VERSION\"\n", "project.toml:3 not-checked unknown"},
+		"project.toml pinned":           {"project.toml", "[[build.env]]\nname = \"BP_JVM_VERSION\"\nvalue = \"21.0.13\"\n", "project.toml:2 java-pin vulnerable"},
+		"Gradle environment call":       {"build.gradle", "bootBuildImage {\n  environment(\"BP_JVM_VERSION\", \"22\")\n}\n", "build.gradle:2 java-line vulnerable"},
+		"Gradle environment index":      {"build.gradle", "environment[\"BP_JVM_VERSION\"] = \"21.0.13\"\n", "build.gradle:1 java-pin vulnerable"},
+		"Gradle environment map":        {"build.gradle", "environment = [\"BP_JVM_VERSION\": \"22\"]\n", "build.gradle:1 java-line vulnerable"},
+		"Kotlin jvmToolchain":           {"build.gradle.kts", "kotlin {\n    jvmToolchain(22)\n}\n", "build.gradle.kts:2 java-line vulnerable"},
+		"a convention plugin":           {"buildSrc/src/main/kotlin/conv.gradle.kts", "java { toolchain { languageVersion.set(JavaLanguageVersion.of(22)) } }\n", "buildSrc/src/main/kotlin/conv.gradle.kts:1 java-line vulnerable"},
+		"a Gradle file by another name": {"app/app.gradle", "java { toolchain { languageVersion = JavaLanguageVersion.of(22) } }\n", "app/app.gradle:1 java-line vulnerable"},
+		"a toolchain of a fixed line":   {"build.gradle.kts", "kotlin {\n    jvmToolchain(21)\n}\n", ""},
+	} {
+		if g := strings.Join(got(t, tree(t, map[string]string{c.file: c.body})), ", "); g != c.want {
+			t.Errorf("%s: [%s], want [%s]", name, g, c.want)
+		}
+	}
+}
+
+// Final review B6: a Compose file that sets a build argument overrides the
+// ARG default a FROM is read with: the image that build uses is not
+// checked.
+func TestComposeBuildArgs(t *testing.T) {
+	const df = "ARG TAG=21.0.13.1_2-jre\nFROM eclipse-temurin:${TAG}\n"
+	for name, c := range map[string]struct{ compose, want string }{
+		"a map":            {"services:\n  app:\n    build:\n      context: .\n      args:\n        TAG: 21.0.13_9-jre\n", "skip Dockerfile:2"},
+		"a list":           {"services:\n  app:\n    build:\n      context: .\n      args:\n        - TAG=21.0.13_9-jre\n", "skip Dockerfile:2"},
+		"another argument": {"services:\n  app:\n    build:\n      context: .\n      args:\n        HTTP_PROXY: http://proxy\n", ""},
+		"no arguments":     {"services:\n  app:\n    build: .\n", ""},
+	} {
+		if g := strings.Join(got(t, tree(t, map[string]string{"Dockerfile": df, "docker-compose.yml": c.compose})), ", "); g != c.want {
+			t.Errorf("%s: [%s], want [%s]", name, g, c.want)
+		}
+	}
+}

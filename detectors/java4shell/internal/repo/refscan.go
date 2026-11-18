@@ -29,6 +29,16 @@ func (s *scanner) images(opts Options) {
 	}
 	for i := range rs {
 		s.judgeRef(rs[i], opts)
+		// A Compose file that sets one of the FROM's ARGs as a build
+		// argument builds on another image than the default read here.
+		if rs[i].Kind == refs.KindDockerfile {
+			for _, v := range rs[i].Vars {
+				if f, ok := s.buildArgs[v.Name]; ok {
+					s.skips = append(s.skips, Skip{File: rs[i].File, Line: rs[i].Line, Reason: fmt.Sprintf("the FROM is read with the default of ARG %s, which %s sets as a build argument: the image that build uses is not checked", refs.CleanText(v.Name, 60), refs.CleanText(f, 120))})
+					break
+				}
+			}
+		}
 	}
 }
 
