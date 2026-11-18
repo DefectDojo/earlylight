@@ -342,20 +342,17 @@ func FuzzLimits(f *testing.F) {
 				t.Fatalf("size %d lims %v want %v max %d: detector %d saw %v, want %v (skipped %+v)", size, lims, want, maxSize, i, *fakes[i].seen, sees, tg.Skipped)
 			}
 		}
-		recorded := 0
-		for _, s := range tg.Skipped {
-			if s.Excluded {
-				recorded++
-			}
+		// One record for the path names each detector whose own limit kept
+		// it out (and that wanted it).
+		if len(tg.Skipped) > 1 {
+			t.Fatalf("more than one record for one path: %+v", tg.Skipped)
 		}
-		wantRecords := 0
 		for i := range lims {
-			if want[i] && over(i) && (readIt || ownSkip) {
-				wantRecords++
+			named := len(tg.Skipped) == 1 && tg.Skipped[0].Excluded &&
+				strings.Contains(tg.Skipped[0].Reason, fmt.Sprintf("limit of t-fz%d ", i))
+			if wantNamed := want[i] && over(i) && (readIt || ownSkip); named != wantNamed {
+				t.Fatalf("size %d lims %v want %v max %d: detector %d named %v, want %v: %+v", size, lims, want, maxSize, i, named, wantNamed, tg.Skipped)
 			}
-		}
-		if recorded != wantRecords {
-			t.Fatalf("size %d lims %v want %v max %d: %d own-limit records, want %d: %+v", size, lims, want, maxSize, recorded, wantRecords, tg.Skipped)
 		}
 		if !exists {
 			t.Fatalf("Exists false for a file the walk met")
