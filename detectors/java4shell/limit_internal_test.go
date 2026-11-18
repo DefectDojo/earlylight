@@ -245,3 +245,24 @@ func TestForget(t *testing.T) {
 		t.Errorf("libs %d releases %d kept %d settings %d bytes %d", len(s.libs), len(s.releases), len(s.kept), len(s.settings), s.keptBytes)
 	}
 }
+
+// Final review finding 3: a hard link to a VM library keeps the runtime
+// when a docker export then names the original path again, empty.
+func TestHardLinkKeepsRuntime(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	lib := testlib.Build(testlib.Lib{Version: "21.0.13+9-LTS", VBMI: true})
+	tw.WriteHeader(&tar.Header{Name: "opt/java/lib/server/libjvm.so", Mode: 0o755, Size: int64(len(lib)), Typeflag: tar.TypeReg})
+	tw.Write(lib)
+	tw.WriteHeader(&tar.Header{Name: "opt/copy/lib/server/libjvm.so", Typeflag: tar.TypeLink, Linkname: "opt/java/lib/server/libjvm.so"})
+	tw.WriteHeader(&tar.Header{Name: "opt/java/lib/server/libjvm.so", Mode: 0o755, Size: 0, Typeflag: tar.TypeReg})
+	tw.Close()
+	p := filepath.Join(t.TempDir(), "rootfs.tar")
+	if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tg := engine.ScanImage([]engine.Detector{&Detector{}}, "rootfs:"+p, engine.Options{})
+	if tg.Error != "" || len(tg.Findings) != 1 || tg.Findings[0].Verdict != engine.Vulnerable {
+		t.Errorf("error %q findings %+v", tg.Error, tg.Findings)
+	}
+}

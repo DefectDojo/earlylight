@@ -234,10 +234,13 @@ type UnreadVisitor interface {
 }
 
 // Forgetter is implemented by a Scan that keeps what it was shown by
-// path. When a path comes round again (an image filesystem can name one
-// file twice; the last entry is the file), Forget is called before the new
-// entry is handed out, so nothing of the earlier one survives, nor of what
-// was found inside it ("path!/member").
+// path. When a path comes round again in a docker export (rootfs:), where
+// the last entry is the file, as a file, directory or link, Forget is
+// called before the new entry is handed out, so nothing of the earlier one
+// survives, nor of what was found inside it ("path!/member"). It is not
+// called while a hard link names the path: the link keeps the earlier
+// file. A registry or docker-archive image is flattened top layer first,
+// each path once.
 type Forgetter interface {
 	Forget(path string)
 }

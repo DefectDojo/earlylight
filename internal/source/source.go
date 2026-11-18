@@ -63,6 +63,14 @@ type Options struct {
 	// (a deliberate exclusion when Over is nil); one over MaxFileSize is
 	// always recorded as such, and Over adds what it returns.
 	Over func(abs string, size int64, own bool) []Skip
+	// FirstWins (Tar): the stream is a flattened image, top layer first, so
+	// the first entry for a path is the file and later ones are ignored.
+	// Otherwise (a docker export) the last entry is the file.
+	FirstWins bool
+	// Other (Tar) receives each entry that is not a regular file (a
+	// directory, symbolic link or hard link), before Symlink or Hardlink:
+	// a path that was a file earlier in the stream is one no longer.
+	Other func(abs string)
 	// Unread receives each file the walk met and could not read (it could
 	// not be opened or read, or changed while it was read), and each
 	// directory whose contents could not be listed (dir), besides the
@@ -274,6 +282,7 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 	var skips []Skip
 	n := 0
 	tr := tar.NewReader(r)
+	met := map[string]bool{} // FirstWins: every path seen, of any type
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -285,6 +294,15 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 		abs := path.Clean("/" + h.Name)
 		if excluded(abs, opts.Exclude) {
 			continue
+		}
+		if opts.FirstWins {
+			if met[abs] {
+				continue
+			}
+			met[abs] = true
+		}
+		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA && opts.Other != nil { //nolint:staticcheck
+			opts.Other(abs)
 		}
 		switch h.Typeflag {
 		case tar.TypeSymlink:

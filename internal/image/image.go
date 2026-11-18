@@ -11,7 +11,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
@@ -62,7 +61,7 @@ func opened(img v1.Image) (*Opened, error) {
 			}
 		}
 	}
-	o.FS = mutate.Extract(img)
+	o.FS = flatten(img)
 	return o, nil
 }
 

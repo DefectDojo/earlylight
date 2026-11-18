@@ -318,14 +318,23 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 	so.Read = func(p string, head []byte, exe bool) (bool, int64) {
 		abs := w.abs(p)
 		if w.ctx.seen[abs] {
-			// The path comes round again: this entry is the file.
-			w.forget(abs)
+			// The path comes round again in a docker export: this entry
+			// is the file (a flattened image never repeats a path).
+			w.replaced(abs)
 		}
+		// A path that was a link is a file now.
+		delete(w.ctx.symlinks, abs)
+		delete(w.ctx.hardlinks, abs)
 		// The file exists whether or not any detector reads it, so Exists
 		// does not depend on which detectors ran.
 		w.ctx.seen[abs] = true
 		visitHead(p, head)
 		return decide(abs, head, exe)
+	}
+	so.Other = func(p string) {
+		if abs := w.abs(p); w.ctx.seen[abs] {
+			w.replaced(abs)
+		}
 	}
 	so.Unread = func(p string, dir bool) {
 		abs := w.abs(p)
@@ -339,6 +348,21 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 		}
 	}
 	return so
+}
+
+// replaced handles a file at p that a later entry replaces (a docker
+// export names a path again, as a file, directory or link): every scan
+// forgets what it kept of p, unless a hard link names p. A hard link keeps
+// the earlier file's content (it names the file, not the path), so what
+// was found in it stays, under p.
+func (w *walker) replaced(p string) {
+	for _, t := range w.ctx.hardlinks {
+		if t == p {
+			return
+		}
+	}
+	w.forget(p)
+	delete(w.ctx.seen, p)
 }
 
 // forget tells every scan to drop what it kept of p.
@@ -688,6 +712,10 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 	defer rc.Close()
 	so := w.sourceOptions(opts)
 	so.Uncounted = source.DefaultExcludes
+	// A registry or docker-archive image is flattened top layer first: the
+	// first entry for a path is the file. A docker export (rootfs:) is
+	// one filesystem, where the last entry is.
+	so.FirstWins = !strings.HasPrefix(ref, "rootfs:")
 	skips, n, err := source.Tar(rc, so, w.visit)
 	t.Skipped, t.Files = append(t.Skipped, skips...), n
 	if err != nil {

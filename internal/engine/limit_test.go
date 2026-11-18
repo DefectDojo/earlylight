@@ -618,3 +618,38 @@ func TestLimitVisitorWithoutLimiter(t *testing.T) {
 		t.Errorf("sizes %v seen %v skipped %+v", *v.sizes, *f.seen, tg.Skipped)
 	}
 }
+
+// Final review finding 3: in a docker export, a file a later entry
+// replaces with a link or directory is forgotten; one a hard link names
+// is not, as the link keeps its content.
+func TestReplacedInDockerExport(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	reg := func(n, body string) {
+		tw.WriteHeader(&tar.Header{Name: n, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
+		tw.Write([]byte(body))
+	}
+	reg("etc/a", "1")
+	tw.WriteHeader(&tar.Header{Name: "etc/a", Typeflag: tar.TypeSymlink, Linkname: "b"})
+	reg("etc/d", "1")
+	tw.WriteHeader(&tar.Header{Name: "etc/d", Typeflag: tar.TypeDir, Mode: 0o755})
+	reg("x", "real")
+	tw.WriteHeader(&tar.Header{Name: "y", Typeflag: tar.TypeLink, Linkname: "x"})
+	reg("x", "")
+	tw.Close()
+	p := filepath.Join(t.TempDir(), "rootfs.tar")
+	if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u := newUnreadScan("t-replaced")
+	var exists []bool
+	u.finish = func(ctx TargetContext) []Finding {
+		exists = []bool{ctx.Exists("/etc/a"), ctx.Exists("/etc/d"), ctx.Exists("/x")}
+		return nil
+	}
+	ScanImage([]Detector{u}, "rootfs:"+p, Options{})
+	sort.Strings(*u.forgot)
+	if strings.Join(*u.forgot, ",") != "/etc/a,/etc/d" || fmt.Sprint(exists) != "[false false true]" {
+		t.Errorf("forgot %v exists %v", *u.forgot, exists)
+	}
+}

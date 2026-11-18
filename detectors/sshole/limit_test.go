@@ -5,10 +5,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
 	_ "github.com/DefectDojo/earlylight/detectors/emudhra" // a detector that reads every file
 	"github.com/DefectDojo/earlylight/detectors/sshole/internal/testelf"
@@ -411,5 +418,107 @@ func TestPackageDBFromDisk(t *testing.T) {
 	padded(t, root, "lib/apk/db/installed", db, 5<<20)
 	if v, _ := sshVerdict(t, "--root", root, filepath.Join(root, "usr")); v != engine.Fixed {
 		t.Errorf("a 5 MiB apk database read from disk: %s", v)
+	}
+}
+
+// dirLayer is a layer of root's files, named relative to the root unless
+// abs; skip leaves names out.
+func dirLayer(t *testing.T, root string, abs bool, skip ...string) v1.Layer {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+		if err != nil || p == root {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		for _, s := range skip {
+			if rel == s {
+				return nil
+			}
+		}
+		h, _ := tar.FileInfoHeader(fi, "")
+		if fi.Mode()&os.ModeSymlink != 0 {
+			h.Linkname, _ = os.Readlink(p)
+		}
+		h.Name = rel
+		if abs {
+			h.Name = "/" + rel
+		}
+		if err := tw.WriteHeader(h); err != nil {
+			return err
+		}
+		if fi.Mode().IsRegular() {
+			b, _ := os.ReadFile(p)
+			tw.Write(b)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	b := buf.Bytes()
+	l, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// dockerArchive writes layers (bottom first) as a docker save archive.
+func dockerArchive(t *testing.T, layers ...v1.Layer) string {
+	t.Helper()
+	img, err := mutate.AppendLayers(empty.Image, layers...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "image.tar")
+	if err := tarball.WriteToFile(p, name.MustParseReference("test/sshole:1"), img); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// Final review finding 1: an upper layer that spells a path with a leading
+// slash replaces the lower layer's file, as a container runtime extracts
+// it: the real sshd over a placeholder is found, and an upper sshd_config
+// that turns PAM off is the one read.
+func TestUpperLayerSpelledDifferently(t *testing.T) {
+	scan := func(img string) []engine.Finding {
+		var out, errb bytes.Buffer
+		cli.Run(cfg, []string{"scan", "image", "--format", "json", "--detector", "sshole", "docker-archive:" + img}, &out, &errb)
+		var r struct {
+			Targets []struct {
+				Error    string           `json:"error"`
+				Findings []engine.Finding `json:"findings"`
+			} `json:"targets"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &r); err != nil || len(r.Targets) != 1 || r.Targets[0].Error != "" {
+			t.Fatalf("%v %+v %s", err, r, errb.String())
+		}
+		return r.Targets[0].Findings
+	}
+
+	// The real sshd in the upper layer, a placeholder below.
+	real := alpineRoot(t, "10.0_p1-r10")
+	lower := t.TempDir()
+	write(t, lower, "usr/sbin/sshd", []byte("placeholder"), 0o755)
+	upper := t.TempDir()
+	b, _ := os.ReadFile(filepath.Join(real, "usr/sbin/sshd"))
+	write(t, upper, "usr/sbin/sshd", b, 0o755)
+	fs := scan(dockerArchive(t, dirLayer(t, real, false, "usr/sbin/sshd"), dirLayer(t, lower, false), dirLayer(t, upper, true)))
+	if len(fs) != 1 || fs[0].Verdict != engine.Vulnerable || fs[0].Severity != "critical" {
+		t.Errorf("real sshd over a placeholder: %+v", fs)
+	}
+
+	// An upper sshd_config that turns PAM off.
+	root := pamRoot(t)
+	cfgUp := t.TempDir()
+	write(t, cfgUp, "etc/ssh/sshd_config", []byte("UsePAM no\n"), 0o644)
+	fs = scan(dockerArchive(t, dirLayer(t, root, false), dirLayer(t, cfgUp, true)))
+	if len(fs) != 1 || fs[0].Verdict.Cleared() {
+		t.Errorf("an upper sshd_config turning PAM off: %+v", fs)
 	}
 }
