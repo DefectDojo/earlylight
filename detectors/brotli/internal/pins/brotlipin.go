@@ -316,15 +316,25 @@ type scanner struct {
 	files     int
 	truncated bool
 	lines     map[string][]string // files split once per scan, for columns
-	// refLines holds file\x00line for every image reference the scan
-	// resolved, judged or not.
-	refLines map[string]bool
-	// bom holds the files that start with a byte-order mark, which is not
-	// part of line 1's columns.
-	bom map[string]bool
+	// judged holds file, line and rule for every value of a rule the scan
+	// judged there, whatever the verdict: what a plan finds on a finding's
+	// line when the pin is gone.
+	judged map[judgedKey]bool
 }
 
-func lineKey(file string, line int) string { return fmt.Sprint(file, "\x00", line) }
+type judgedKey struct {
+	file string
+	line int
+	rule string
+}
+
+// judge records that line of file holds a value of rule the scan judged.
+func (s *scanner) judge(file string, line int, rule string) {
+	if s.judged == nil {
+		s.judged = map[judgedKey]bool{}
+	}
+	s.judged[judgedKey{file, line, rule}] = true
+}
 
 // exists reports a regular file in the repository (or the overlay).
 func (s *scanner) exists(rel string) bool {
@@ -361,6 +371,7 @@ func (s *scanner) fileLines(rel string) []string {
 }
 
 func (s *scanner) add(p pin) {
+	s.judge(p.file, p.line, p.prod.rule())
 	if p.j.vd == bump || p.j.vd == noFixLine {
 		s.pins = append(s.pins, p)
 	}
@@ -391,7 +402,7 @@ func (s *scanner) result() Result {
 		}
 		seen[k] = true
 		f := p.finding()
-		if c, err := strconv.Atoi(f.Props["column"]); err == nil && p.line == 1 && s.bom[p.file] && c > len(utf8BOM) {
+		if c, err := strconv.Atoi(f.Props["column"]); err == nil && p.line == 1 && c > len(utf8BOM) && s.startsWithBOM(p.file) {
 			// The byte-order mark is not text on the line.
 			f.Props["column"] = strconv.Itoa(c - len(utf8BOM))
 		}
@@ -592,14 +603,16 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 	}
 	// The JSON readers see comments and a byte-order mark as spaces, so
 	// every line and column stays where it is in the file.
-	if bytes.HasPrefix(b, utf8BOM) {
-		if s.bom == nil {
-			s.bom = map[string]bool{}
-		}
-		s.bom[rel] = true
-	}
+	text := b
 	if isJSON(rel) {
 		b = jsonText(b)
+		// The text patterns read the file as the JSON readers do, so a
+		// value inside a comment is not a pin, but only when that is JSON:
+		// in looser text (single quotes, an unterminated comment) what
+		// looks like a comment may not be one.
+		if json.Valid(b) {
+			text = b
+		}
 	}
 	switch k {
 	case kindNvmrc:
@@ -628,7 +641,7 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 		s.netlify(rel, b)
 	}
 	if textCandidate(rel) {
-		s.textPatterns(rel, b) // in JSON, a value inside a comment is not a pin
+		s.textPatterns(rel, text)
 	}
 	if dependencyFile(rel) {
 		s.dependencies(rel, b)
@@ -637,6 +650,7 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 
 // textPin judges value written at byte col of line and adds the pin.
 func (s *scanner) textPin(prod product, source, desc, rel string, line, col int, value string) {
+	s.judge(rel, line, prod.rule())
 	j := judgeValue(prod, value, false)
 	if j.vd == notJudged {
 		return
@@ -891,10 +905,6 @@ func (s *scanner) images(files []string) error {
 		s.skips = append(s.skips, Skip{File: k.File, Line: k.Line, Reason: clean(k.Reason, 200)})
 	}
 	for _, r := range rs {
-		if s.refLines == nil {
-			s.refLines = map[string]bool{}
-		}
-		s.refLines[lineKey(r.File, r.Line)] = true
 		s.judgeImage(r)
 	}
 	return nil
@@ -915,6 +925,7 @@ func (s *scanner) judgeImage(r refs.Ref) {
 		s.skips = append(s.skips, Skip{File: r.File, Line: r.Line, Reason: clean(fmt.Sprintf("%s is pinned by digest only; its %s release is checked by the brotli-images scan, which reads the image", r.Image, prod.name()), 300)})
 		return
 	}
+	s.judge(r.File, r.Line, prod.rule())
 	// A tag@digest pin is judged by its tag; its fix moves both.
 	j := judgeValue(prod, ref.Tag, true)
 	if j.vd == notJudged || j.current == "" {
@@ -944,6 +955,7 @@ func (s *scanner) judgeLineImage(r refs.Ref, ref reference, desc string) {
 		if m == nil {
 			continue
 		}
+		s.judge(r.File, r.Line, lr.prod.rule())
 		j := judgeLine(lr.prod, parsed{parts: []int{atoi(m[1])}, text: m[1]})
 		if j.vd != noFixLine {
 			return
@@ -1073,6 +1085,13 @@ func ImageUpgrade(image string) (string, string, bool) {
 
 var utf8BOM = []byte("\xef\xbb\xbf")
 
+// startsWithBOM reports a file whose line 1 starts with a byte-order mark,
+// read as the column was found.
+func (s *scanner) startsWithBOM(rel string) bool {
+	ls := s.fileLines(rel)
+	return len(ls) > 0 && strings.HasPrefix(ls[0], string(utf8BOM))
+}
+
 func isJSON(rel string) bool {
 	return strings.HasSuffix(strings.ToLower(rel), ".json") || path.Base(rel) == "Pipfile.lock"
 }
@@ -1115,10 +1134,10 @@ func jsonText(b []byte) []byte {
 				i += e - 1
 			case '*':
 				e := bytes.Index(out[i+2:], []byte("*/"))
-				end := len(out)
-				if e >= 0 {
-					end = i + 2 + e + 2
+				if e < 0 {
+					return out // not a comment that ends: left as written
 				}
+				end := i + 2 + e + 2
 				blank(i, end)
 				i = end - 1
 			}

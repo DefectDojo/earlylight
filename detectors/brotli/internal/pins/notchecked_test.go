@@ -546,3 +546,111 @@ func TestScrub(t *testing.T) {
 		}
 	}
 }
+
+// A pin that moved to another line and became a value the scan cannot
+// judge is not fixed, even when another value lands on its old line: only
+// a value of the finding's own rule judged on its line clears it.
+func TestPlanMovedOntoAnotherValue(t *testing.T) {
+	digest := "node@sha256:" + strings.Repeat("a", 64)
+	k8s := func(first, second string) string {
+		return "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  containers:\n  - name: " + first + "\n  - name: " + second + "\n"
+	}
+	wf := "on: push\njobs:\n  test:\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 24.22.0\n"
+	for _, c := range []struct{ what, file, was, now string }{
+		{"an ARG with no default, another image on the old line", "Dockerfile",
+			"FROM golang:1.25 AS build\nFROM node:24.22.0\n", "ARG NODE_VERSION\nFROM golang:1.25 AS build\nFROM node:${NODE_VERSION}\n"},
+		{"a digest-only FROM pushed down two lines", "Dockerfile",
+			"FROM golang:1.25 AS build\nFROM node:24.22.0\n", "FROM alpine:3.22 AS a\nFROM golang:1.25 AS build\nRUN true\nFROM " + digest + "\n"},
+		{"Compose services reordered, the tag now unset", "compose.yaml",
+			"services:\n  web:\n    image: node:24.22.0\n  db:\n    image: postgres:16\n", "services:\n  db:\n    image: postgres:16\n  web:\n    image: node:${NODE_TAG}\n"},
+		{"Kubernetes containers reordered, the tag now $(TAG)", "pod.yaml",
+			k8s("a\n    image: node:24.22.0", "b\n    image: redis:7"), k8s("b\n    image: redis:7", "a\n    image: node:$(TAG)")},
+		{"GitLab jobs reordered, the tag now $NODE_TAG", ".gitlab-ci.yml",
+			"build:\n  image: node:24.22.0\n  script: [x]\nlint:\n  image: python:3.13\n  script: [y]\n", "lint:\n  image: python:3.13\n  script: [y]\nbuild:\n  image: node:$NODE_TAG\n  script: [x]\n"},
+		{"a distroless line image now built from a variable", "Dockerfile",
+			"FROM golang:1.25 AS b\nFROM gcr.io/distroless/nodejs20-debian12\n", "ARG V\nFROM golang:1.25 AS b\nFROM gcr.io/distroless/nodejs${V}-debian12\n"},
+		{"setup-node under a matrix the scan cannot resolve", ".github/workflows/ci.yml",
+			wf, "on: push\njobs:\n  test:\n    strategy:\n      matrix: ${{ fromJSON(needs.x.outputs.m) }}\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.node }}\n"},
+		{"setup-node from an env value that is not set", ".github/workflows/ci.yml",
+			wf, "on: push\njobs:\n  test:\n    runs-on: x\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ env.NODE_VERSION }}\n"},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.was})
+		f := only(t, root, pins.RuleNode)
+		write(t, root, map[string]string{c.file: c.now})
+		res, err := pins.Scan(context.Background(), root, nil, pins.Options{})
+		if err != nil || len(res.Skips) == 0 {
+			t.Errorf("%s: the rewrite is not a skip: %v %+v", c.what, err, res)
+			continue
+		}
+		ch, already, err := plan(root, f)
+		mustDecline(t, c.what, ch, already, err)
+	}
+}
+
+// In a JSON file that is not strict JSON (single quotes, an unterminated
+// comment), the text patterns read the file as written: what the comment
+// reader cannot follow is not taken as a comment.
+func TestTextPatternsInLooseJSON(t *testing.T) {
+	for _, c := range []struct{ file, body, current string }{
+		{"tools.json", "{'url': 'https://nodejs.org/dist/v24.22.0/node.tar.gz'}\n", "24.22.0"},
+		{"tasks.json", "{ files: ['src/*.ts'], \"setup\": \"nvm install 24.22.0\" }\n", "24.22.0"},
+		{"cdk.json", "{\n  'context': {\n    'install': 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash'\n  }\n}\n", "20"},
+		{"loose.json", "{ /* open\n\"setup\": \"nvm install 24.22.0\" }\n", "24.22.0"},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.body})
+		f := only(t, root, pins.RuleNode)
+		if f.Props["current"] != c.current {
+			t.Errorf("%s: %+v", c.file, f)
+		}
+	}
+}
+
+// The column counts no byte-order mark, and only on line 1: a file without
+// one keeps every column, and a later line of a file with one too. A
+// Dockerfile-prod is read only as an image file, and is no exception.
+func TestColumnsAndBOM(t *testing.T) {
+	for _, c := range []struct{ file, body, value string }{
+		{"package.json", `{"volta":{"node":"24.22.0"}}`, `{"volta":{"node":"24.22.0"}}`},
+		{"Dockerfile-prod", "\ufeffFROM node:24.22.0\n", "FROM node:24.22.0"},
+		{"Dockerfile_prod", "\ufeffFROM node:24.22.0\n", "FROM node:24.22.0"},
+		{"svc/package.json", "\ufeff{\n  \"volta\": {\n    \"node\": \"24.22.0\"\n  }\n}\n", `    "node": "24.22.0"`},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.body})
+		f := only(t, root, pins.RuleNode)
+		if want := itoa(strings.Index(c.value, "24.22.0") + 1); f.Props["column"] != want {
+			t.Errorf("%s line %d: column %q, want %q", c.file, f.Line, f.Props["column"], want)
+		}
+	}
+}
+
+// A lockfileVersion 1 "dependencies" of another shape is not checked, and
+// says so.
+func TestLockfileV1DependenciesShape(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string]string{"package-lock.json": `{"lockfileVersion": 1, "dependencies": [1]}`})
+	res, err := pins.Scan(context.Background(), root, nil, pins.Options{})
+	if err != nil || len(res.Skips) != 1 || !strings.Contains(res.Skips[0].Reason, "dependencies: not the expected shape") {
+		t.Errorf("%v %+v", err, res.Skips)
+	}
+}
+
+// scrub removes only an absolute checkout path, and only where it is a
+// whole path: a relative root, or the root's name inside another path or
+// word, is left alone.
+func TestScrubBoundaries(t *testing.T) {
+	for _, c := range []struct{ root, in, want string }{
+		{"/", "open /a.json: denied", "open /a.json: denied"},
+		{".", "open ./a.json: denied", "open ./a.json: denied"},
+		{"repo", "open repo/a.json: the repository is gone", "open repo/a.json: the repository is gone"},
+		{"/app", "gcr.io/app/web is pinned by digest only", "gcr.io/app/web is pinned by digest only"},
+		{"/app", "lstat /app/svc: x; /application is not /app", "lstat svc: x; /application is not ."},
+		{"/app", `"/app/a.json" is not read`, `"a.json" is not read`},
+	} {
+		if got := pins.Scrub(c.root, c.in); got != c.want {
+			t.Errorf("Scrub(%q, %q) = %q, want %q", c.root, c.in, got, c.want)
+		}
+	}
+}

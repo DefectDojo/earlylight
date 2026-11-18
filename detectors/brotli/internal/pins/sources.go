@@ -78,6 +78,7 @@ func (s *scanner) nodePin(prod product, source, desc, rel string, lines []string
 // addJudged adds a judged value written at col of line (col -1: not
 // editable verbatim).
 func (s *scanner) addJudged(prod product, source, desc, rel string, line, col int, value string, j judgement) {
+	s.judge(rel, line, prod.rule())
 	if j.vd == notJudged {
 		return
 	}
@@ -327,6 +328,7 @@ func (s *scanner) dotnetProject(rel string, b []byte) {
 				if strings.HasPrefix(t, "netcoreapp") {
 					major = 3 // netcoreapp1.x to 3.1: long out of support
 				}
+				s.judge(rel, i+1, RuleDotnet)
 				j := judgeLine(dotnet, parsed{parts: []int{major}, text: t})
 				if j.vd == noFixLine {
 					s.add(pin{prod: dotnet, source: "target-framework", desc: path.Base(rel) + " TargetFramework", file: rel, line: i + 1,
@@ -514,6 +516,7 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 			v := l[m[2]:m[3]]
 			desc := fmt.Sprintf("%s (%s)", tp.desc, path.Base(rel))
 			if tp.line {
+				s.judge(rel, i+1, tp.prod.rule())
 				j := judgeLine(tp.prod, parsed{parts: []int{atoi(v)}, text: v})
 				if j.vd != noFixLine {
 					continue
@@ -550,6 +553,7 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 			if uses > 1 {
 				col, notes = -1, "the release is written more than once in the command (for example a URL and its file name); change every one"
 			}
+			s.judge(rel, i+1, tp.prod.rule())
 			j := judgeValue(tp.prod, v, false)
 			if j.vd == notJudged {
 				continue

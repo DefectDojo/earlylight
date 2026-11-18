@@ -87,7 +87,7 @@ func Plan(ctx context.Context, root, file string, line int, rule string, props m
 		return nil, false, err
 	}
 	if !found {
-		if err := unchecked(root, before, file, line, rule, props, now); err != nil {
+		if err := unchecked(root, before, file, line, rule, now); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -197,7 +197,7 @@ func scanPins(ctx context.Context, root string, files []string, opts Options) (*
 // a file that did not get shorter (it looks like a second pin that was
 // always there), and a path that never held the pin (a wrong path, a
 // renamed file, a file no reader handles), which looks like a deleted file.
-func unchecked(root string, s *scanner, file string, line int, rule string, props map[string]string, content []byte) error {
+func unchecked(root string, s *scanner, file string, line int, rule string, content []byte) error {
 	n := strings.Count(string(content), "\n")
 	if len(content) > 0 && content[len(content)-1] != '\n' {
 		n++
@@ -205,13 +205,13 @@ func unchecked(root string, s *scanner, file string, line int, rule string, prop
 	// Without its line (line 0, or a line past the end of a file that got
 	// shorter) the finding may be anywhere in the file now.
 	lost := line == 0 || line > n
-	// An image pin can move to another line and become a reference the
-	// scan cannot judge (FROM node:${V} with no default for V, a digest
-	// only). Unless a resolved image still sits on its own line, a skip
-	// elsewhere in the file may be it. Without props the finding may be
-	// an image pin.
-	image := props["image"] != "" || strings.HasSuffix(props["source"], "-image") || props["source"] == ""
-	moved := image && !s.refLines[lineKey(file, line)]
+	// A pin can move to another line and become a value the scan cannot
+	// judge (FROM node:${V} with no default for V, a digest only, a
+	// setup-node version from a matrix it cannot resolve). Unless the
+	// scan judged a value of the finding's rule on its own line, a skip
+	// elsewhere in the file may be it. The cost: a pin replaced by
+	// another line in a file with any skip asks for a rescan.
+	moved := !s.judged[judgedKey{file, line, rule}]
 	for _, sk := range s.skips {
 		switch {
 		case sk.Line == 0:
@@ -224,7 +224,7 @@ func unchecked(root string, s *scanner, file string, line int, rule string, prop
 			// about another pin, which is reported on its own.
 			return notChecked("line %d of %s was not checked: %s", sk.Line, sk.File, scrub(root, sk.Reason))
 		case sk.File == file && moved:
-			return notChecked("line %d of %s holds no image now, and line %d was not checked (%s): the image may have moved there", line, file, sk.Line, scrub(root, sk.Reason))
+			return notChecked("line %d of %s holds no value of this kind now, and line %d was not checked (%s): the pin may have moved there", line, file, sk.Line, scrub(root, sk.Reason))
 		}
 	}
 	for _, q := range s.pins {
@@ -256,15 +256,44 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// scrub removes the checkout's absolute path from a reason. File system
-// errors name joined, so cleaned, paths.
+// scrub removes the checkout's absolute path from a reason where it is a
+// whole path: root/x becomes x and root alone becomes ".". File system
+// errors name joined, so cleaned, paths. A relative root (repo, .) is left
+// alone: its name is also a word, and it says nothing about the machine.
 func scrub(root, s string) string {
 	r := filepath.Clean(root)
-	if r == "." || r == string(filepath.Separator) {
+	if !filepath.IsAbs(r) || r == string(filepath.Separator) {
 		return s
 	}
-	s = strings.ReplaceAll(s, r+string(filepath.Separator), "")
-	return strings.ReplaceAll(s, r, ".")
+	sep := string(filepath.Separator)
+	var b strings.Builder
+	for {
+		i := strings.Index(s, r)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		j := i + len(r)
+		switch {
+		case i > 0 && pathByte(s[i-1]):
+			// Inside another path or word (gcr.io/app/web): kept.
+			b.WriteString(s[:j])
+		case strings.HasPrefix(s[j:], sep):
+			b.WriteString(s[:i])
+			j += len(sep)
+		case j < len(s) && pathByte(s[j]):
+			b.WriteString(s[:j]) // a longer name (/application)
+		default:
+			b.WriteString(s[:i] + ".")
+		}
+		s = s[j:]
+	}
+}
+
+// pathByte reports a byte that continues a path or a name.
+func pathByte(c byte) bool {
+	return c == '/' || c == '\\' || c == '.' || c == '_' || c == '-' || c == '~' || c == '+' || c == '@' ||
+		'0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // choose finds the pin a finding names. found is false when the file no
