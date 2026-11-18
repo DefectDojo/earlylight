@@ -667,7 +667,7 @@
  },
  {
   "name": "repo",
-  "what": "Source tree, offline: Dockerfiles, Compose, Kubernetes, setup-java, version files, Gradle",
+  "what": "Source tree, offline: Dockerfiles (with install forms: --mount, :arch, .arch, /release, =${VAR}), Compose, Kubernetes, setup-java, version files, Gradle",
   "mode": "repo",
   "dir": "repo",
   "expected": [
@@ -729,6 +729,31 @@
    [
     "k8s/deployment.yaml:10",
     "image-pin",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile.forms:2",
+    "os-package",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile.forms:3",
+    "os-package",
+    "unknown"
+   ],
+   [
+    "Dockerfile.forms:4",
+    "os-package",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile.forms:5",
+    "os-package",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile.forms:6",
+    "os-package",
     "vulnerable"
    ]
   ]

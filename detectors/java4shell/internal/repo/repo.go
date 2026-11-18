@@ -882,6 +882,30 @@ var (
 		"-p": true, "--target-release": true, "--option": true, "--repo": true, "--setopt": true, "--enablerepo": true, "--disablerepo": true}
 )
 
+var (
+	rpmArchRE = regexp.MustCompile(`\.(?:x86_64|aarch64|noarch|i686|i386|ppc64le|s390x)$`)
+	debArchRE = regexp.MustCompile(`:(?:amd64|arm64|i386|armhf|ppc64el|s390x|all|any|native)$`)
+)
+
+// packageName strips what a package argument adds to the name: an rpm
+// .arch, a Debian :arch or /target-release (openjdk-17-jdk/bookworm-backports),
+// keeping a "=version" pin. It returns "" for something that is not a
+// package argument (a path).
+func packageName(w string) string {
+	name, ver, pinned := strings.Cut(w, "=")
+	if i := strings.IndexByte(name, '/'); i >= 0 {
+		if strings.Count(name, "/") > 1 || i == 0 {
+			return "" // a path
+		}
+		name = name[:i]
+	}
+	name = debArchRE.ReplaceAllString(name, "")
+	if pinned {
+		return name + "=" + ver
+	}
+	return rpmArchRE.ReplaceAllString(name, "")
+}
+
 // installArgs returns the package arguments of the install commands on a
 // RUN line: the words after "<tool> [flags] install|add", without flags,
 // their values, paths and URLs.
@@ -889,8 +913,9 @@ func installArgs(run string) []string {
 	var out []string
 	for _, cmd := range jvm.SplitCommands(run) {
 		words := jvm.Words(cmd)
+		// The tool: not a flag's value (RUN --mount=...,target=/var/cache/apt).
 		i := 0
-		for i < len(words) && !pkgTools[path.Base(words[i])] {
+		for i < len(words) && (strings.HasPrefix(words[i], "-") || !pkgTools[path.Base(words[i])]) {
 			i++
 		}
 		if i == len(words) {
@@ -911,9 +936,11 @@ func installArgs(run string) []string {
 			switch {
 			case pkgValueFlags[w]:
 				j++
-			case strings.HasPrefix(w, "-"), strings.ContainsAny(w, "/$"), strings.Contains(w, "://"):
+			case strings.HasPrefix(w, "-"), strings.Contains(w, "://"), strings.HasPrefix(w, "/"), strings.HasPrefix(w, "$"):
 			default:
-				out = append(out, w)
+				if a := packageName(w); a != "" {
+					out = append(out, a)
+				}
 			}
 		}
 	}
@@ -946,7 +973,7 @@ var vendorNames = map[string]string{"distribution": "the distribution", "corrett
 // pinnedVersion is the Java version a package pin fixes, or "" for a pin
 // that matches several releases (17.*, ~17, 17).
 func pinnedVersion(h pkgHit) string {
-	if h.ver == "" || strings.Contains(h.ver, "*") || strings.Contains(h.op, "~") || strings.ContainsAny(h.op, "<>") {
+	if h.ver == "" || strings.Contains(h.ver, "$") || strings.Contains(h.ver, "*") || strings.Contains(h.op, "~") || strings.ContainsAny(h.op, "<>") {
 		return ""
 	}
 	up := h.ver
@@ -1003,6 +1030,13 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 	}
 	if h.ver != "" {
 		props["current"] = h.ver
+	}
+	if strings.Contains(h.ver, "$") {
+		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown, Props: props,
+			Reason:  "the version comes from a variable set outside this line",
+			Message: fmt.Sprintf("installs %s pinned to %s, a version this scan cannot read: not checked for the Java4Shell fix", h.name, refs.CleanText(h.ver, 60)),
+			Fix:     fmt.Sprintf("Check that the version the variable gives is Java %s or later.", fx)})
+		return
 	}
 	what := "without a version"
 	if h.ver != "" {

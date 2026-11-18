@@ -84,3 +84,22 @@ func TestPackageArgsOnly(t *testing.T) {
 		t.Errorf("install argument missed: %+v", f)
 	}
 }
+
+// Round-3 finding 1: install forms the argument parser dropped.
+func TestInstallFormsRound3(t *testing.T) {
+	for i, run := range []string{
+		"RUN --mount=type=cache,target=/var/cache/apt apt-get install -y openjdk-17-jre-headless",
+		"RUN --mount=type=cache,target=/var/cache/apk apk add openjdk21",
+		"RUN --mount=type=cache,target=/var/cache/dnf dnf install -y java-21-openjdk-headless",
+		"RUN apt-get install -y openjdk-17-jre-headless=${JDK_PKG}",
+		"RUN dnf install -y java-17-openjdk-headless.x86_64",
+		"RUN apt-get install -y openjdk-17-jre-headless:amd64",
+		"RUN apt-get install -y openjdk-17-jdk/bookworm-backports",
+	} {
+		root := tree(t, map[string]string{"Dockerfile": "FROM debian:12\n" + run + "\n"})
+		f, ok := find(scan(t, root), "Dockerfile", 2)
+		if !ok || f.Rule != RulePackage {
+			t.Errorf("%d %q: %+v (found %v)", i, run, f, ok)
+		}
+	}
+}
