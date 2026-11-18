@@ -391,17 +391,17 @@ func TestAlpineBranches(t *testing.T) {
 		}
 	}
 	root := tree(t, map[string]string{"Dockerfile": strings.Join([]string{
-		"FROM alpine:3.23",                     // 1
-		"RUN apk add --no-cache nginx",         // 2
-		"FROM alpine:3.24",                     // 3
-		"RUN apk add --no-cache \\",          // 4
-		"    curl nginx=1.30.6-r0",             // 5
-		"FROM alpine:3",                        // 6
-		"RUN apk add nginx",                    // 7
-		"FROM alpine:3.22",                     // 8
-		"RUN apk add nginx=1.28.3-r7",          // 9
-		"FROM alpine:3.24",                     // 10
-		"RUN apk add nginx=1.30.7-r0",          // 11
+		"FROM alpine:3.23",             // 1
+		"RUN apk add --no-cache nginx", // 2
+		"FROM alpine:3.24",             // 3
+		"RUN apk add --no-cache \\",    // 4
+		"    curl nginx=1.30.6-r0",     // 5
+		"FROM alpine:3",                // 6
+		"RUN apk add nginx",            // 7
+		"FROM alpine:3.22",             // 8
+		"RUN apk add nginx=1.28.3-r7",  // 9
+		"FROM alpine:3.24",             // 10
+		"RUN apk add nginx=1.30.7-r0",  // 11
 	}, "\n") + "\n"})
 	res, err := Scan(context.Background(), root, Options{})
 	if err != nil {

@@ -246,7 +246,7 @@
   "ref": "nginx:1.31.8@sha256:165ddde8751e75a1c907d24ef10d9f6deb08b57e0fe56caf67512486aff76d82",
   "expected": [
    [
-    "linux/arm64",
+    "linux/arm64/v8",
     "/usr/sbin/nginx",
     "flow-control",
     "vulnerable",
@@ -254,7 +254,7 @@
     "not-exposed"
    ],
    [
-    "linux/arm64",
+    "linux/arm64/v8",
     "/usr/sbin/nginx",
     "connection-reuse",
     "vulnerable",
@@ -262,7 +262,7 @@
     "not-exposed"
    ],
    [
-    "linux/arm64",
+    "linux/arm64/v8",
     "/usr/sbin/nginx-debug",
     "flow-control",
     "vulnerable",
@@ -270,7 +270,7 @@
     "not-exposed"
    ],
    [
-    "linux/arm64",
+    "linux/arm64/v8",
     "/usr/sbin/nginx-debug",
     "connection-reuse",
     "vulnerable",
@@ -402,10 +402,10 @@
   ]
  },
  {
-  "name": "official-1.9.15",
-  "what": "Docker official 1.9.15: HTTP/2's first year; CVE-2026-123007 only",
+  "name": "official-1.19.6",
+  "what": "Docker official 1.19.6: the last release before 76672e650, so not affected by CVE-2026-123633; vulnerable to CVE-2026-123007",
   "mode": "registry",
-  "ref": "nginx:1.9.15@sha256:932f7b8909321f20eedc0cf7d3970421b1d80b20f531936f3bc55575ccbe89ed",
+  "ref": "nginx:1.19.6@sha256:8e10956422503824ebb599f37c26a90fe70541942687f70bbdb744530fc9eba4",
   "expected": [
    [
     "linux/amd64",
@@ -442,17 +442,57 @@
   ]
  },
  {
-  "name": "official-1.8.1",
-  "what": "Docker official 1.8.1: before HTTP/2 (1.9.5)",
+  "name": "official-1.19.7",
+  "what": "Docker official 1.19.7: the first release with both flaws",
   "mode": "registry",
-  "ref": "nginx:1.8.1@sha256:9b3e9f189890ef9d6713c3384da3809731bdb0bff84e7b68da330ebadf533085",
+  "ref": "nginx:1.19.7@sha256:f3693fe50d5b1df1ecd315d54813a77afd56b0245a404055a946574deb6b34fc",
   "expected": [
    [
     "linux/amd64",
     "/usr/sbin/nginx",
     "flow-control",
-    "inactive",
-    "not-affected",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.10.3",
+  "what": "Docker official 1.10.3 (a single-platform image): CVE-2026-123007 only. Tags before 1.10 (1.9.x, 1.8.x, the pre-HTTP/2 releases) are schema 1 manifests no current client reads; the version boundary at 1.9.5 is covered by the unit tests and the noh2 case",
+  "mode": "registry",
+  "ref": "nginx:1.10.3@sha256:6202beb06ea61f44179e02ca965e8e13b961d12640101fca213efbfd145d7575",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
     "not-exposed"
    ],
    [
@@ -467,8 +507,8 @@
     "linux/amd64",
     "/usr/sbin/nginx-debug",
     "flow-control",
-    "inactive",
-    "not-affected",
+    "vulnerable",
+    "vulnerable",
     "not-exposed"
    ],
    [
@@ -614,6 +654,22 @@
     "vulnerable",
     "vulnerable",
     "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
    ]
   ]
  },
@@ -634,6 +690,22 @@
    [
     "linux/amd64",
     "/usr/sbin/nginx",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
     "connection-reuse",
     "fixed",
     "fixed",
