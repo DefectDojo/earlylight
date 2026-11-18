@@ -125,6 +125,11 @@ type File struct {
 	Executable bool
 	// Member is true for a file found inside an archive or package.
 	Member bool
+	// Outer is, for a member, the path of the file the walk met that holds
+	// it (the archive itself, however deep the member is). A scan that
+	// keeps what it found by file forgets a member with Outer: a path
+	// that merely contains "!/" is not a member.
+	Outer string
 }
 
 // Skip records something a detector could not check, and why.

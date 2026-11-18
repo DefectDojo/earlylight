@@ -16,8 +16,6 @@ import (
 	"github.com/DefectDojo/earlylight/detectors/brotli/internal/fingerprint"
 	"github.com/DefectDojo/earlylight/internal/archive"
 	"github.com/DefectDojo/earlylight/internal/engine"
-	"slices"
-	"strings"
 )
 
 // ID is the detector's ID.
@@ -80,16 +78,25 @@ func (d *Detector) Wants(_ string, head []byte, _ bool) bool {
 }
 
 // NewScan starts a filesystem or image scan.
-func (d *Detector) NewScan(engine.TargetKind) engine.Scan { return &scan{} }
+func (d *Detector) NewScan(engine.TargetKind) engine.Scan { return &scan{foundIn: map[string][]int{}} }
 
-type scan struct{ findings []engine.Finding }
+type scan struct {
+	findings []engine.Finding
+	// foundIn indexes findings by the file the walk met (a member under
+	// the file that holds it); gone marks those a later entry dropped.
+	foundIn map[string][]int
+	gone    []bool
+}
 
 // Forget drops what was found in p, and inside it: an image names it
-// again, and the last entry is the file.
+// again, and the last entry is the file. "Inside it" is what the engine
+// said is a member of p, not a path that starts the same way (a directory
+// can be named "app!"). It costs what p held, not every finding.
 func (s *scan) Forget(p string) {
-	s.findings = slices.DeleteFunc(s.findings, func(f engine.Finding) bool {
-		return f.Path == p || strings.HasPrefix(f.Path, p+"!/")
-	})
+	for _, i := range s.foundIn[p] {
+		s.gone[i] = true
+	}
+	delete(s.foundIn, p)
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
@@ -97,12 +104,26 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		return nil
 	}
 	if x, ok := assess.File(f.Path, f.Data); ok {
+		outer := f.Path
+		if f.Member && f.Outer != "" {
+			outer = f.Outer
+		}
+		s.foundIn[outer] = append(s.foundIn[outer], len(s.findings))
 		s.findings = append(s.findings, finding(x))
+		s.gone = append(s.gone, false)
 	}
 	return nil
 }
 
-func (s *scan) Finish(engine.TargetContext) []engine.Finding { return s.findings }
+func (s *scan) Finish(engine.TargetContext) []engine.Finding {
+	out := make([]engine.Finding, 0, len(s.findings))
+	for i, f := range s.findings {
+		if !s.gone[i] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
 
 var verdicts = map[assess.Status]engine.Verdict{
 	assess.Vulnerable: engine.Vulnerable,

@@ -136,7 +136,12 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			continue
 		}
 		s.dedupe[k] = true
-		outer, _, _ := strings.Cut(f.Path, "!/") // a member is forgotten with its archive
+		// A member is forgotten with the file that holds it. Only the
+		// engine knows which that is: a directory can be named "app!".
+		outer := f.Path
+		if f.Member && f.Outer != "" {
+			outer = f.Outer
+		}
 		s.foundIn[outer] = append(s.foundIn[outer], len(s.findings))
 		s.findings = append(s.findings, x)
 		s.gone = append(s.gone, false)

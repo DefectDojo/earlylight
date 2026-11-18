@@ -81,6 +81,34 @@ func TestCertifiNamedTwice(t *testing.T) {
 	}
 }
 
+// Final review A3: a file in a directory named "app!" is not a member of
+// the file "app" next to it: it is not forgotten when an image names
+// /opt/app again.
+func TestForgetIsNotByPrefix(t *testing.T) {
+	g3, err := os.ReadFile(filepath.Join(g3Bundle(t), "cacert.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, e := range []struct {
+		name string
+		body []byte
+	}{{"opt/app", []byte("one")}, {"opt/app!/ca.pem", g3}, {"opt/app", []byte("two")}} {
+		tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.body)), Typeflag: tar.TypeReg})
+		tw.Write(e.body)
+	}
+	tw.Close()
+	img := filepath.Join(t.TempDir(), "rootfs.tar")
+	if err := os.WriteFile(img, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := cli.Run(engine, []string{"scan", "image", "--detector", "emudhra", "rootfs:" + img}, &out, &errb); code != 1 {
+		t.Errorf("exit %d, want 1\n%s%s", code, out.String(), errb.String())
+	}
+}
+
 // Final review finding 5: forgetting a path costs what the path held, not
 // every finding kept: an image that repeats paths stays linear.
 func TestForgetIsCheap(t *testing.T) {

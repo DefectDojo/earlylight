@@ -521,6 +521,9 @@ func (w *walker) visit(f source.File) error {
 			member := !first
 			first = false
 			ff := File{Path: p, Data: b, Member: member, Executable: !member && f.Executable}
+			if member {
+				ff.Outer = f.Path
+			}
 			w.send(ff, func(i int) bool { return member && !w.dets[i].Manifest().Archives })
 		},
 		func(p, reason string) { w.t.Skipped = append(w.t.Skipped, source.Skip{Path: p, Reason: reason}) })

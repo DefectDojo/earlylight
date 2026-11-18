@@ -16,7 +16,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 	"time"
 
@@ -124,8 +123,10 @@ func excluded(p string, ex []string) bool {
 
 // collector is php2shell-scan's per-target collector.
 type collector struct {
-	data     *knowledge.Data
+	data *knowledge.Data
+	// binaries are those met, nil once forgotten; binAt indexes them by path.
 	binaries []*detect.Binary
+	binAt    map[string][]int
 	dbFiles  map[string][]byte
 	symlinks map[string]string
 	exclude  []string
@@ -162,10 +163,33 @@ func upx(head []byte) bool {
 }
 
 // Forget drops what was kept of p: an image names it again, and the last
-// entry is the file.
+// entry is the file. It costs what p held, not every binary kept.
 func (c *collector) Forget(p string) {
 	delete(c.dbFiles, p)
-	c.binaries = slices.DeleteFunc(c.binaries, func(b *detect.Binary) bool { return b.Path == p })
+	for _, i := range c.binAt[p] {
+		c.binaries[i] = nil
+	}
+	delete(c.binAt, p)
+}
+
+// keep records a binary under its path.
+func (c *collector) keep(b *detect.Binary) {
+	if c.binAt == nil {
+		c.binAt = map[string][]int{}
+	}
+	c.binAt[b.Path] = append(c.binAt[b.Path], len(c.binaries))
+	c.binaries = append(c.binaries, b)
+}
+
+// kept returns the binaries not forgotten, in the order met.
+func (c *collector) kept() []*detect.Binary {
+	out := make([]*detect.Binary, 0, len(c.binaries))
+	for _, b := range c.binaries {
+		if b != nil {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 func (c *collector) Visit(f engine.File) []engine.Skip {
@@ -185,7 +209,7 @@ func (c *collector) Visit(f engine.File) []engine.Skip {
 	}
 	if exe {
 		if b := detect.Inspect(f.Path, f.Data); b != nil {
-			c.binaries = append(c.binaries, b)
+			c.keep(b)
 		}
 	}
 	return nil
@@ -216,7 +240,7 @@ func (c *collector) Finish(ctx engine.TargetContext) []engine.Finding {
 			res.AddHardlink(p, target)
 		}
 	}
-	fs := assess.Run(assess.Input{Binaries: c.binaries, Index: ix, Aliases: res.Aliases, OS: osr, Data: c.data})
+	fs := assess.Run(assess.Input{Binaries: c.kept(), Index: ix, Aliases: res.Aliases, OS: osr, Data: c.data})
 	out := make([]engine.Finding, 0, len(fs))
 	for _, f := range fs {
 		out = append(out, runtimeFinding(f))
