@@ -304,9 +304,13 @@ func Printable(s string) string {
 // on the line; and a line past the end of a file that still has findings
 // like it.
 //
-// Callers (Sensei's /fix) must pass the finding's message: with none, only
-// the exact line is looked at, so a finding that moved is not followed and
-// declines, and a line with several findings of the rule returns the first.
+// Callers (Sensei's /fix) must pass the finding's message. Only with it does
+// Find follow a finding that moved to another line, for every rule. With
+// none, only the exact line is looked at and a line with several findings
+// of the rule returns the first; one not on its line declines for the apk
+// rules (apk-pin, apk-unpinned, eol-base) and build-config, whose key is
+// then unknown, while star-account, password-config and ansible-apk read
+// as gone.
 func Find(ctx context.Context, root, file string, line int, rule, message string, opts Options) (f *Finding, gone bool, err error) {
 	if !findRules[rule] || kindOf(file) == "" {
 		return nil, false, notChecked("%s findings in %s are not rescanned here, so it is not checked", rule, file)
@@ -395,10 +399,11 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 			// The same package, variable or build system, anywhere in
 			// the file: this rescan could not judge it.
 			return nil, false, notChecked("%s:%d is not checked this time (%s)", file, g.Line, g.Message)
-		case apk && (k.pkg != "" && g.Props["package"] == k.pkg && (g.Line == line || k.sameSpec(g.Props["spec"])) || k.any && apkRule && g.Line == line):
+		case apk && (k.pkg != "" && g.Props["package"] == k.pkg && (g.Line == line || k.sameSpec(g.Props["spec"])) || k.any && apkRule):
 			// The same package under another rule (a pin loosened, an
 			// end-of-life base no longer known as one), on the line or
-			// with the same spec elsewhere (the line moved).
+			// with the same spec elsewhere (the line moved). With no key,
+			// any apk finding in the file: it may be this one, moved.
 			return nil, false, notChecked("%s:%d now has %s (%s)", file, g.Line, g.Rule, g.Message)
 		case rule == RuleBuild && g.Rule == RuleBuild && (k.any || k.system != "" && g.Props["system"] == k.system && g.Props["package"] == k.pkg):
 			// One build finding per file and system: moved and reworded.
@@ -445,7 +450,8 @@ func keyOf(msg string) findKey {
 			k.rest = strings.TrimSpace(strings.TrimPrefix(msg, w[0]))
 		}
 	}
-	if m := viaRE.FindStringSubmatch(msg); m != nil {
+	// A stored message may end in a full stop or a newline.
+	if m := viaRE.FindStringSubmatch(strings.TrimRight(msg, ". \t\r\n")); m != nil {
 		k.via = m[1]
 	}
 	switch {
