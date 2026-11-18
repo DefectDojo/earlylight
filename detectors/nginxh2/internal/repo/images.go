@@ -200,6 +200,11 @@ func (f Family) LineText(t Tag) string {
 	if f.NoFix != "" {
 		return f.NoFix
 	}
+	for _, v := range f.Judge(t) {
+		if v.Status == knowledge.Unknown && strings.Contains(v.Reason, "newer than any") {
+			return fmt.Sprintf("%s %s is newer than any release known on %s: check its release notes for the fix for %s and %s, or read the image", f.Vendor, t.Version, knowledge.Checked, knowledge.Flow, knowledge.Reuse)
+		}
+	}
 	switch f.ID {
 	case Official.ID, Unprivileged.ID:
 		return fmt.Sprintf("nginx %s is on a line that received no fix (fixed lines: %s); move to 1.30.7 (stable) or 1.31.9 (mainline) by hand and test it", t.Version, knowledge.FixedText)

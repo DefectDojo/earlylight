@@ -101,13 +101,13 @@ func TestR3PulledDeployment(t *testing.T) {
 // run's --platform says.
 func TestR8FromPlatform(t *testing.T) {
 	o := engine.Options{Platforms: []string{"linux/amd64", "linux/arm64"}}
-	if got := verifyOptions(o, repo.Finding{Platform: "linux/riscv64"}).Platforms; len(got) != 1 || got[0] != "linux/riscv64" {
+	if got := first(verifyOptions(o, repo.Finding{Platform: "linux/riscv64"})).Platforms; len(got) != 1 || got[0] != "linux/riscv64" {
 		t.Errorf("FROM --platform: %v", got)
 	}
-	if got := verifyOptions(o, repo.Finding{}).Platforms; len(got) != 2 {
+	if got := first(verifyOptions(o, repo.Finding{})).Platforms; len(got) != 2 {
 		t.Errorf("no FROM --platform: %v", got)
 	}
-	if got := verifyOptions(o, repo.Finding{Platform: "$BUILDPLATFORM"}).Platforms; len(got) != 2 {
+	if got := first(verifyOptions(o, repo.Finding{Platform: "$BUILDPLATFORM"})).Platforms; len(got) != 2 {
 		t.Errorf("a variable platform: %v", got)
 	}
 }
@@ -129,3 +129,25 @@ func TestR13VerifyOnce(t *testing.T) {
 		t.Errorf("%d reads, want 2", calls)
 	}
 }
+
+// Verification nits: an unknown exposure drops the image's "http2: off";
+// the platforms a move must have are labelled by where they came from.
+func TestVNits(t *testing.T) {
+	f := pullFinding()
+	f.Props = map[string]string{"deployment": "the deployment sets volumes"}
+	it := &engine.Target{Findings: []engine.Finding{{Kind: KindFlow, Path: "/usr/sbin/nginx", Verdict: engine.Vulnerable, Facts: map[string]string{"exposure": "not-exposed", "http2": "off"}}}}
+	if out := fromPulled(f, it); out[0].Facts["http2"] == "off" {
+		t.Errorf("http2 off kept: %+v", out[0].Facts)
+	}
+	_, from := verifyOptions(engine.Options{Platforms: []string{"linux/amd64"}}, repo.Finding{Platform: "linux/riscv64"})
+	if from != "the FROM line's --platform" {
+		t.Errorf("FROM label: %q", from)
+	}
+	_, from = verifyOptions(engine.Options{Platforms: []string{"linux/amd64"}}, repo.Finding{})
+	if from != "the tree builds (--platform)" {
+		t.Errorf("--platform label: %q", from)
+	}
+}
+
+// first is the options verifyOptions returns.
+func first(o engine.Options, _ string) engine.Options { return o }

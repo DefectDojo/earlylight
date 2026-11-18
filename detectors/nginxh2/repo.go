@@ -229,6 +229,9 @@ func fromPulled(f repo.Finding, it *engine.Target) (out []engine.Finding) {
 			// The image's own configuration is not what this deployment
 			// runs: a weaker answer from it does not hold.
 			g.Facts["exposure"], g.Facts["exposure_unknown"] = "unknown", why
+			if g.Facts["http2"] == "off" {
+				g.Facts["http2"] = "unknown" // off in the image, not known where it is deployed
+			}
 			g.Message += " Exposure in this deployment is not known: " + why + "."
 			if g.Verdict == engine.Vulnerable {
 				g.Severity = "high"
@@ -362,7 +365,7 @@ func tagLister(o engine.Options) func(context.Context, string) ([]string, error)
 // (linux/amd64 and linux/arm64, or --platform) it is read in full and
 // every nginx in it has the fix for both CVEs (at least one nginx found);
 // and it is on the same base OS as the current image.
-func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current, target string) (string, error) {
+func (d *Detector) verifier(o engine.Options, label string) func(ctx context.Context, current, target string) (string, error) {
 	return func(ctx context.Context, current, target string) (string, error) {
 		if err := registryRef(target); err != nil {
 			return "", err
@@ -377,7 +380,7 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 		need, from := cur, current+" has"
 		switch {
 		case len(o.Platforms) > 0:
-			need, from = o.Platforms, "the tree builds (--platform)"
+			need, from = o.Platforms, label
 		case curErr != nil:
 			return "", &repo.Declined{Reason: fmt.Sprintf("the platforms of %s could not be listed (%v), so whether %s covers them is not checked; rescan to confirm, or name the platforms you build with --platform", current, curErr, target)}
 		}
@@ -474,17 +477,17 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 	reg := repo.Registry{}
 	if !o.Offline {
 		reg.Tags = tagLister(o)
-		reg.Verify = memoVerify(d.verifier(o))
+		reg.Verify = memoVerify(d.verifier(o, "the tree builds (--platform)"))
 		reg.APKIndex = apkIndex(o)
 	}
 	// One verifier per platform list, each reading a pair once.
 	byPlatforms := map[string]func(context.Context, string, string) (string, error){}
-	verifiers := func(oo engine.Options) func(context.Context, string, string) (string, error) {
-		k := strings.Join(oo.Platforms, ",")
+	verifiers := func(oo engine.Options, label string) func(context.Context, string, string) (string, error) {
+		k := strings.Join(oo.Platforms, ",") + "|" + label
 		if v, ok := byPlatforms[k]; ok {
 			return v
 		}
-		v := memoVerify(d.verifier(oo))
+		v := memoVerify(d.verifier(oo, label))
 		byPlatforms[k] = v
 		return v
 	}
@@ -585,11 +588,12 @@ func memoVerify(v func(context.Context, string, string) (string, error)) func(co
 // verifyOptions are the options a tag move is verified with: a FROM
 // line's own --platform is the platform it builds, whatever the run's
 // --platform says.
-func verifyOptions(o engine.Options, f repo.Finding) engine.Options {
+func verifyOptions(o engine.Options, f repo.Finding) (engine.Options, string) {
 	if f.Platform != "" && !strings.Contains(f.Platform, "$") {
 		o.Platforms = []string{f.Platform}
+		return o, "the FROM line's --platform"
 	}
-	return o
+	return o, "the tree builds (--platform)"
 }
 
 func indent(s string) string {

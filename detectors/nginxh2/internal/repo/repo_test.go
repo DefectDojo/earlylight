@@ -589,3 +589,15 @@ func TestV3Deployments(t *testing.T) {
 		}
 	}
 }
+
+// Verification nit: a tag on a line newer than any known says so, not
+// that its line received no fix.
+func TestVNitNewerLineText(t *testing.T) {
+	res := scan(t, map[string]string{"compose.yaml": "services:\n  a:\n    image: nginx:1.32.0\n  b:\n    image: nginx/nginx-ingress:5.9.0\n"})
+	for _, line := range []int{3, 5} {
+		f := one(t, res, "compose.yaml", line, RuleNotChecked, knowledge.Unknown)
+		if strings.Contains(f.Fix, "received no fix") || strings.Contains(f.Fix, "not on the 5.x line") || !strings.Contains(f.Fix, "newer") {
+			t.Errorf("line %d: %s", line, f.Fix)
+		}
+	}
+}
