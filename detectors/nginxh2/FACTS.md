@@ -88,23 +88,42 @@ of the binary.
 
 - The version that decides is the one in the binary's `nginx version:` line (or `Angie version:`, `Tengine version:`);
   every other `nginx/x.y.z` string in it must agree, or the binary is unknown. A version from a package database, a
-  file name or an image tag never clears a binary on its own.
+  file name or an image tag never clears a binary on its own. A version on a line newer than any known on the check
+  date (above 1.31; above 37.3 for NGINX Plus's numbered releases) is unknown, never fixed: NGINX Plus now numbers
+  its releases 37.x, and how they appear in a binary is not verified.
 - A build without a readable version (renamed, `server_tokens`-patched or stripped of the line) is unknown, never
-  cleared. A build without HTTP/2 (no `ngx_http_v2_module` and no `--with-http_v2_module` in readable configure
-  arguments) is not affected; one whose configure arguments cannot be read is not cleared on that ground.
+  cleared. A build is not affected for lack of HTTP/2 only when its configure arguments were read to their end and its
+  module list (1.9.11 and later) is present, and neither has HTTP/2; a cut or missing witness leaves it unknown.
+  HTTP/2 compiled into a core older than nginx's own (1.9.5) is a vendor backport: unknown, except Tengine 2.1.2 to
+  2.2.x (cores 1.6.2 and 1.8.1), whose source carries nginx's unfixed flow-control code and predates the reuse change
+  (alibaba/tengine `src/http/v2` at `tengine-2.1.2` and `tengine-2.2.2`; the change reached Tengine in 2.4.0).
 - Each CVE is judged on its own: a binary below 1.19.7 can be vulnerable to CVE-2026-123007 and not affected by
   CVE-2026-123633.
 - OpenResty is judged by its nginx core (the first three numbers of its version): a core at or past a fixed release
   is fixed; an OpenResty release newer than the newest known one (1.31.8.1) on an unfixed core is unknown, since
-  OpenResty backports as patches. Tengine and Angie: releases up to the newest known (3.2.0, 1.12.4) are vulnerable,
-  later ones unknown; Angie's `nginx/` compatibility number is never used. NGINX Plus is judged by its own release.
+  OpenResty backports as patches. Tengine and Angie: releases up to the newest known (3.2.0-rc5, 1.12.4) are
+  vulnerable, later ones unknown; Angie's `nginx/` compatibility number is never used. NGINX Plus is judged by its own
+  release.
 - The configuration decides **exposure**, never the verdict: HTTP/2 off everywhere is reported as "not exposed" on a
-  finding that stays vulnerable, because the binary still needs the update. An include that cannot be read, a
-  configuration generated at start (ingress-nginx) or not found makes exposure unknown, not off.
-- The configuration read is the one nginx loads: the compiled-in path (a relative one moved by `-p`), or the
-  container command's `-c`, also inside a `sh -c` text; the official image's templates with the image's environment
-  put in as its entrypoint does. A template variable left unset in `listen` or `http2`, a shell text that cannot be
-  read, or a glob nginx's glob(3) would read differently leaves exposure unknown. nginx keeps one socket per port:
-  `ssl` and `http2` on any `listen` of it, and the default server's `http2 on`, count for every server on it.
+  finding that stays vulnerable, because the binary still needs the update.
+- Exposure reads "not exposed" only when the command that starts nginx was read and every file it loads was read:
+  - the command is the image's (`docker-entrypoint.sh` trusted with the official image's four
+    `/docker-entrypoint.d` scripts only; tini, dumb-init, env and exec pass through) or, on a host, the `ExecStart` of
+    the systemd unit that runs that binary, drop-ins applied; nginx's own option parsing is followed (`-qc file`,
+    `-p`, `-g` whose includes are loaded); a `sh -c` text is read with quotes and line continuations and may run
+    nothing but nginx. Another wrapper (`/init`, a start script, supervisord, forego), another command before nginx,
+    a custom entrypoint script, no command, or more than one unit is unknown;
+  - an include the walk could not read (the engine's not-scanned records), one that is not kept, a glob the scan
+    does not read whole, a configuration generated at start (ingress-nginx, the F5 controller), a template variable
+    left unset anywhere in `listen`, in `http2` or standing for a directive, or more than the loader's budget across
+    all includes (2 Mi tokens, 16 MiB) is unknown;
+  - in a source tree, an image read from its registry under a deployment that sets its command, arguments,
+    environment or mounts (Compose, Kubernetes), or that a Dockerfile builds on, has unknown exposure.
+- The configuration read is the one nginx loads: the compiled-in path (a relative one moved by `-p`), or the command's
+  `-c`; the official image's templates with the image's environment put in as its entrypoint does. Globs follow
+  glob(3) (`[!x]`, `[[:digit:]]`, no leading dots); symbolic and hard links are followed inside the target. nginx keeps
+  one socket per port: `ssl` and `http2` on any `listen` of it, and the default server's `http2 on`, count for every
+  server on it. Anything that opens upstream connections while a request is served (`*_pass`, Lua handlers, njs,
+  `auth_request`, `mirror`, `perl`) counts as a proxy for CVE-2026-123633.
 - Findings carry CVSS 9.2 (Wiz). A 32-bit build, HTTP/2 without TLS (CVE-2026-123007) and HTTP/2 without a proxy
   directive (CVE-2026-123633) are reported as facts that weaken the published exploit path; none clears a finding.
