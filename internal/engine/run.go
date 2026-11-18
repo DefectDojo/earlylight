@@ -219,6 +219,9 @@ type walker struct {
 	exclusions []map[string]string
 	// linked counts the hard links that name each path.
 	linked map[string]int
+	// wasLink holds every path the walk met as a symbolic link, even one
+	// replaced since.
+	wasLink map[string]bool
 }
 
 // fileLimit is one detector's own limit on one file, and whether it asked
@@ -264,8 +267,15 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 	so := source.Options{
 		MaxFileSize:  opts.MaxFileSize,
 		IsExecutable: archive.IsExecutable,
-		Symlink:      func(p, t string) { w.ctx.symlinks[w.abs(p)] = t },
-		Hardlink:     func(p, t string) { w.setHardlink(w.abs(p), w.abs(t)) },
+		Symlink: func(p, t string) {
+			abs := w.abs(p)
+			w.ctx.symlinks[abs] = t
+			if w.wasLink == nil {
+				w.wasLink = map[string]bool{}
+			}
+			w.wasLink[abs] = true
+		},
+		Hardlink: func(p, t string) { w.setHardlink(w.abs(p), w.abs(t)) },
 	}
 	type headScan struct {
 		id string
@@ -356,10 +366,17 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 // export names a path again, as a file, directory or link): every scan
 // forgets what it kept of p, unless a hard link names p. A hard link keeps
 // the earlier file's content (it names the file, not the path), so what
-// was found in it stays, under p.
+// was found in it stays, under p. Nor is anything forgotten when a
+// directory above p is, or was earlier in the walk, a symbolic link: the
+// name then led somewhere else, and the two entries can be two files.
 func (w *walker) replaced(p string) {
 	if w.linked[p] > 0 {
 		return
+	}
+	for a := path.Dir(p); a != "/" && a != "."; a = path.Dir(a) {
+		if w.wasLink[a] {
+			return
+		}
 	}
 	w.forget(p)
 	delete(w.ctx.seen, p)

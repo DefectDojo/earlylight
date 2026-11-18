@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -105,5 +106,53 @@ func TestWrittenThroughALink(t *testing.T) {
 	tg = engine.ScanImage([]engine.Detector{&Detector{}}, "docker-archive:"+p, engine.Options{})
 	if len(tg.Findings) != 0 || tg.Gaps() != 2 {
 		t.Errorf("written both ways: findings %+v skipped %+v", tg.Findings, tg.Skipped)
+	}
+}
+
+// Final review A5: a docker export names d/lib twice, and d is a link that
+// points somewhere else by the second time: the two entries are two files
+// (e/lib and o/lib), so the first is not forgotten.
+func TestNamedAgainThroughAMovedLink(t *testing.T) {
+	export := func(es ...entry) string {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		for _, e := range es {
+			h := &tar.Header{Name: e.name, Mode: 0o755, Typeflag: tar.TypeReg, Size: int64(len(e.data))}
+			switch {
+			case e.dir:
+				h.Typeflag = tar.TypeDir
+			case e.link != "":
+				h.Typeflag, h.Linkname = tar.TypeSymlink, e.link
+			}
+			if err := tw.WriteHeader(h); err != nil {
+				t.Fatal(err)
+			}
+			tw.Write(e.data)
+		}
+		tw.Close()
+		p := filepath.Join(t.TempDir(), "rootfs.tar")
+		if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	clean := []byte("clean")
+	for name, c := range map[string]struct {
+		entries []entry
+		want    int
+	}{
+		"the link moves": {[]entry{{name: "e", dir: true}, {name: "o", dir: true}, {name: "d", link: "e"}, {name: "d/libbrotlidec.so.1", data: vulnerable},
+			{name: "d", link: "o"}, {name: "d/libbrotlidec.so.1", data: clean}}, 1},
+		"a link above moves": {[]entry{{name: "e/s", dir: true}, {name: "o/s", dir: true}, {name: "d", link: "e"}, {name: "d/s/libbrotlidec.so.1", data: vulnerable},
+			{name: "d", link: "o"}, {name: "d/s/libbrotlidec.so.1", data: clean}}, 1},
+		"the link becomes a directory": {[]entry{{name: "e", dir: true}, {name: "d", link: "e"}, {name: "d/libbrotlidec.so.1", data: vulnerable},
+			{name: "d", dir: true}, {name: "d/libbrotlidec.so.1", data: clean}}, 1},
+		// No link: the last entry is the file.
+		"a plain directory": {[]entry{{name: "d", dir: true}, {name: "d/libbrotlidec.so.1", data: vulnerable}, {name: "d/libbrotlidec.so.1", data: clean}}, 0},
+	} {
+		tg := engine.ScanImage([]engine.Detector{&Detector{}}, "rootfs:"+export(c.entries...), engine.Options{})
+		if tg.Error != "" || len(tg.Findings) != c.want {
+			t.Errorf("%s: error %q, %d findings, want %d: %+v", name, tg.Error, len(tg.Findings), c.want, tg.Findings)
+		}
 	}
 }
