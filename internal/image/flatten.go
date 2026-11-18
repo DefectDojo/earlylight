@@ -92,8 +92,10 @@ func (f *flattener) extract(img v1.Image, w io.Writer) error {
 }
 
 // rootName is an entry name relative to the root, "" for the root itself.
+// A backslash stays: it is an ordinary character in a file name, and a
+// file named "usr\lib" is not the directory usr/lib.
 func rootName(name string) string {
-	return strings.TrimPrefix(path.Clean("/"+strings.ReplaceAll(name, "\\", "/")), "/")
+	return strings.TrimPrefix(path.Clean("/"+name), "/")
 }
 
 func (f *flattener) layer(layer v1.Layer) error {

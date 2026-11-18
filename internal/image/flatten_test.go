@@ -135,6 +135,28 @@ func TestFlattenOnePathTwoSpellings(t *testing.T) {
 	}
 }
 
+// Final review A2: a backslash is an ordinary character in a file name. A
+// file named "usr\lib" is not the directory usr/lib, hides nothing below
+// it and is no whiteout.
+func TestFlattenBackslashIsAName(t *testing.T) {
+	lower := []ent{d("usr"), d("usr/lib"), f("usr/lib/libx.so", "lib"), f("usr/sbin/php-fpm", "php"), f("etc/ssl/ca.pem", "pem")}
+	for name, layers := range map[string][][]ent{
+		"an upper layer": {lower, {f(`usr\lib`, "junk"), f(`usr\sbin\php-fpm`, "junk"), f(`etc\.wh.ssl`, "junk")}},
+		"the same layer": {append([]ent{f(`usr\lib`, "junk"), f(`usr\sbin\php-fpm`, "junk"), f(`etc\.wh.ssl`, "junk")}, lower...)},
+	} {
+		got, unresolved := flat(t, layers...)
+		for p, want := range map[string]string{"usr/lib/libx.so": "f:lib", "usr/sbin/php-fpm": "f:php", "etc/ssl/ca.pem": "f:pem",
+			`usr\lib`: "f:junk", `usr\sbin\php-fpm`: "f:junk", `etc\.wh.ssl`: "f:junk"} {
+			if one(got, p) != want {
+				t.Errorf("%s: %s is %s, want %s", name, p, one(got, p), want)
+			}
+		}
+		if len(unresolved) != 0 {
+			t.Errorf("%s: unresolved %v", name, unresolved)
+		}
+	}
+}
+
 // Unsafe names fail the image, as with mutate.Extract.
 func TestFlattenUnsafe(t *testing.T) {
 	rc, _ := flatten(imageOf(t, []ent{f("../escape", "x")}))
