@@ -368,7 +368,7 @@ func (s *scanner) judgeVersion(rel string, line, col int, verText, source, vendo
 
 func pinFix(feature int, source string) string {
 	if fx := knowledge.FixedVersion(feature); fx != "" {
-		return fmt.Sprintf("Select Java %s or later of the same update in %s once your vendor publishes it (Amazon Corretto and SapMachine did on 2026-11-17; Temurin, Debian, Ubuntu and Alpine had not), and reinstall.", fx, source)
+		return fmt.Sprintf("Select Java %s or later of the same update in %s once your vendor publishes it (Amazon Corretto and SapMachine did on %s; Temurin, Debian, Ubuntu and Alpine had not %s), and reinstall.", fx, source, knowledge.VendorFixPublished, knowledge.AsOf())
 	}
 	return fmt.Sprintf("Java %d received no fix: move %s to a supported release with the fix, such as %s.", feature, source, knowledge.Upgrade(feature))
 }
@@ -1011,7 +1011,7 @@ func (s *scanner) judgePackage(rel string, line int, h pkgHit) {
 	switch h.vendor {
 	case "corretto", "sapmachine":
 		s.add(Finding{Rule: RulePackage, File: rel, Line: line, Level: "note", Status: StatusUnknown, Props: props,
-			Reason:  fmt.Sprintf("%s published Java %s on 2026-11-17: an image built after that gets it, one built or cached before does not", who, fx),
+			Reason:  fmt.Sprintf("%s published Java %s on %s: an image built after that gets it, one built or cached before does not", who, fx, knowledge.VendorFixPublished),
 			Message: fmt.Sprintf("installs %s %s: whether the image has the Java4Shell fix depends on when it was built", h.name, what),
 			Fix:     fmt.Sprintf("Rebuild without the layer cache, or pin %s to Java %s or later.", h.name, fx)})
 	case "zulu", "msopenjdk":

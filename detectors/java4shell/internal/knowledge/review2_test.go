@@ -1,6 +1,9 @@
 package knowledge
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Review findings 2, 12 and 13.
 func TestReviewBuilds(t *testing.T) {
@@ -65,5 +68,12 @@ func TestReviewSelfBuilt(t *testing.T) {
 		if got, why := Judge(v); got != c.want {
 			t.Errorf("Judge(%s) = %s (%s), want %s", c.v, got, why, c.want)
 		}
+	}
+}
+
+func TestReasonWording(t *testing.T) {
+	v, _ := Parse("21.0.13.11")
+	if _, why := Judge(v); strings.Contains(why, "fix is in") {
+		t.Errorf("reason: %s", why)
 	}
 }

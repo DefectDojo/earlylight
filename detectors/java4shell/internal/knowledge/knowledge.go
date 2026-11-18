@@ -20,8 +20,26 @@ const Bug = "JDK-8393212"
 // BugRef is how reasons name the fix.
 const BugRef = "JDK-8393212, inferred to be this CVE's fix"
 
-// Checked is the date the release data was last checked.
+// Checked is the date the release data was last checked: every "as of"
+// statement (a vendor or distribution had not published a fix) is as of
+// this date.
 const Checked = "2026-11-17"
+
+// Dates the release data rests on.
+const (
+	// Disclosed is when the CVE and the fixed releases were published.
+	Disclosed = "2026-11-17"
+	// FixReleased is the date of the OpenJDK update releases with the fix.
+	FixReleased = "2026-11-15"
+	// MainlineFixed is when the fix reached OpenJDK mainline.
+	MainlineFixed = "2026-11-16"
+	// VendorFixPublished is when Amazon Corretto and SapMachine published
+	// their fixed releases.
+	VendorFixPublished = "2026-11-17"
+)
+
+// AsOf says a status statement's date.
+func AsOf() string { return "as of " + Checked + ", the date of this detector's release data" }
 
 // Status is what the release data says about a version.
 type Status string
@@ -296,7 +314,7 @@ func Judge(v Version) (Status, string) {
 		if v.Build >= 0 && v.Build <= EALastUnfixed {
 			return Vulnerable, fmt.Sprintf("JDK %d build %d: the fix reached mainline after jdk-28+%d", f, v.Build, EALastUnfixed)
 		}
-		return Unknown, fmt.Sprintf("JDK %d build %s: the fix reached mainline on 2026-11-16, after jdk-28+%d; check that this build includes %s", f, buildText(v), EALastUnfixed, BugRef)
+		return Unknown, fmt.Sprintf("JDK %d build %s: the fix reached mainline on %s, after jdk-28+%d; check that this build includes %s", f, buildText(v), MainlineFixed, EALastUnfixed, BugRef)
 	case f > newestFeature:
 		return Unknown, fmt.Sprintf("Java %s is newer than this detector's release data (%s)", ver, Checked)
 	}
@@ -331,7 +349,7 @@ func Judge(v Version) (Status, string) {
 		// OpenJDK patch numbers are small (17.0.8.1, 21.0.13.1); a larger
 		// fourth number is a vendor's build number (Amazon Corretto's
 		// 21.0.13.11), which says nothing about the patch.
-		return Unknown, fmt.Sprintf("Java %s: the fourth number looks like a vendor build number, not an OpenJDK patch release, so the version does not show whether %s is in", ver, BugRef)
+		return Unknown, fmt.Sprintf("Java %s: the fourth number looks like a vendor build number, not an OpenJDK patch release, so the version does not show whether it has the fix (%s)", ver, BugRef)
 	}
 	switch c := Compare(v.Nums, l.Fixed); {
 	case c < 0:

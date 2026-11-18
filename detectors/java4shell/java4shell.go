@@ -72,7 +72,7 @@ func (d *Detector) Manifest() engine.Manifest {
 			"https://semgrep.dev/blog/2026/java4shell-openjdk-base64-vulnerability",
 			"https://github.com/corretto/corretto-21/blob/21.0.13.1.2/CHANGELOG.md",
 		},
-		Disclosed: "2026-11-17",
+		Disclosed: knowledge.Disclosed,
 		Targets:   []engine.TargetKind{engine.Filesystem, engine.Image, engine.Repository},
 		Kinds: append([]engine.Kind{
 			{ID: KindRuntime, Title: "Java runtime vulnerable to Java4Shell", Level: "error", SecuritySeverity: "9.2", CWEs: cwe,

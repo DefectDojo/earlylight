@@ -1,6 +1,7 @@
 package assess
 
 import (
+	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
 	"path"
 	"regexp"
 	"strings"
@@ -125,9 +126,9 @@ func upgradeLine(p Package) string {
 func distroStatus(p Package) string {
 	switch p.Manager {
 	case "apk":
-		return "Alpine had published no fixed package as of 2026-11-17"
+		return "Alpine had published no fixed package " + knowledge.AsOf()
 	case "dpkg":
-		return "Debian and Ubuntu had published no fixed package as of 2026-11-17"
+		return "Debian and Ubuntu had published no fixed package " + knowledge.AsOf()
 	case "rpm":
 		return "the distribution's fix status was not checked"
 	}

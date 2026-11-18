@@ -3,6 +3,9 @@ package java4shell_test
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -89,5 +92,23 @@ func TestEtcOverrideKept(t *testing.T) {
 	r, _ := run(t, "scan", "fs", "--as-root", root)
 	if f := byPath(r)["/opt/acme/jre"]; f.Facts["status"] == "mitigated" {
 		t.Errorf("the /usr/lib unit's mitigation counted over the /etc override: %+v", f.Facts)
+	}
+}
+
+// Round-2 nits: dates live in the knowledge package (the data date is
+// knowledge.Checked), and reasons read cleanly.
+func TestDatesInOnePlace(t *testing.T) {
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") || strings.HasSuffix(p, "knowledge.go") || strings.Contains(p, "testlib") {
+			return err
+		}
+		b, _ := os.ReadFile(p)
+		if regexp.MustCompile(`"[^"\n]*2026-\d\d-\d\d`).Match(b) {
+			t.Errorf("%s writes a date in a string; take it from the knowledge package", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
