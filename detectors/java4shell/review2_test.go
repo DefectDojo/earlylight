@@ -1,11 +1,13 @@
 package java4shell_test
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/testlib"
+	"github.com/DefectDojo/earlylight/internal/cli"
 	"github.com/DefectDojo/earlylight/internal/engine"
 )
 
@@ -34,5 +36,17 @@ func TestKeptCaps(t *testing.T) {
 	f := byPath(r)["/opt/fixed"]
 	if f.Verdict != engine.Unknown || !strings.Contains(f.Reason, "limit") {
 		t.Errorf("capped scan: %s (%s)", f.Verdict, f.Reason)
+	}
+}
+
+// Review finding 14: a JDK archive in the target is recorded as not
+// scanned, not passed over in silence.
+func TestJDKArchiveRecorded(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "opt/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz", []byte("\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03"))
+	var out, errb bytes.Buffer
+	cli.Run(cfg, []string{"scan", "fs", "--format", "json", "--detector", "java4shell", "--show-skipped", "--as-root", root}, &out, &errb)
+	if !strings.Contains(out.String(), "OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz") {
+		t.Errorf("JDK archive not recorded: %s", out.String())
 	}
 }

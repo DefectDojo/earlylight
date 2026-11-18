@@ -14,7 +14,6 @@ import (
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/knowledge"
 	"github.com/DefectDojo/earlylight/detectors/java4shell/internal/repo"
 	"github.com/DefectDojo/earlylight/internal/engine"
-	"github.com/DefectDojo/earlylight/internal/image"
 	"github.com/DefectDojo/earlylight/internal/netguard"
 	"github.com/DefectDojo/earlylight/internal/refs"
 	"github.com/DefectDojo/earlylight/internal/source"
@@ -119,6 +118,14 @@ func (d *Detector) pulled(dir string, f repo.Finding, o engine.Options, cache ma
 		it = engine.ScanImage([]engine.Detector{d}, img, engine.Options{Platform: "linux/amd64", MaxFileSize: o.MaxFileSize, Guarded: true, PublicOnly: o.PublicOnly})
 		cache[img] = it
 	}
+	return fromPulled(f, it)
+}
+
+// fromPulled turns what an image scan found into findings at the
+// reference. An image read only in part, where nothing was found, is
+// reported as not checked: no finding is not proof of no runtime.
+func fromPulled(f repo.Finding, it *engine.Target) (out []engine.Finding) {
+	img := f.Pull
 	if it.Error != "" {
 		g := repoFinding(f)
 		g.Message = fmt.Sprintf("image %s could not be read for Java4Shell: %s", img, refs.CleanText(it.Error, 300))
@@ -126,7 +133,15 @@ func (d *Detector) pulled(dir string, f repo.Finding, o engine.Options, cache ma
 		g.CVEs[0].Reason = g.Reason
 		return []engine.Finding{g}
 	}
-	var out []engine.Finding
+	defer func() {
+		if len(out) == 0 && (it.Incomplete != "" || it.Gaps() > 0 || len(it.Problems) > 0) {
+			g := repoFinding(f)
+			g.Verdict, g.Reason = engine.Unknown, "the image could not be read in full, so a runtime in it may have been missed"
+			g.Message = fmt.Sprintf("image %s was read only in part (%d files not scanned, %d problems): not checked for Java4Shell", img, it.Gaps(), len(it.Problems))
+			g.CVEs = []engine.CVEResult{{ID: knowledge.CVE, Verdict: g.Verdict, Reason: g.Reason}}
+			out = append(out, g)
+		}
+	}()
 	for _, x := range it.Findings {
 		if x.Verdict.Cleared() {
 			continue
@@ -148,6 +163,50 @@ func (d *Detector) pulled(dir string, f repo.Finding, o engine.Options, cache ma
 		out = append(out, g)
 	}
 	return out
+}
+
+// platforms lists the platforms of an image through the guarded
+// transport, within the timeout (image.Platforms uses neither).
+func platforms(ctx context.Context, ref string, o engine.Options) ([]string, error) {
+	if err := registryRef(ref); err != nil {
+		return nil, err
+	}
+	r, err := name.ParseReference(ref)
+	if err != nil {
+		return nil, err
+	}
+	timeout := o.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	desc, err := remote.Get(r, remote.WithContext(ctx), remote.WithTransport(netguard.Transport(o.PublicOnly)), remote.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		return nil, err
+	}
+	if !desc.MediaType.IsIndex() {
+		return nil, nil
+	}
+	idx, err := desc.ImageIndex()
+	if err != nil {
+		return nil, err
+	}
+	m, err := idx.IndexManifest()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, d := range m.Manifests {
+		if d.Platform == nil || d.Platform.OS == "unknown" || d.Annotations["vnd.docker.reference.type"] == "attestation-manifest" {
+			continue
+		}
+		out = append(out, d.Platform.String())
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s is an image index with no images", ref)
+	}
+	return out, nil
 }
 
 // Fix moves what can be moved to fixed releases: image tags to the first
@@ -293,11 +352,8 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 		if err := registryRef(target); err != nil {
 			return "", err
 		}
-		var cur []string
-		if registryRef(current) == nil {
-			cur, _ = image.Platforms(current) // the current tag may be gone: judge the target on its own
-		}
-		tp, err := image.Platforms(target)
+		cur, _ := platforms(ctx, current, o) // the current tag may be gone: judge the target on its own
+		tp, err := platforms(ctx, target, o)
 		if err != nil {
 			return "", err
 		}

@@ -107,11 +107,18 @@ func (d *Detector) Wants(p string, head []byte, _ bool) bool {
 		return archive.IsExecutable(head)
 	case base == "release", keep(p), jvm.SettingKind(p) != "", hsErr.MatchString(base):
 		return true
+	case jdkArchive.MatchString(base) && archive.IsArchive(head):
+		return true
 	}
 	return isScript(head)
 }
 
 var hsErr = regexp.MustCompile(`^hs_err_pid\d{1,10}\.log$`)
+
+// jdkArchive names a Java runtime download (OpenJDK21U-jre_x64_linux_...,
+// amazon-corretto-21-x64-linux-jdk.tar.gz, jdk-21_linux-x64_bin.tar.gz):
+// a runtime that is not installed, which this detector does not unpack.
+var jdkArchive = regexp.MustCompile(`(?i)(jdk|jre|corretto|zulu|temurin|liberica|sapmachine|semeru).*\.(tar\.gz|tgz|zip|tar\.xz|tar)$`)
 
 func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head[1] == '!' }
 
@@ -201,6 +208,8 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			}
 		}
 		return nil
+	case jdkArchive.MatchString(base) && archive.IsArchive(f.Data):
+		return []engine.Skip{{Path: f.Path, Reason: "a Java runtime archive, not installed: java4shell does not unpack it; check the runtime it holds before installing it"}}
 	case hsErr.MatchString(base):
 		if len(s.crashes) < maxHsErrs && len(f.Data) <= maxHsErr {
 			s.crashes = append(s.crashes, readCrash(f.Path, f.Data))
