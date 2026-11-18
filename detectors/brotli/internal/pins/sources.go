@@ -42,7 +42,11 @@ func mapGet(n *yaml.Node, key string) *yaml.Node {
 
 // nodePin judges a YAML scalar as a pin of prod at the scalar's own line.
 func (s *scanner) nodePin(prod product, source, desc, rel string, lines []string, v *yaml.Node, judge func(string) judgement) {
-	if v == nil || v.Kind != yaml.ScalarNode || strings.Contains(v.Value, "${{") || strings.Contains(v.Value, "$(") {
+	if v == nil || v.Kind != yaml.ScalarNode {
+		return
+	}
+	if strings.Contains(v.Value, "${{") || strings.Contains(v.Value, "$(") || strings.Contains(v.Value, "<<") {
+		s.expression(rel, v.Line, desc, strings.TrimSpace(v.Value))
 		return
 	}
 	if strings.Contains(v.Value, "\n") {
@@ -78,8 +82,8 @@ func (s *scanner) nodePin(prod product, source, desc, rel string, lines []string
 // addJudged adds a judged value written at col of line (col -1: not
 // editable verbatim).
 func (s *scanner) addJudged(prod product, source, desc, rel string, line, col int, value string, j judgement) {
-	s.judge(rel, line, prod.rule())
 	if j.vd == notJudged {
+		s.expression(rel, line, desc, value)
 		return
 	}
 	p := pin{prod: prod, source: source, desc: desc, file: rel, line: line, editFile: rel, editLine: line, col: -1, j: j}
@@ -249,7 +253,16 @@ func (s *scanner) circleCI(rel string, b []byte) {
 		if d := mapGet(n, "docker"); d != nil && d.Kind == yaml.SequenceNode {
 			for _, e := range d.Content {
 				img := mapGet(e, "image")
-				if img == nil || img.Kind != yaml.ScalarNode || strings.Contains(img.Value, "<<") {
+				if img == nil || img.Kind != yaml.ScalarNode {
+					continue
+				}
+				if k := strings.Index(img.Value, "<<"); k >= 0 {
+					// A runtime image whose tag is a parameter is not checked.
+					if ref, err := parseReference(strings.TrimSuffix(strings.TrimSpace(img.Value[:k]), ":")); err == nil {
+						if _, ok := imageRepos[ref.Registry+"/"+ref.Path]; ok {
+							s.expression(rel, img.Line, "CircleCI docker image", img.Value)
+						}
+					}
 					continue
 				}
 				s.judgeImage(refs.Ref{File: rel, Line: img.Line, Column: img.Column, Kind: "circleci", Context: "docker image",
@@ -328,7 +341,7 @@ func (s *scanner) dotnetProject(rel string, b []byte) {
 				if strings.HasPrefix(t, "netcoreapp") {
 					major = 3 // netcoreapp1.x to 3.1: long out of support
 				}
-				s.judge(rel, i+1, RuleDotnet)
+				s.judge(rel, i+1, RuleDotnet, "target-framework")
 				j := judgeLine(dotnet, parsed{parts: []int{major}, text: t})
 				if j.vd == noFixLine {
 					s.add(pin{prod: dotnet, source: "target-framework", desc: path.Base(rel) + " TargetFramework", file: rel, line: i + 1,
@@ -474,6 +487,13 @@ var textPatterns = []textPattern{
 	{re: regexp.MustCompile(`\bRuntime\.DOTNET_CORE_(\d)_\d\b`), prod: dotnet, source: "managed-runtime", desc: "AWS CDK Lambda runtime", line: true, sourceOnly: true, managed: true},
 }
 
+// versionVarExprRe finds a runtime version variable set from another
+// variable (ENV NODE_VERSION=$BUILD_NODE): group 3 is the variable read.
+var versionVarExprRe = regexp.MustCompile(`\b(?:ENV|ARG|export)\s+(NODE_VERSION|BUN_VERSION|DOTNET_VERSION|ASPNET_VERSION|ASPNETCORE_VERSION)[= ]["']?(\$\{?([A-Za-z_][A-Za-z0-9_]*)[^\s"']*)`)
+
+// setVarRe finds a variable set to a release (ARG NODE_VERSION=24.22.0).
+var setVarRe = regexp.MustCompile(`(?m)\b(?:ENV|ARG|export)\s+([A-Za-z_][A-Za-z0-9_]*)[= ]["']?v?[0-9]`)
+
 // sha256Re finds a pinned checksum, which a download's version change would
 // also need.
 var sha256Re = regexp.MustCompile(`\b[0-9a-f]{64}\b`)
@@ -501,9 +521,20 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 	src := isProgramSource(rel)
 	lines := splitLines(b)
 	spans := logicalSpans(lines)
+	// Variables the file sets to a release: a version variable that reads
+	// one is judged where it is set.
+	set := map[string]bool{}
+	for _, m := range setVarRe.FindAllSubmatch(b, -1) {
+		set[string(m[1])] = true
+	}
 	for i, l := range lines {
 		if i%4096 == 0 && s.ctx != nil && s.ctx.Err() != nil {
 			return
+		}
+		if !src {
+			if m := versionVarExprRe.FindStringSubmatch(l); m != nil && !set[m[3]] {
+				s.expression(rel, i+1, m[1], m[2])
+			}
 		}
 		for _, tp := range textPatterns {
 			if tp.sourceOnly != src {
@@ -516,7 +547,7 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 			v := l[m[2]:m[3]]
 			desc := fmt.Sprintf("%s (%s)", tp.desc, path.Base(rel))
 			if tp.line {
-				s.judge(rel, i+1, tp.prod.rule())
+				s.judge(rel, i+1, tp.prod.rule(), tp.source)
 				j := judgeLine(tp.prod, parsed{parts: []int{atoi(v)}, text: v})
 				if j.vd != noFixLine {
 					continue
@@ -553,7 +584,6 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 			if uses > 1 {
 				col, notes = -1, "the release is written more than once in the command (for example a URL and its file name); change every one"
 			}
-			s.judge(rel, i+1, tp.prod.rule())
 			j := judgeValue(tp.prod, v, false)
 			if j.vd == notJudged {
 				continue

@@ -654,3 +654,152 @@ func TestScrubBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// A value of the same rule but another source on the pin's old line (a
+// .NET SDK image where the aspnet image was, an ARG NODE_VERSION where
+// the node image was) is not the pin: a skip elsewhere still holds it.
+func TestPlanSameRuleOtherSource(t *testing.T) {
+	for _, c := range []struct{ what, was, now string }{
+		{"an SDK image on the aspnet image's line",
+			"FROM mcr.microsoft.com/dotnet/sdk:8.0.415 AS build\nFROM mcr.microsoft.com/dotnet/aspnet:8.0.32\n",
+			"ARG V\nFROM mcr.microsoft.com/dotnet/sdk:8.0.427 AS build\nFROM mcr.microsoft.com/dotnet/aspnet:${V}\n"},
+		{"an ARG NODE_VERSION on the node image's line",
+			"FROM golang:1.25 AS b\nFROM node:24.22.0\n",
+			"FROM golang:1.25 AS b\nARG NODE_VERSION=24.22.1\nFROM ${BASE}\n"},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{"Dockerfile": c.was})
+		res, err := pins.Scan(context.Background(), root, nil, pins.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var f *pins.Finding
+		for i := range res.Findings {
+			if res.Findings[i].Line == 2 {
+				f = &res.Findings[i]
+			}
+		}
+		if f == nil {
+			t.Fatalf("%s: %+v", c.what, res.Findings)
+		}
+		write(t, root, map[string]string{"Dockerfile": c.now})
+		ch, already, err := plan(root, *f)
+		mustDecline(t, c.what, ch, already, err)
+	}
+}
+
+// A value the scan could not judge (a range, an expression) on the pin's
+// line is not a judged value there.
+func TestPlanUnjudgedValueOnTheLine(t *testing.T) {
+	root := t.TempDir()
+	job := func(name, version string) string {
+		return "  " + name + ":\n    runs-on: x\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: " + version + "\n"
+	}
+	write(t, root, map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n" + job("a", "24.22.0") + job("b", "'>=22 <25'")})
+	f := only(t, root, pins.RuleNode)
+	if f.Line != 8 {
+		t.Fatalf("%+v", f)
+	}
+	write(t, root, map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n" + job("b", "'>=22 <25'") + job("a", "${{ env.NODE_VERSION }}")})
+	ch, already, err := plan(root, f)
+	mustDecline(t, "a range on the line, the pin now an unset env value", ch, already, err)
+}
+
+// A pin changed in place to an expression the scan does not resolve is
+// not checked, and is reported so: it never reads as fixed.
+func TestExpressionInPlace(t *testing.T) {
+	setup := func(v string) string {
+		return "on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: " + v + "\n"
+	}
+	envWF := func(v string) string {
+		return "on: push\nenv:\n  NODE_VERSION: " + v + "\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ env.NODE_VERSION }}\n"
+	}
+	matrix := func(v string) string {
+		return "on: push\njobs:\n  a:\n    runs-on: x\n    strategy:\n      matrix:\n        n: " + v + "\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.n }}\n"
+	}
+	circle := func(v string) string {
+		return "version: 2.1\njobs:\n  build:\n    docker:\n      - image: cimg/node:" + v + "\n    steps: [checkout]\n"
+	}
+	azure := func(v string) string {
+		return "steps:\n- task: NodeTool@0\n  inputs:\n    versionSpec: '" + v + "'\n"
+	}
+	for _, c := range []struct{ what, file, was, now string }{
+		{"node-version from vars", ".github/workflows/ci.yml", setup("24.22.0"), setup("${{ vars.NODE }}")},
+		{"node-version from inputs", ".github/workflows/ci.yml", setup("24.22.0"), setup("${{ inputs.node }}")},
+		{"workflow env from vars", ".github/workflows/ci.yml", envWF("24.22.0"), envWF("${{ vars.X }}")},
+		{"matrix from fromJSON", ".github/workflows/ci.yml", matrix("[24.22.0]"), matrix("${{ fromJSON(needs.x.outputs.m) }}")},
+		{"CircleCI image parameter", ".circleci/config.yml", circle("24.22.0"), circle("<< parameters.tag >>")},
+		{"Azure versionSpec variable", "azure-pipelines.yml", azure("24.22.0"), azure("$(nodeVersion)")},
+		{".nvmrc variable", ".nvmrc", "24.22.0\n", "${NODE_VERSION}\n"},
+		{"ENV from a build variable", "Dockerfile", "FROM debian:12\nENV NODE_VERSION=24.22.0\n", "FROM debian:12\nENV NODE_VERSION=$BUILD_NODE\n"},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.was})
+		f := only(t, root, pins.RuleNode)
+		write(t, root, map[string]string{c.file: c.now})
+		res, err := pins.Scan(context.Background(), root, nil, pins.Options{})
+		if err != nil || len(res.Skips) != 1 || res.Skips[0].Line != f.Line {
+			t.Errorf("%s: want one not-checked item on line %d: %v %+v", c.what, f.Line, err, res.Skips)
+		}
+		ch, already, err := plan(root, f)
+		mustDecline(t, c.what, ch, already, err)
+	}
+	// A variable the file sets to a release is read where it is set: the
+	// reference to it is no gap.
+	root := t.TempDir()
+	write(t, root, map[string]string{"Dockerfile": "ARG NODE_VERSION=24.22.1\nFROM debian:12\nENV NODE_VERSION=$NODE_VERSION\n"})
+	if res, err := pins.Scan(context.Background(), root, nil, pins.Options{}); err != nil || len(res.Skips) != 0 || len(res.Findings) != 0 {
+		t.Errorf("a set variable: %v %+v", err, res)
+	}
+}
+
+// The judged record covers line images, line text patterns and every
+// rule, keyed by the rule and the line it was found on.
+func TestPlanJudgedRecord(t *testing.T) {
+	digest := "FROM node@sha256:" + strings.Repeat("a", 64)
+	for _, c := range []struct {
+		what, was, now string
+		line           int
+		rule           string
+		gone           bool
+	}{
+		{"a line image fixed in place", "FROM gcr.io/distroless/nodejs20-debian12 AS a\n" + digest + " AS b\n",
+			"FROM gcr.io/distroless/nodejs22-debian12 AS a\n" + digest + " AS b\n", 1, pins.RuleNode, true},
+		{"a NodeSource line fixed in place", digest + "\nRUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash\n",
+			digest + "\nRUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash\n", 2, pins.RuleNode, true},
+		{"a .NET image fixed in place", "FROM mcr.microsoft.com/dotnet/aspnet:8.0.32 AS a\n" + digest + " AS b\n",
+			"FROM mcr.microsoft.com/dotnet/aspnet:8.0.33 AS a\n" + digest + " AS b\n", 1, pins.RuleDotnet, true},
+		{"a node pin whose line now holds a .NET image", "FROM node:24.22.0 AS a\n",
+			"FROM mcr.microsoft.com/dotnet/aspnet:8.0.33 AS a\nARG V\nFROM node:${V}\n", 1, pins.RuleNode, false},
+		{"a judged value on the next line, not on the pin's", digest + " AS a\nFROM node:24.22.0 AS b\n",
+			digest + " AS a\nRUN true\nFROM node:24.22.1 AS b\n", 2, pins.RuleNode, false},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{"Dockerfile": c.was})
+		f := only(t, root, c.rule)
+		if f.Line != c.line {
+			t.Fatalf("%s: %+v", c.what, f)
+		}
+		write(t, root, map[string]string{"Dockerfile": c.now})
+		// With the finding's props and without them.
+		for _, props := range []map[string]string{f.Props, nil} {
+			ch, already, err := pins.Plan(context.Background(), root, f.File, f.Line, f.Rule, props)
+			if c.gone {
+				mustBeGone(t, c.what, ch, already, err)
+			} else {
+				mustDecline(t, c.what, ch, already, err)
+			}
+		}
+	}
+	// A skip on the pin's own line holds it even beside a judged value of
+	// its rule on that line.
+	root := t.TempDir()
+	pod := func(a, b string) string {
+		return "apiVersion: v1\nkind: Pod\nmetadata: {name: p}\nspec:\n  containers: [{name: a, image: " + a + "}, {name: b, image: " + b + "}]\n"
+	}
+	write(t, root, map[string]string{"pod.yaml": pod("node:24.22.0", "redis:7")})
+	f := only(t, root, pins.RuleNode)
+	write(t, root, map[string]string{"pod.yaml": pod("node:24.22.1", "node:$(TAG)")})
+	ch, already, err := plan(root, f)
+	mustDecline(t, "a skip beside a judged value on the line", ch, already, err)
+}

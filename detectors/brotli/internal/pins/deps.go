@@ -169,7 +169,7 @@ func (s *scanner) addDep(d depPin) {
 	if !ok {
 		return
 	}
-	s.judge(d.file, d.line, RuleDependency)
+	s.judge(d.file, d.line, RuleDependency, "dependency")
 	affected, fixed := depVerdict(b, d.version)
 	if !affected {
 		return
@@ -569,7 +569,7 @@ func (s *scanner) nugetLock(rel string, b []byte) {
 				continue
 			}
 			line, _, _ := locateJSON(b, "", name, "")
-			s.judge(rel, max(line, 1), RuleDotnet)
+			s.judge(rel, max(line, 1), RuleDotnet, "runtime-pack-lock")
 			j := judgeValue(dotnet, p.Resolved, false)
 			if j.vd != bump && j.vd != noFixLine {
 				continue

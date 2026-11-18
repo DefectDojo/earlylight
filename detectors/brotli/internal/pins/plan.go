@@ -87,7 +87,7 @@ func Plan(ctx context.Context, root, file string, line int, rule string, props m
 		return nil, false, err
 	}
 	if !found {
-		if err := unchecked(root, before, file, line, rule, now); err != nil {
+		if err := unchecked(root, before, file, line, rule, props, now); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
@@ -192,12 +192,19 @@ func scanPins(ctx context.Context, root string, files []string, opts Options) (*
 // unchecked explains why a pin the rescan did not find is still not known to
 // be gone, or returns nil when the rescan checked the place it was.
 //
-// Two cases cannot be told apart from a fix, and read as gone: a pin that
-// moved to another line and changed to another release without the fix, in
-// a file that did not get shorter (it looks like a second pin that was
-// always there), and a path that never held the pin (a wrong path, a
-// renamed file, a file no reader handles), which looks like a deleted file.
-func unchecked(root string, s *scanner, file string, line int, rule string, content []byte) error {
+// Three cases cannot be told apart from a fix, and read as gone:
+//
+//   - a pin that moved to another line and changed to another release
+//     without the fix, in a file that did not get shorter: it looks like a
+//     second pin that was always there;
+//   - a path that never held the pin (a wrong path, a renamed file, a file
+//     no reader handles): it looks like a deleted file;
+//   - a pin that moved and became a value the scan cannot judge, while a
+//     judged value of the same rule and source lands on its old line (two
+//     node stages, services or jobs reordered with the pinned one now
+//     unresolved; a flow-style Kubernetes list rewrapped): the value on the
+//     line looks like the pin, fixed in place.
+func unchecked(root string, s *scanner, file string, line int, rule string, props map[string]string, content []byte) error {
 	n := strings.Count(string(content), "\n")
 	if len(content) > 0 && content[len(content)-1] != '\n' {
 		n++
@@ -211,7 +218,7 @@ func unchecked(root string, s *scanner, file string, line int, rule string, cont
 	// scan judged a value of the finding's rule on its own line, a skip
 	// elsewhere in the file may be it. The cost: a pin replaced by
 	// another line in a file with any skip asks for a rescan.
-	moved := !s.judged[judgedKey{file, line, rule}]
+	moved := !s.judged[judgedKey{file, line, rule, props["source"]}]
 	for _, sk := range s.skips {
 		switch {
 		case sk.Line == 0:

@@ -323,17 +323,19 @@ type scanner struct {
 }
 
 type judgedKey struct {
-	file string
-	line int
-	rule string
+	file         string
+	line         int
+	rule, source string
 }
 
-// judge records that line of file holds a value of rule the scan judged.
-func (s *scanner) judge(file string, line int, rule string) {
+// judge records that line of file holds a value of rule from source the
+// scan judged, under its source and under "" (a finding without props).
+func (s *scanner) judge(file string, line int, rule, source string) {
 	if s.judged == nil {
 		s.judged = map[judgedKey]bool{}
 	}
-	s.judged[judgedKey{file, line, rule}] = true
+	s.judged[judgedKey{file, line, rule, source}] = true
+	s.judged[judgedKey{file, line, rule, ""}] = true
 }
 
 // exists reports a regular file in the repository (or the overlay).
@@ -371,7 +373,7 @@ func (s *scanner) fileLines(rel string) []string {
 }
 
 func (s *scanner) add(p pin) {
-	s.judge(p.file, p.line, p.prod.rule())
+	s.judge(p.file, p.line, p.prod.rule(), p.source)
 	if p.j.vd == bump || p.j.vd == noFixLine {
 		s.pins = append(s.pins, p)
 	}
@@ -650,9 +652,9 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 
 // textPin judges value written at byte col of line and adds the pin.
 func (s *scanner) textPin(prod product, source, desc, rel string, line, col int, value string) {
-	s.judge(rel, line, prod.rule())
 	j := judgeValue(prod, value, false)
 	if j.vd == notJudged {
+		s.expression(rel, line, desc, value)
 		return
 	}
 	at := col
@@ -910,6 +912,22 @@ func (s *scanner) images(files []string) error {
 	return nil
 }
 
+// imageSource is Props["source"] of an official runtime image's pin.
+var imageSource = map[product]string{node: "node-image", dotnet: "dotnet-image", bun: "bun-image", dotnetSDK: "dotnet-sdk-image"}
+
+// exprRef matches a value written as a reference the scan does not
+// resolve: ${{ ... }}, ${VAR}, $VAR, $(VAR), << parameters.x >>.
+var exprRef = regexp.MustCompile(`\$\{\{|\$\{[A-Za-z_]|\$[A-Za-z_]|\$\(|<<`)
+
+// expression records a value written as an expression as not checked: a
+// pin changed to one in place is not fixed, and is not known to be.
+func (s *scanner) expression(rel string, line int, desc, value string) {
+	if line < 1 || !exprRef.MatchString(value) {
+		return
+	}
+	s.skips = append(s.skips, Skip{File: rel, Line: line, Reason: clean(fmt.Sprintf("%s is %s, an expression the scan does not resolve; check the release it selects by hand", desc, value), 300)})
+}
+
 func (s *scanner) judgeImage(r refs.Ref) {
 	ref, err := parseReference(r.Image)
 	if err != nil {
@@ -925,13 +943,13 @@ func (s *scanner) judgeImage(r refs.Ref) {
 		s.skips = append(s.skips, Skip{File: r.File, Line: r.Line, Reason: clean(fmt.Sprintf("%s is pinned by digest only; its %s release is checked by the brotli-images scan, which reads the image", r.Image, prod.name()), 300)})
 		return
 	}
-	s.judge(r.File, r.Line, prod.rule())
+	s.judge(r.File, r.Line, prod.rule(), imageSource[prod])
 	// A tag@digest pin is judged by its tag; its fix moves both.
 	j := judgeValue(prod, ref.Tag, true)
 	if j.vd == notJudged || j.current == "" {
 		return
 	}
-	p := pin{prod: prod, source: map[product]string{node: "node-image", dotnet: "dotnet-image", bun: "bun-image", dotnetSDK: "dotnet-sdk-image"}[prod], desc: desc,
+	p := pin{prod: prod, source: imageSource[prod], desc: desc,
 		file: r.File, line: r.Line, editFile: r.EditFile, editLine: r.EditLine, col: -1, j: j, image: r.Image}
 	if p.editFile == "" {
 		p.editFile, p.editLine = r.File, r.Line
@@ -955,7 +973,7 @@ func (s *scanner) judgeLineImage(r refs.Ref, ref reference, desc string) {
 		if m == nil {
 			continue
 		}
-		s.judge(r.File, r.Line, lr.prod.rule())
+		s.judge(r.File, r.Line, lr.prod.rule(), lr.source)
 		j := judgeLine(lr.prod, parsed{parts: []int{atoi(m[1])}, text: m[1]})
 		if j.vd != noFixLine {
 			return
