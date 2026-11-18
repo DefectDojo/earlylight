@@ -567,3 +567,25 @@ func TestR17YAMLErrors(t *testing.T) {
 		t.Errorf("%+v", res.Skips)
 	}
 }
+
+// Verification 3: changes a deployment makes reach the image they apply
+// to, through FROM aliases, Helm charts, Compose overrides and extends.
+func TestV3Deployments(t *testing.T) {
+	res := scan(t, map[string]string{
+		"Dockerfile":                      "FROM nginx:1.29 AS base\nFROM base\nCOPY h2.conf /etc/nginx/conf.d/\n",
+		"chart/values.yaml":               "image:\n  repository: nginx\n  tag: \"1.29\"\n",
+		"chart/templates/deploy.yaml":     "spec:\n  containers:\n  - name: web\n    volumeMounts:\n    - {name: conf, mountPath: /etc/nginx/conf.d}\n",
+		"app/docker-compose.yml":          "services:\n  web:\n    image: nginx:1.29\n  other:\n    image: nginx:1.30\n    extends: {file: base.yml, service: web}\n  third:\n    image: nginx:1.31\n    volumes_from: [web]\n",
+		"app/docker-compose.override.yml": "services:\n  web:\n    volumes:\n      - ./conf.d:/etc/nginx/conf.d\n",
+		".gitlab-ci.yml":                  "test:\n  services:\n    - name: nginx:1.29\n      command: [nginx, -c, /builds/h2.conf]\n  script: [true]\n",
+	})
+	for _, c := range []struct {
+		file string
+		line int
+	}{{"Dockerfile", 1}, {"chart/values.yaml", 2}, {"app/docker-compose.yml", 3}, {"app/docker-compose.yml", 5}, {"app/docker-compose.yml", 8}, {".gitlab-ci.yml", 3}} {
+		f := one(t, res, c.file, c.line, RuleNotChecked, knowledge.Unknown)
+		if f.Props["deployment"] == "" {
+			t.Errorf("%s:%d has no deployment note: %+v", c.file, c.line, f.Props)
+		}
+	}
+}

@@ -32,6 +32,7 @@ func (s *scanner) dockerfile(rel string, b []byte) {
 	var cur *stage
 	index := -1
 	fromLine := 0
+	rootOf := map[string]int{} // stage name or index -> the FROM line of the image it builds on
 	for _, in := range ins {
 		if in.Onbuild && in.Cmd != "run" {
 			continue
@@ -51,7 +52,19 @@ func (s *scanner) dockerfile(rel string, b []byte) {
 			}
 		}
 		if in.Cmd == "from" {
+			// A stage built on an earlier one changes the image that
+			// stage builds on: the change is recorded at its FROM.
 			fromLine = in.Line
+			w := words(in.Args)
+			if len(w) > 0 {
+				if r, ok := rootOf[strings.ToLower(w[0])]; ok {
+					fromLine = r
+				}
+			}
+			rootOf[fmt.Sprint(index+1)] = fromLine
+			if len(w) >= 3 && strings.EqualFold(w[len(w)-2], "as") {
+				rootOf[strings.ToLower(w[len(w)-1])] = fromLine
+			}
 		}
 		switch in.Cmd {
 		case "from":

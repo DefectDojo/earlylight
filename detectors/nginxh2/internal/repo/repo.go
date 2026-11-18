@@ -232,7 +232,12 @@ func Scan(ctx context.Context, root string, opts Options) (Result, error) {
 
 // deploymentKeys are what a Compose service or Kubernetes container sets
 // that changes what the image runs or the configuration it loads.
-var deploymentKeys = []string{"command", "entrypoint", "args", "volumes", "volumeMounts", "configs", "environment", "env", "env_file", "envFrom"}
+var deploymentKeys = []string{"command", "entrypoint", "args", "volumes", "volumeMounts", "configs", "environment", "env", "env_file", "envFrom",
+	"extends", "volumes_from", "variables"}
+
+// composeOverrides are the files Compose merges into a file of the same
+// directory by default.
+var composeOverrides = []string{"docker-compose.override.yml", "docker-compose.override.yaml", "compose.override.yml", "compose.override.yaml"}
 
 // deployments records, on each image reference that is read from its
 // registry, what the deployment or build changes about it: the image's
@@ -251,28 +256,48 @@ func (s *scanner) deployments(root string) {
 			}
 			continue
 		}
-		if r.Kind != refs.KindCompose && r.Kind != refs.KindKubernetes {
+		if r.Kind == refs.KindHelmValues {
+			if why := s.helmTemplates(root, r.File); why != "" {
+				f.Props["deployment"] = why
+			}
 			continue
 		}
-		ds, ok := docs[r.File]
-		if !ok {
-			b, found := s.opts.Overlay[r.File]
+		if r.Kind != refs.KindCompose && r.Kind != refs.KindKubernetes && r.Kind != refs.KindGitLabCI {
+			continue
+		}
+		load := func(file string) ([]*yaml.Node, bool) {
+			if ds, ok := docs[file]; ok {
+				return ds, true
+			}
+			b, found := s.opts.Overlay[file]
 			if !found {
 				var err error
-				if b, err = readFile(root, r.File); err != nil {
-					f.Props["deployment"] = "the file could not be read again to see what it sets for the image"
-					continue
+				if b, err = readFile(root, file); err != nil {
+					return nil, false
 				}
 			}
+			var ds []*yaml.Node
 			dec := yaml.NewDecoder(strings.NewReader(string(b)))
-			for len(ds) < 1024 {
+			for len(ds) < maxDocs {
 				var d yaml.Node
 				if dec.Decode(&d) != nil {
 					break
 				}
 				ds = append(ds, &d)
 			}
-			docs[r.File] = ds
+			docs[file] = ds
+			return ds, true
+		}
+		ds, ok := load(r.File)
+		if !ok {
+			f.Props["deployment"] = "the file could not be read again to see what it sets for the image"
+			continue
+		}
+		if r.Kind == refs.KindCompose {
+			if why := s.composeOverride(root, r, load); why != "" {
+				f.Props["deployment"] = why
+				continue
+			}
 		}
 		for _, d := range ds {
 			if m := mappingWithImageAt(d, r.Line, 0); m != nil {
@@ -291,13 +316,89 @@ func (s *scanner) deployments(root string) {
 	}
 }
 
+// composeOverride reports a Compose override file of the same directory
+// (docker-compose.override.yml and the like) that changes the service.
+func (s *scanner) composeOverride(root string, r *refs.Ref, load func(string) ([]*yaml.Node, bool)) string {
+	parts := strings.Split(r.Context, ".")
+	if len(parts) < 3 || parts[0] != "services" {
+		return ""
+	}
+	svc := parts[1]
+	dir := path.Dir(r.File)
+	for _, o := range composeOverrides {
+		file := path.Join(dir, o)
+		if file == r.File {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(file))); err != nil {
+			if _, inOverlay := s.opts.Overlay[file]; !inOverlay {
+				continue
+			}
+		}
+		ds, ok := load(file)
+		if !ok {
+			return fmt.Sprintf("%s could not be read, and Compose merges it into %s", file, r.File)
+		}
+		for _, d := range ds {
+			if len(d.Content) == 0 {
+				continue
+			}
+			m := mapGet(mapGet(d.Content[0], "services"), svc)
+			if m == nil {
+				continue
+			}
+			for _, k := range deploymentKeys {
+				if mapGet(m, k) != nil {
+					return fmt.Sprintf("%s sets %s for the service, so it may load another configuration or command", file, k)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// helmTemplates reports a Helm chart whose templates may set the
+// container's command or mount configuration: the templates next to the
+// values file that set them, or no templates there to read (a chart from
+// elsewhere).
+func (s *scanner) helmTemplates(root, values string) string {
+	dir := path.Join(path.Dir(values), "templates")
+	full, err := refs.SafePath(root, dir)
+	if err != nil {
+		return "the chart's templates could not be read, so what they set for the image is not known"
+	}
+	ents, err := os.ReadDir(full)
+	if err != nil {
+		return "the values are for a chart whose templates are not in this tree, so what they set for the image (command, mounted configuration) is not known"
+	}
+	for _, e := range ents {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		b, err := readFile(root, path.Join(dir, e.Name()))
+		if err != nil {
+			return "the chart template " + path.Join(dir, e.Name()) + " could not be read"
+		}
+		for _, k := range []string{"volumeMounts", "command:", "args:", "envFrom", "env:"} {
+			if strings.Contains(string(b), k) {
+				return fmt.Sprintf("the chart template %s sets %s, so the image may load another configuration or command", path.Join(dir, e.Name()), strings.TrimSuffix(k, ":"))
+			}
+		}
+	}
+	return ""
+}
+
 // mappingWithImageAt finds the mapping whose image key's value is on line.
 func mappingWithImageAt(n *yaml.Node, line, depth int) *yaml.Node {
 	if n == nil || depth > 64 {
 		return nil
 	}
 	if n.Kind == yaml.MappingNode {
-		if v := mapGet(n, "image"); v != nil && v.Kind == yaml.ScalarNode && v.Line == line {
+		v := mapGet(n, "image")
+		if v == nil {
+			v = mapGet(n, "name") // a GitLab CI service
+		}
+		if v != nil && v.Kind == yaml.ScalarNode && v.Line == line {
 			return n
 		}
 	}
