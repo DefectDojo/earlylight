@@ -110,6 +110,31 @@ func (d *Detector) Wants(p string, head []byte, _ bool) bool {
 	return isScript(head)
 }
 
+// Limit is the size Visit keeps a file to, so the engine never reads a
+// larger one: an os-release, a package database, a start script, a
+// settings file or a crash log is never hundreds of MiB. VM libraries are
+// read whole, and a release file's size is itself a fact (badReleases).
+func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
+	base := path.Base(p)
+	switch {
+	case jvm.IsLibraryName(base), base == "release":
+		return 0
+	case hsErr.MatchString(base):
+		return maxHsErr
+	}
+	var most int64
+	if jvm.SettingKind(p) != "" {
+		most = maxSetting
+	}
+	if keep(p) {
+		most = max(most, keptLimit(p))
+	}
+	if isScript(head) {
+		most = max(most, maxScript)
+	}
+	return most
+}
+
 var hsErr = regexp.MustCompile(`^hs_err_pid\d{1,10}\.log$`)
 
 // jdkArchive names a Java runtime download as vendors publish it:
@@ -143,14 +168,23 @@ func keep(p string) bool {
 	return assess.IsDpkgList(p)
 }
 
+// keptLimit is the largest package database or os-release kept.
+func keptLimit(p string) int64 {
+	if p == "/etc/os-release" || p == "/usr/lib/os-release" {
+		return maxOSRelease
+	}
+	return maxKept
+}
+
 // Limits on what one target keeps.
 const (
-	maxKept    = 16 << 20 // a package database
-	maxScript  = 256 << 10
-	maxHsErr   = 4 << 20
-	maxHsErrs  = 64
-	maxLibs    = 4096
-	maxSetting = 1 << 20
+	maxKept      = 16 << 20 // a package database
+	maxOSRelease = 64 << 10
+	maxScript    = 256 << 10
+	maxHsErr     = 4 << 20
+	maxHsErrs    = 64
+	maxLibs      = 4096
+	maxSetting   = 1 << 20
 	// Caps on what one target can make the detector keep: an image layer
 	// of many small files compresses to almost nothing.
 	maxReleases = 4096
@@ -252,7 +286,7 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			}
 		}
 	}
-	if keep(f.Path) && len(f.Data) <= maxKept {
+	if keep(f.Path) && int64(len(f.Data)) <= keptLimit(f.Path) {
 		if assess.IsDpkgList(f.Path) {
 			// Only the lines owners are looked up by, without splitting
 			// the whole list.
@@ -492,7 +526,7 @@ func (r resolver) resolve(p string) string {
 // of two images.
 func osRelease(files ...[]byte) string {
 	for _, b := range files {
-		if len(b) == 0 || len(b) > 64<<10 {
+		if len(b) == 0 || len(b) > maxOSRelease {
 			continue
 		}
 		var id, ver string
@@ -542,12 +576,13 @@ func (osProbe) Load() error { return nil }
 func (osProbe) Wants(p string, _ []byte, _ bool) bool {
 	return p == "/etc/os-release" || p == "/usr/lib/os-release"
 }
+func (osProbe) Limit(string, []byte, bool) int64      { return maxOSRelease }
 func (osProbe) NewScan(engine.TargetKind) engine.Scan { return &osScan{files: map[string][]byte{}} }
 
 type osScan struct{ files map[string][]byte }
 
 func (s *osScan) Visit(f engine.File) []engine.Skip {
-	if len(f.Data) <= 64<<10 {
+	if len(f.Data) <= maxOSRelease {
 		s.files[f.Path] = f.Data
 	}
 	return nil
