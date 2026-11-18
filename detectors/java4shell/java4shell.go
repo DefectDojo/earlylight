@@ -506,7 +506,16 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	linked := s.linkedLibraries(ctx, res, links, hardlinks)
 	unreadLibs := make([]string, 0, len(s.unreadLibs))
 	for p := range s.unreadLibs {
-		unreadLibs = append(unreadLibs, p)
+		// A path the layers do not settle can be where a library written
+		// through a link landed: that library was read, under the name it
+		// was written with.
+		read := false
+		for _, a := range ctx.Aliases(p) {
+			read = read || a != p && s.libs.has(a)
+		}
+		if !read {
+			unreadLibs = append(unreadLibs, p)
+		}
 	}
 	sort.Strings(unreadLibs)
 	if s.libs.len() == 0 && len(linked) == 0 && len(unreadLibs) == 0 {

@@ -219,7 +219,10 @@ func TestFlattenUnresolved(t *testing.T) {
 		layers [][]ent
 		want   string
 	}{
-		{"two entries in one layer", [][]ent{{f("a", "1"), f("a", "2")}}, "[/a]"},
+		{"two files in one layer: both written, the second marked", [][]ent{{f("a", "1"), f("a", "2")}}, "[]"},
+		{"a file then a link in one layer", [][]ent{{f("a", "1"), sl("a", "b")}}, "[/a]"},
+		{"a link then a file in one layer", [][]ent{{sl("a", "b"), f("a", "1")}}, "[/a]"},
+		{"a file, a whiteout and a file in one layer", [][]ent{{f("a", "1"), f(".wh.a", ""), f("a", "2")}}, "[/a]"},
 		{"whiteout then file", [][]ent{{f("a", "lower")}, {f(".wh.a", ""), f("a", "new")}}, "[/a]"},
 		{"file then whiteout", [][]ent{{f("a", "lower")}, {f("a", "new"), f(".wh.a", "")}}, "[/a]"},
 		{"a directory twice", [][]ent{{d("d"), d("d"), f("d/x", "1")}}, "[]"},
@@ -237,15 +240,48 @@ func TestFlattenUnresolved(t *testing.T) {
 			"[/lib/x]"},
 		{"a higher layer removes the real path", [][]ent{{sl("lib", "usr/lib")}, {f("lib/x", "mid")}, {f("usr/lib/.wh.x", "")}},
 			"[/lib/x]"},
-		// Which of the two the container has is not settled: both.
-		{"the same layer writes the real path too", [][]ent{{sl("lib", "usr/lib")}, {f("lib/x", "a"), f("usr/lib/x", "b")}},
-			"[/lib/x /usr/lib/x]"},
+		// Second final review: one layer writes both names. The runtime
+		// applies a layer's entries in order, so the later one is the file.
+		{"the same layer writes the real path afterwards", [][]ent{{sl("lib", "usr/lib")}, {f("lib/x", "a"), f("usr/lib/x", "b")}},
+			"[/lib/x]"},
+		{"the same layer writes the real path first", [][]ent{{sl("lib", "usr/lib")}, {f("usr/lib/x", "b"), f("lib/x", "a")}},
+			"[/usr/lib/x]"},
+		// Two links to one directory: the higher layer's write is the file.
+		{"two links to one directory", [][]ent{{sl("a", "c"), sl("b", "c")}, {f("a/x", "1")}, {f("b/x", "2")}},
+			"[/a/x /c/x]"},
+		{"two links to one directory, the lower link written last", [][]ent{{sl("a", "c"), sl("b", "c")}, {f("b/x", "2")}, {f("a/x", "1")}},
+			"[/b/x /c/x]"},
+		// The landing path is found by following the links as the runtime
+		// did: a chain, a link to the root, ".." in a target (after the
+		// link before it, not instead of it).
+		{"a link to a link", [][]ent{{sl("a", "b"), sl("b", "c")}, {f("a/x", "1")}},
+			"[/c/x]"},
+		{"a usr-merge link to a link elsewhere", [][]ent{{sl("lib", "usr/lib"), sl("usr/lib", "../opt/real"), f("opt/real/x", "old")}, {f("lib/x", "new")}},
+			"[/opt/real/x]"},
+		{"a link to the root", [][]ent{{sl("r", "/"), f("usr/lib/x", "old")}, {f("r/usr/lib/x", "new")}},
+			"[/usr/lib/x]"},
+		{"a link to .", [][]ent{{sl("r", "."), f("x", "old")}, {f("r/x", "new")}},
+			"[/x]"},
+		{".. across a link", [][]ent{{sl("usr/lib", "/opt/real"), sl("lib", "usr/lib/../lib64"), f("usr/lib64/x", "other")}, {f("lib/x", "new")}},
+			"[/opt/lib64/x]"},
+		{"a loop", [][]ent{{sl("a", "b"), sl("b", "a")}, {f("a/x", "1")}},
+			"[/a/x /b/x]"},
+		// A link that may not have been there when the entry was written.
 		{"the link is of the same layer", [][]ent{{f("lib/x", "a"), sl("lib", "usr/lib")}},
 			"[/lib/x /usr/lib/x]"},
-		{"two links to one directory", [][]ent{{sl("a", "c"), sl("b", "c")}, {f("a/x", "1")}, {f("b/x", "2")}},
-			"[/a/x /b/x /c/x]"},
-		{"a link to a link", [][]ent{{sl("a", "b"), sl("b", "c")}, {f("a/x", "1")}},
+		{"a link on the way is of a higher layer", [][]ent{{sl("a", "b")}, {f("a/x", "1")}, {sl("b", "c")}},
 			"[/a/x /b/x]"},
+		// A layer above the write took away the directory it landed in:
+		// the file is gone with it (emudhra cleared a bundle on a certifi
+		// that was no longer there).
+		{"the landing directory whited out above", [][]ent{{d("opt"), d("opt/certifi"), sl("sp/certifi", "/opt/certifi")}, {f("sp/certifi/cacert.pem", "x")}, {f("opt/.wh.certifi", "")}},
+			"[/opt/certifi/cacert.pem /sp/certifi/cacert.pem]"},
+		{"the landing directory made opaque above", [][]ent{{d("opt"), d("opt/certifi"), sl("sp/certifi", "/opt/certifi")}, {f("sp/certifi/cacert.pem", "x")}, {f("opt/certifi/.wh..wh..opq", "")}},
+			"[/opt/certifi/cacert.pem /sp/certifi/cacert.pem]"},
+		{"the landing directory replaced by a file above", [][]ent{{d("opt"), d("opt/certifi"), sl("sp/certifi", "/opt/certifi")}, {f("sp/certifi/cacert.pem", "x")}, {f("opt/certifi", "now a file")}},
+			"[/opt/certifi/cacert.pem /sp/certifi/cacert.pem]"},
+		{"the landing directory whited out below the write", [][]ent{{d("opt"), d("opt/certifi"), sl("sp/certifi", "/opt/certifi")}, {f("opt/.wh.certifi", "")}, {d("opt/certifi"), f("sp/certifi/cacert.pem", "x")}},
+			"[/opt/certifi/cacert.pem]"},
 		{"a whiteout through a symlinked directory", [][]ent{{sl("etc/ssh", "/opt/ssh"), f("opt/ssh/sshd_config", "old")}, {f("etc/ssh/.wh.sshd_config", "")}},
 			"[/etc/ssh/sshd_config /opt/ssh/sshd_config]"},
 	} {
@@ -338,10 +374,14 @@ func FuzzFlatten(fz *testing.F) {
 				t.Fatalf("layers %v:\nflatten %s\nExtract %s", layers, a, b)
 			}
 		}
+		// A name is written once, or again only as the regular file one
+		// layer named twice.
 		got, _ := flat(t, wild...)
 		for name, v := range got {
-			if len(v) != 1 {
-				t.Fatalf("%s written %d times: %v (layers %v)", name, len(v), v, wild)
+			for _, e := range v {
+				if len(v) != 1 && !strings.HasPrefix(e, "f:") {
+					t.Fatalf("%s written %d times: %v (layers %v)", name, len(v), v, wild)
+				}
 			}
 		}
 	})
@@ -354,4 +394,32 @@ func dump(m map[string][]string) string {
 	}
 	sort.Strings(out)
 	return strings.Join(out, " ")
+}
+
+// Second final review: a path one layer names twice as a regular file is
+// in the stream twice, in the layer's order, and the second entry carries
+// the record that tells the reader it replaces the first. A lower layer's
+// entry for the path stays hidden.
+func TestFlattenFileTwiceInOneLayer(t *testing.T) {
+	rc, unresolved := flatten(imageOf(t, []ent{f("a", "lower")}, []ent{f("a", "1"), f("b", "x"), f("a", "2"), f("a", "3")}))
+	defer rc.Close()
+	var got []string
+	tr := tar.NewReader(rc)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(tr)
+		got = append(got, fmt.Sprintf("%s=%s%s", h.Name, b, map[bool]string{true: "*"}[h.PAXRecords[ReplacesRecord] != ""]))
+	}
+	if want := "[a=1 b=x a=2* a=3*]"; fmt.Sprint(got) != want {
+		t.Errorf("stream %v, want %s", got, want)
+	}
+	if u := unresolved(); len(u) != 0 {
+		t.Errorf("unresolved %v", u)
+	}
 }

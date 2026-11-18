@@ -67,6 +67,11 @@ type Options struct {
 	// the first entry for a path is the file and later ones are ignored.
 	// Otherwise (a docker export) the last entry is the file.
 	FirstWins bool
+	// Replaces (Tar, with FirstWins) names a PAX record that marks a later
+	// entry for a path as the file after all: the layer named the path
+	// twice, and the runtime keeps the last. Such an entry is read as a
+	// docker export's repeat is.
+	Replaces string
 	// Other (Tar) receives each entry that is not a regular file (a
 	// directory, symbolic link or hard link), before Symlink or Hardlink:
 	// a path that was a file earlier in the stream is one no longer.
@@ -296,7 +301,7 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 			continue
 		}
 		if opts.FirstWins {
-			if met[abs] {
+			if met[abs] && (opts.Replaces == "" || h.PAXRecords[opts.Replaces] == "") {
 				continue
 			}
 			met[abs] = true

@@ -331,7 +331,8 @@ func (w *walker) sourceOptions(opts Options) source.Options {
 		abs := w.abs(p)
 		if w.ctx.seen[abs] {
 			// The path comes round again in a docker export: this entry
-			// is the file (a flattened image never repeats a path).
+			// is the file (a flattened image repeats a path only for a
+			// layer that named it twice, where the last entry is the file).
 			w.replaced(abs)
 		}
 		// A path that was a link is a file now.
@@ -785,6 +786,7 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 	// first entry for a path is the file. A docker export (rootfs:) is
 	// one filesystem, where the last entry is.
 	so.FirstWins = !strings.HasPrefix(ref, "rootfs:")
+	so.Replaces = image.ReplacesRecord
 	skips, n, err := source.Tar(rc, so, w.visit)
 	t.Skipped, t.Files = append(t.Skipped, skips...), n
 	if err != nil {

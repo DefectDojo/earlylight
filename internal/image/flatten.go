@@ -17,13 +17,15 @@ package image
 //     hidden by an upper layer (RUN ln /a /b; RUN rm /a): the layer is read
 //     again for it.
 //
-// What the layers do not settle cheaply (two entries for one path in one
-// layer, a hard link to a file not in its layer, a write or whiteout
+// A path one layer names twice as a regular file is written twice, the
+// second entry marked as the one the runtime keeps (ReplacesRecord).
+//
+// What the layers do not settle cheaply (two entries of other kinds for one
+// path in one layer, a hard link to a file not in its layer, a whiteout
 // through a directory that is a symbolic link) is listed as unresolved:
-// the scan treats those paths as not read. A file an upper layer wrote
-// through a lower layer's link is the exception when nothing else claims
-// the path it landed on: the container has that file, so it stays read
-// under the name it was written with (throughLinks).
+// the scan treats those paths as not read. Files written through a link
+// are settled where the layers allow it: the one the runtime applied last
+// stays read under the name it was written with (throughLinks).
 
 import (
 	"archive/tar"
@@ -47,8 +49,8 @@ const (
 // function returns the paths left unresolved, once the stream has ended.
 func flatten(img v1.Image) (io.ReadCloser, func() []string) {
 	pr, pw := io.Pipe()
-	f := &flattener{fileMap: map[string]bool{}, opaqueDirs: map[string]bool{}, written: map[string]int{},
-		tombs: map[string]bool{}, links: map[string]flatLink{}, unresolved: map[string]bool{}}
+	f := &flattener{fileMap: map[string]bool{}, opaqueDirs: map[string]bool{}, opaqueAt: map[string]int{}, written: map[string]flatWrite{},
+		links: map[string]flatLink{}, unresolved: map[string]bool{}}
 	done := make(chan struct{})
 	var out []string
 	go func() {
@@ -73,12 +75,32 @@ type flattener struct {
 	tw         *tar.Writer
 	fileMap    map[string]bool // path -> hides what is below it (non-directory or whiteout)
 	opaqueDirs map[string]bool
-	cur        int                 // the layer being read (0 is the lowest)
-	written    map[string]int      // non-directories written, and whiteouts: path -> layer
-	tombs      map[string]bool     // of those, the whiteouts
-	links      map[string]flatLink // symbolic links written
+	opaqueAt   map[string]int       // the highest layer with an opaque marker in each directory
+	cur        int                  // the layer being read (0 is the lowest)
+	seq        int                  // the entry being read, counted through the layer
+	written    map[string]flatWrite // non-directories written, and whiteouts
+	links      map[string]flatLink  // symbolic links written
 	unresolved map[string]bool
 }
+
+// flatWrite is where an entry that was written (or a whiteout) comes from:
+// its layer and its place in the layer, which is the order the runtime
+// applies entries in.
+type flatWrite struct {
+	layer, seq int
+	tomb       bool
+}
+
+// later reports whether w is applied after o.
+func (w flatWrite) later(o flatWrite) bool {
+	return w.layer > o.layer || w.layer == o.layer && w.seq > o.seq
+}
+
+// ReplacesRecord marks, in the flattened stream, a second entry for a
+// path: one layer named the path twice as a regular file, and the later
+// entry is the file the runtime keeps. A reader that takes the first entry
+// for a path takes this one instead.
+const ReplacesRecord = "EARLYLIGHT.replaces"
 
 // flatLink is a symbolic link written to the stream: its target and layer.
 type flatLink struct {
@@ -112,9 +134,11 @@ func rootName(name string) string {
 
 func (f *flattener) layer(layer v1.Layer) error {
 	layerOpaque := map[string]bool{}
-	inLayer := map[string]bool{}     // names this layer has (value: a directory)
-	hidden := map[string]bool{}      // regular files of this layer not written
-	here := map[string]bool{}        // regular files of this layer written
+	inLayer := map[string]bool{} // names this layer has (value: a directory)
+	hidden := map[string]bool{}  // regular files of this layer not written
+	here := map[string]bool{}    // regular files of this layer written
+	plain := map[string]bool{}   // of those, the ones named only as regular files so far
+	f.seq = 0
 	pending := map[string][]string{} // hidden file -> hard links to fill from it
 	rc, err := layer.Uncompressed()
 	if err != nil {
@@ -145,8 +169,12 @@ func (f *flattener) layer(layer v1.Layer) error {
 		if dir == "." {
 			dir = ""
 		}
+		f.seq++
 		if base == opaqueWhiteout {
 			layerOpaque[dir] = true
+			if _, ok := f.opaqueAt[dir]; !ok {
+				f.opaqueAt[dir] = f.cur
+			}
 			continue
 		}
 		tombstone := strings.HasPrefix(base, whiteoutPrefix)
@@ -158,13 +186,30 @@ func (f *flattener) layer(layer v1.Layer) error {
 			name = path.Join(dir, base)
 		}
 		isDir := h.Typeflag == tar.TypeDir && !tombstone
+		regular := (h.Typeflag == tar.TypeReg || h.Typeflag == tar.TypeRegA) && !tombstone //nolint:staticcheck
 		if prev, ok := inLayer[name]; ok && !(prev && isDir) {
-			// Two entries for one path in one layer: the runtime keeps the
-			// last, this stream the first.
+			if regular && plain[name] {
+				// The path again as a regular file: the runtime keeps this
+				// entry. It is written too, marked as the one that replaces
+				// the first.
+				h.PAXRecords = map[string]string{ReplacesRecord: "1"}
+				if err := f.tw.WriteHeader(h); err != nil {
+					return err
+				}
+				if h.Size > 0 {
+					if _, err := io.CopyN(f.tw, tr, h.Size); err != nil {
+						return err
+					}
+				}
+				f.written[name] = flatWrite{layer: f.cur, seq: f.seq}
+				continue
+			}
+			// Two entries of other kinds for one path in one layer: the
+			// runtime keeps the last, this stream the first.
 			f.unresolved[name] = true
+			plain[name] = false
 		}
 		inLayer[name] = isDir
-		regular := h.Typeflag == tar.TypeReg || h.Typeflag == tar.TypeRegA //nolint:staticcheck
 		if hides, ok := f.fileMap[name]; ok && !tombstone {
 			if !hides && !isDir {
 				// An upper layer has a directory where this layer has a
@@ -184,7 +229,7 @@ func (f *flattener) layer(layer v1.Layer) error {
 		}
 		f.fileMap[name] = tombstone || !isDir
 		if tombstone {
-			f.written[name], f.tombs[name] = f.cur, true
+			f.written[name] = flatWrite{layer: f.cur, seq: f.seq, tomb: true}
 			continue
 		}
 		if h.Typeflag == tar.TypeLink {
@@ -193,7 +238,7 @@ func (f *flattener) layer(layer v1.Layer) error {
 				// It names a file an upper layer hides: it keeps that file's
 				// content, written once the layer is read again.
 				pending[h.Linkname] = append(pending[h.Linkname], name)
-				f.written[name] = f.cur
+				f.written[name] = flatWrite{layer: f.cur, seq: f.seq}
 				continue
 			case !here[h.Linkname]:
 				f.unresolved[name] = true // not a file of its own layer
@@ -208,10 +253,10 @@ func (f *flattener) layer(layer v1.Layer) error {
 			}
 		}
 		if regular {
-			here[name] = true
+			here[name], plain[name] = true, true
 		}
 		if !isDir {
-			f.written[name] = f.cur
+			f.written[name] = flatWrite{layer: f.cur, seq: f.seq}
 		}
 		if h.Typeflag == tar.TypeSymlink {
 			f.links[name] = flatLink{h.Linkname, f.cur}
@@ -276,84 +321,166 @@ func (f *flattener) fillLinks(layer v1.Layer, pending map[string][]string) error
 	return nil
 }
 
-// throughLinks finds the entries an upper layer wrote, or whited out,
-// under a directory that is a symbolic link in the final filesystem: the
-// runtime wrote through the link, to the path it names.
+// throughLinks finds the entries a layer wrote, or whited out, under a
+// directory that is a symbolic link in the final filesystem: the runtime
+// wrote through the link, to the path it names.
 //
-// The path it names is unresolved: a lower layer's file there was replaced
-// or removed, and the stream names the new one elsewhere. The entry itself
-// is unresolved too. Two cases are certain, and keep what was read:
+// Each such entry is placed where it landed, by following the links one
+// path component at a time as the runtime did (a chain of links, a link to
+// the root, ".." in a target). Everything that landed on one path, and the
+// entry that names the path itself, is then one file, and the entry the
+// runtime applied last is it: a higher layer's, or a later one of the same
+// layer. That entry stays read under the name it was written with; the
+// others are stale and unresolved. Losing them all would lose what an image
+// built with paths written as they are (lib/libx.so under a lib -> usr/lib
+// link) holds.
 //
-//   - The entry is the file: a file (not a whiteout) written by a layer
-//     above the link's, landing on a path that no link leads on from, that
-//     no other such write lands on, and that no layer at or above the
-//     write's names directly. It stays read under the name it was written
-//     with; dropping it would lose what an image built with paths written
-//     as they are (lib/libx.so under a lib -> usr/lib link) holds.
-//   - A layer above every such write names the path itself: that entry is
-//     the file, and only the writes through the link are unresolved.
+// What stays unresolved, every name and the landing path with it:
+//
+//   - an entry that cannot be placed: a link of its own layer or a higher
+//     one on the way (the link may not have been there yet), a loop;
+//   - a landing path whose last entry through a link is a whiteout;
+//   - a landing path under a directory that a layer above the write
+//     removed, replaced or made opaque: the file is gone with it.
+//
+// The landing path of an entry that stays read is listed too: what the
+// stream holds there, if anything, is an older file.
 func (f *flattener) throughLinks() {
 	if len(f.links) == 0 {
 		return
 	}
-	type write struct {
-		name  string
-		layer int
-		sure  bool // above the link's layer, and not a whiteout
+	type member struct {
+		name string
+		w    flatWrite
 	}
-	lands := map[string][]write{}
-	for name, layer := range f.written {
-		for a := path.Dir(name); a != "." && a != "/" && a != ""; a = path.Dir(a) {
-			l, ok := f.links[a]
-			if !ok {
-				continue
-			}
-			to := l.to
-			if !path.IsAbs(to) {
-				to = path.Join(path.Dir(a), to)
-			}
-			at := ""
-			if r := rootName(to); r != "" {
-				at = path.Join(r, strings.TrimPrefix(name, a+"/"))
-			}
-			lands[at] = append(lands[at], write{name, layer, l.layer < layer && !f.tombs[name]})
-			break
+	groups := map[string][]member{}
+	for name, w := range f.written {
+		if !f.underLink(name) {
+			continue
 		}
+		at, ok := f.land(name, w.layer)
+		if !ok {
+			f.unresolved[name] = true
+			if t := f.textual(name); t != "" {
+				f.unresolved[t] = true
+			}
+			continue
+		}
+		groups[at] = append(groups[at], member{name, w})
 	}
-	for at, ws := range lands {
-		// through: the one write through a link is the file. direct: a
-		// layer above every such write named the path itself afterwards,
-		// and that entry is the file.
-		through, direct := false, false
-		if at != "" && !f.linked(at) {
-			top := -1
-			for _, w := range ws {
-				top = max(top, w.layer)
-			}
-			d, ok := f.written[at]
-			through = len(ws) == 1 && ws[0].sure && (!ok || d < top)
-			direct = ok && d > top
+	for at, ms := range groups {
+		if w, ok := f.written[at]; ok && !f.underLink(at) {
+			ms = append(ms, member{at, w})
 		}
-		if at != "" && !direct {
+		win := ms[0]
+		for _, m := range ms[1:] {
+			if m.w.later(win.w) {
+				win = m
+			}
+		}
+		if win.name != at && (win.w.tomb || f.removedAbove(at, win.w.layer)) {
+			// Nothing certain is left of what landed here.
+			for _, m := range ms {
+				f.unresolved[m.name] = true
+			}
 			f.unresolved[at] = true
+			continue
 		}
-		if !through {
-			for _, w := range ws {
-				f.unresolved[w.name] = true
+		for _, m := range ms {
+			if m.name != win.name {
+				f.unresolved[m.name] = true
 			}
+		}
+		if win.name != at {
+			f.unresolved[at] = true
 		}
 	}
 }
 
-// linked reports whether name, or a directory above it, is a symbolic
-// link in the stream.
-func (f *flattener) linked(name string) bool {
-	for a := name; a != "." && a != "/" && a != ""; a = path.Dir(a) {
+// underLink reports whether a directory above name is a symbolic link in
+// the stream.
+func (f *flattener) underLink(name string) bool {
+	for a := path.Dir(name); a != "." && a != "/" && a != ""; a = path.Dir(a) {
 		if _, ok := f.links[a]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+// textual is where name would land by joining the first link above it with
+// the rest of the name, without following anything further: the path the
+// stream is told not to trust when name cannot be placed.
+func (f *flattener) textual(name string) string {
+	for a := path.Dir(name); a != "." && a != "/" && a != ""; a = path.Dir(a) {
+		l, ok := f.links[a]
+		if !ok {
+			continue
+		}
+		to := l.to
+		if !path.IsAbs(to) {
+			to = path.Join(path.Dir(a), to)
+		}
+		return path.Join(rootName(to), strings.TrimPrefix(name, a+"/"))
+	}
+	return ""
+}
+
+// land returns the path an entry named name, written by layer, landed on:
+// the directories above it resolved through the stream's links, one
+// component at a time. ok is false when a link on the way is not from a
+// layer below (it may not have been there when the entry was written), and
+// for a loop.
+func (f *flattener) land(name string, layer int) (string, bool) {
+	rest := strings.Split(path.Dir(name), "/")
+	cur := ""
+	for hops := 0; len(rest) > 0; {
+		c := rest[0]
+		rest = rest[1:]
+		switch c {
+		case "", ".":
+			continue
+		case "..":
+			if cur = path.Dir(cur); cur == "." {
+				cur = ""
+			}
+			continue
+		}
+		next := path.Join(cur, c)
+		l, ok := f.links[next]
+		if !ok {
+			cur = next
+			continue
+		}
+		if hops++; hops > 40 || l.layer >= layer {
+			return "", false
+		}
+		if path.IsAbs(l.to) {
+			cur = ""
+		}
+		rest = append(strings.Split(l.to, "/"), rest...)
+	}
+	return path.Join(cur, path.Base(name)), true
+}
+
+// removedAbove reports whether a layer above layer took away a directory
+// above at: named it as a file, a link or a whiteout, or put an opaque
+// marker in it.
+func (f *flattener) removedAbove(at string, layer int) bool {
+	for a := path.Dir(at); ; a = path.Dir(a) {
+		if a == "." || a == "/" {
+			a = ""
+		}
+		if o, ok := f.opaqueAt[a]; ok && o > layer {
+			return true
+		}
+		if a == "" {
+			return false
+		}
+		if w, ok := f.written[a]; ok && w.layer > layer {
+			return true
+		}
+	}
 }
 
 func inOpaqueDir(opaqueDirs map[string]bool, file string) bool {
