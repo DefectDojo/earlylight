@@ -232,6 +232,7 @@ func FuzzScanText(f *testing.F) {
 			if x.edit != nil && x.edit.Line < 1 {
 				t.Fatal("edit before line 1")
 			}
+			checkKey(t, x)
 		}
 		sc.script("a.sh", s)
 		sc.yaml("a.yml", s)

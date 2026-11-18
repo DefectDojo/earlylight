@@ -319,9 +319,15 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 		return nil, false, err
 	}
 	msg := lineRefRE.ReplaceAllString(message, ")") // stored before messages lost their line numbers
+	k := keyOf(msg)
+	apkRule := rule == RulePin || rule == RuleUnpinned || rule == RuleEOL
+	// A key the message should give and does not (empty, reworded): any
+	// package or system holds the finding back, so it never reads as gone
+	// only because the message did not parse.
+	k.any = apkRule && k.pkg == "" || rule == RuleBuild && k.system == ""
 	var at []Finding
 	for _, g := range fs {
-		if g.Rule == rule && g.Line == line {
+		if g.Rule == rule && g.Line == line && (k.pkg == "" || g.Props["package"] == k.pkg) {
 			at = append(at, g)
 		}
 	}
@@ -378,18 +384,19 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 			return nil, false, notChecked("%s, so %s is not checked", what, file)
 		}
 	}
-	k := keyOf(msg)
 	for _, g := range fs {
+		apk := g.Rule == RulePin || g.Rule == RuleUnpinned || g.Rule == RuleEOL
 		switch {
 		case g.Rule == RuleNotChecked && k.holds(g):
 			// The same package, variable or build system, anywhere in
 			// the file: this rescan could not judge it.
 			return nil, false, notChecked("%s:%d is not checked this time (%s)", file, g.Line, g.Message)
-		case g.Level != "note" && k.pkg != "" && g.Props["package"] == k.pkg && g.Line == line:
+		case apk && (k.pkg != "" && g.Props["package"] == k.pkg && (g.Line == line || g.Props["spec"] == k.spec) || k.any && apkRule && g.Line == line):
 			// The same package under another rule (a pin loosened, an
-			// end-of-life base no longer known as one).
-			return nil, false, notChecked("line %d of %s now has %s (%s)", line, file, g.Rule, g.Message)
-		case rule == RuleBuild && g.Rule == RuleBuild && k.system != "" && g.Props["system"] == k.system && g.Props["package"] == k.pkg:
+			// end-of-life base no longer known as one), on the line or
+			// with the same spec elsewhere (the line moved).
+			return nil, false, notChecked("%s:%d now has %s (%s)", file, g.Line, g.Rule, g.Message)
+		case rule == RuleBuild && g.Rule == RuleBuild && (k.any || k.system != "" && g.Props["system"] == k.system && g.Props["package"] == k.pkg):
 			// One build finding per file and system: moved and reworded.
 			return nil, false, notChecked("%s:%d still has %s (%s)", file, g.Line, g.Rule, g.Message)
 		}
@@ -414,16 +421,20 @@ var (
 	tclibcRE  = regexp.MustCompile(` and (\S+):\d+ sets TCLIBC`)
 )
 
-// findKey is what a finding's message names: the OpenSSH package, the
-// variable it came through, the build system.
-type findKey struct{ pkg, via, system string }
+// findKey is what a finding's message names: the OpenSSH package and the
+// spec that installs it, the variable it came through, the build system.
+// any: the message should name one and does not, so anything matches.
+type findKey struct {
+	pkg, spec, via, system string
+	any                    bool
+}
 
 func keyOf(msg string) findKey {
 	var k findKey
 	w := strings.Fields(msg)
 	if len(w) >= 2 && (w[0] == "installs" || w[0] == "pins") {
 		if m := specRE.FindStringSubmatch(strings.Trim(w[1], `'"`)); m != nil && sshPackages[m[1]] {
-			k.pkg = m[1]
+			k.pkg, k.spec = m[1], m[0]
 		}
 	}
 	if m := viaRE.FindStringSubmatch(msg); m != nil {
@@ -442,6 +453,9 @@ func keyOf(msg string) findKey {
 
 // holds reports whether a not-checked finding is about what k names.
 func (k findKey) holds(g Finding) bool {
+	if k.any {
+		return g.Props["package"] != "" || g.Props["system"] != "" || varRE.MatchString(g.Props["spec"])
+	}
 	if k.pkg != "" && g.Props["package"] == k.pkg || k.system != "" && g.Props["system"] == k.system {
 		return true
 	}

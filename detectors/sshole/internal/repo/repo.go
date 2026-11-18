@@ -462,7 +462,7 @@ func (s *scanner) dockerfile(rel, text string) []Finding {
 				// ENV KEY value with spaces
 				k, v, _ := strings.Cut(strings.TrimSpace(in.args.text), " ")
 				v = strings.TrimSpace(v)
-				args[k] = v
+				args[k] = expandSet(v, args)
 				s.defineVar(k, v, in)
 				continue
 			}
@@ -470,7 +470,7 @@ func (s *scanner) dockerfile(rel, text string) []Finding {
 				k, v, ok := strings.Cut(a, "=")
 				if ok {
 					v = strings.Trim(v, `"'`)
-					args[k] = v
+					args[k] = expandSet(v, args)
 					s.defineVar(k, v, in)
 				}
 			}
@@ -534,15 +534,37 @@ func expandImage(w string, args map[string]string) (img, via string) {
 	}
 	if loc := varRE.FindStringIndex(w); loc != nil && loc[0] == 0 {
 		if _, ok := lookupVar(w[:loc[1]], args); !ok {
-			if rest, _ := expandImage(strings.TrimLeft(w[loc[1]:], "/"), args); validImage(rest) {
-				return rest, w[:loc[1]]
+			tail := w[loc[1]:]
+			trimmed := strings.TrimLeft(tail, "/")
+			if rest, restVia := expandImage(trimmed, args); validImage(rest) {
+				via = w[:loc[1]]
+				if restVia != "" {
+					via += tail[:len(tail)-len(trimmed)] + restVia
+				}
+				return rest, via
 			}
 		}
 	}
 	if unset && validImage(loose) {
 		return loose, ""
 	}
+	// What the file does not set stays as written: the name may still
+	// say Alpine (alpine:${V}, python:${PY}-alpine3.21).
+	if strict := expandSet(w, args); strings.Contains(strict, "$") {
+		return strict, ""
+	}
 	return w, ""
+}
+
+// expandSet expands the variables that are set or have a default, and
+// keeps the others as written.
+func expandSet(w string, args map[string]string) string {
+	return varRE.ReplaceAllStringFunc(w, func(m string) string {
+		if v, ok := lookupVar(m, args); ok {
+			return v
+		}
+		return m
+	})
 }
 
 // lookupVar resolves one variable reference; ok is false when it is not
@@ -575,7 +597,8 @@ func validImage(s string) bool {
 		name = name[:i]
 	}
 	if i := strings.LastIndexByte(name, ':'); i > strings.LastIndexByte(name, '/') {
-		if !tagRE.MatchString(name[i+1:]) {
+		// A tag cut short by an unset variable ("3." of 3.${MINOR}) is not one.
+		if tag := name[i+1:]; !tagRE.MatchString(tag) || strings.ContainsAny(tag[len(tag)-1:], "._-") {
 			return false
 		}
 		name = name[:i]
@@ -651,9 +674,6 @@ func (s *scanner) need(b baseInfo) baseInfo {
 }
 
 func baseFromName(img string) baseInfo {
-	if strings.Contains(img, "$") {
-		return baseInfo{} // not known: a variable the file does not set
-	}
 	if img == "" || img == "scratch" {
 		return baseInfo{known: true}
 	}
@@ -665,9 +685,17 @@ func baseFromName(img string) baseInfo {
 		name, tag = name[:i], name[i+1:]
 	}
 	repo := path.Base(name)
+	if strings.Contains(repo, "$") {
+		return baseInfo{} // the image is a variable the file does not set
+	}
+	// A variable in the tag: the name still says Alpine, but not which
+	// release, and the image is never looked up.
+	vary := strings.Contains(tag, "$")
 	switch {
 	case repo == "alpine":
 		switch {
+		case vary:
+			return baseInfo{alpine: true, known: true}
 		case tag == "" || tag == "latest":
 			return baseInfo{alpine: true, known: true} // branch moves: resolve it
 		case tag == "edge" || strings.HasPrefix(tag, "20"):
@@ -678,8 +706,8 @@ func baseFromName(img string) baseInfo {
 		}
 		return baseInfo{alpine: true, known: true}
 	case strings.Contains(tag, "alpine"):
-		if m := alpineTagRE.FindStringSubmatch(tag); m != nil {
-			return baseInfo{alpine: true, known: true, branch: m[1]}
+		if m := alpineTagRE.FindStringSubmatchIndex(tag); m != nil && !strings.HasPrefix(tag[m[1]:], "$") {
+			return baseInfo{alpine: true, known: true, branch: tag[m[2]:m[3]]}
 		}
 		return baseInfo{alpine: true, known: true}
 	}
@@ -1020,7 +1048,7 @@ func (s *scanner) judgeSpec(rel string, at specAt, pkg, op, ver string, b baseIn
 	if image != "" {
 		props["image"] = image
 	}
-	via := b.via
+	via, judged := b.via, b.img
 	b = s.need(b)
 	if b.branch != "" {
 		props["branch"] = b.branch
@@ -1028,7 +1056,7 @@ func (s *scanner) judgeSpec(rel string, at specAt, pkg, op, ver string, b baseIn
 	note := ""
 	if via != "" {
 		props["image_variable"] = via
-		note = fmt.Sprintf(" (the image starts with %s, which this file does not set; judged as %s)", via, image)
+		note = fmt.Sprintf(" (the image starts with %s, which this file does not set; judged as %s)", via, judged)
 	}
 	f := Finding{File: rel, Line: l, Props: props}
 	if !b.known {
@@ -1443,7 +1471,7 @@ var alpineSuffixRE = regexp.MustCompile(`^(.*alpine)(\d+)\.(\d+)$`)
 // fixed OpenSSH package: same tag with only the Alpine release changed,
 // confirmed by reading the candidate's /etc/alpine-release.
 func (s *scanner) alpineRetag(image string) string {
-	if s.opts.Tags == nil || s.opts.Base == nil || strings.Contains(image, "@") {
+	if s.opts.Tags == nil || s.opts.Base == nil || strings.ContainsAny(image, "@$") {
 		return ""
 	}
 	i := strings.LastIndexByte(image, ':')

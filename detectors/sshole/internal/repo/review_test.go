@@ -257,11 +257,12 @@ func TestReviewFromVariables(t *testing.T) {
 	}
 }
 
-// 12: a tag made only of unset variables is not known, and not fixed.
+// 12, round 2 #2: a tag made of unset variables keeps what the name says
+// (Alpine), without a branch, so nothing is end-of-life or rewritten.
 func TestReviewTagOfVariables(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "Dockerfile", "FROM alpine:${MAJOR}.${MINOR}\nRUN apk add openssh-server\n")
-	if f := findOne(t, root, Options{}, RuleNotChecked); f.Fixable {
+	if f := findOne(t, root, Options{}, RuleUnpinned); f.Fixable {
 		t.Errorf("%+v", f)
 	}
 }
