@@ -26,9 +26,19 @@ func TestFromPulled(t *testing.T) {
 	if len(out) != 1 || out[0].Verdict != engine.Unknown {
 		t.Errorf("partial: %+v", out)
 	}
-	// Read in full, nothing found: no finding.
-	if out = fromPulled(f, &engine.Target{Files: 10}); len(out) != 0 {
-		t.Errorf("clean: %+v", out)
+	// Read in full, no nginx recognised in an nginx image: not checked.
+	if out = fromPulled(f, &engine.Target{Files: 10}); len(out) != 1 || out[0].Verdict != engine.Unknown {
+		t.Errorf("no nginx: %+v", out)
+	}
+	// Read in full, only fixed servers: nothing to report.
+	fixed := &engine.Target{Files: 10, Findings: []engine.Finding{{Kind: KindFlow, Path: "/usr/sbin/nginx", Verdict: engine.Fixed, Reason: "r"}}}
+	if out = fromPulled(f, fixed); len(out) != 0 {
+		t.Errorf("fixed: %+v", out)
+	}
+	// Read in part, only fixed servers: not checked, never cleared.
+	fixed.Skipped = []source.Skip{{Path: "/usr/lib/x", Reason: "unreadable"}}
+	if out = fromPulled(f, fixed); len(out) != 1 || out[0].Verdict != engine.Unknown {
+		t.Errorf("partial fixed: %+v", out)
 	}
 	// A vulnerable server is reported at the reference with the platform
 	// and digest; a fixed one is not.

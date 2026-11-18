@@ -45,6 +45,7 @@ var proxyDirectives = map[string]bool{"proxy_pass": true, "grpc_pass": true, "fa
 type listen struct {
 	port       string
 	ssl, http2 bool
+	dflt       bool // default_server
 	where      string
 }
 
@@ -59,8 +60,13 @@ type server struct {
 
 // Analyze reads a loaded configuration.
 func Analyze(c *Config) Exposure {
-	e := Exposure{Unread: c.Unread}
+	e := Exposure{Unread: append([]string(nil), c.Unread...)}
 	var servers []server
+	unsettled := func(msg string) {
+		if len(e.Unread) < 64 {
+			e.Unread = append(e.Unread, msg)
+		}
+	}
 	for _, d := range c.Root {
 		switch d.Name {
 		case "events":
@@ -70,18 +76,32 @@ func Analyze(c *Config) Exposure {
 				}
 			}
 		case "http":
-			servers = append(servers, httpServers(d)...)
+			servers = append(servers, httpServers(d, unsettled)...)
 		}
 	}
-	// The listen socket's http2 parameter holds for every server on that
-	// port. Ports are compared without their address, which can only
-	// count more servers as having HTTP/2, never fewer.
-	portH2 := map[string]string{}
-	for _, s := range servers {
+	// nginx keeps one socket per address and port: its ssl and http2
+	// parameters, set on any listen of it, hold for every server on it, and
+	// the default server's "http2 on" holds for connections that do not
+	// select another server (no TLS, or no SNI). Ports are compared
+	// without their address, which can only count more servers as
+	// exposed, never fewer.
+	portH2, portSSL, dflt := map[string]string{}, map[string]bool{}, map[string]int{}
+	for i, s := range servers {
 		for _, l := range s.listens {
 			if l.http2 {
 				portH2[l.port] = l.where
 			}
+			if l.ssl || s.ssl {
+				portSSL[l.port] = true
+			}
+			if _, ok := dflt[l.port]; !ok || l.dflt {
+				dflt[l.port] = i
+			}
+		}
+	}
+	for port, i := range dflt {
+		if servers[i].h2 == "on" && portH2[port] == "" {
+			portH2[port] = servers[i].h2Where + " (the default server of port " + port + ")"
 		}
 	}
 	flow, clear, reuse, noProxy := false, false, false, false
@@ -101,16 +121,16 @@ func Analyze(c *Config) Exposure {
 			switch {
 			case l.http2:
 				on, why = true, l.where
-			case portH2[l.port] != "":
-				on, why = true, portH2[l.port]
 			case s.h2 == "on":
 				on, why = true, s.h2Where
+			case portH2[l.port] != "":
+				on, why = true, portH2[l.port]
 			}
 			if !on {
 				continue
 			}
 			add(&e.Where, why)
-			if l.ssl || s.ssl {
+			if l.ssl || s.ssl || portSSL[l.port] {
 				flow = true
 			} else {
 				clear = true
@@ -125,7 +145,7 @@ func Analyze(c *Config) Exposure {
 			}
 		}
 	}
-	settled := len(c.Unread) == 0 && len(c.Files) > 0
+	settled := len(e.Unread) == 0 && len(c.Files) > 0
 	on := flow || clear
 	switch {
 	case on:
@@ -154,12 +174,21 @@ func decide(full, partial, settled bool, partialState State) State {
 	return Unknown
 }
 
-func httpServers(h Directive) []server {
+func httpServers(h Directive, unsettled func(string)) []server {
 	h2, h2Where, ssl := "", "", false
+	h2Value := func(d Directive) string {
+		v := strings.ToLower(d.Args[0])
+		if v != "on" && v != "off" {
+			// A template variable or anything else: decided where it
+			// runs, so not off.
+			unsettled(fmt.Sprintf("http2 at %s is %q, which is decided where it runs", loc(d), d.Args[0]))
+		}
+		return v
+	}
 	for _, d := range h.Block {
 		switch {
 		case d.Name == "http2" && len(d.Args) == 1:
-			h2, h2Where = strings.ToLower(d.Args[0]), loc(d)
+			h2, h2Where = h2Value(d), loc(d)
 		case d.Name == "ssl" && len(d.Args) == 1:
 			ssl = strings.EqualFold(d.Args[0], "on")
 		}
@@ -173,15 +202,22 @@ func httpServers(h Directive) []server {
 		for _, x := range d.Block {
 			switch {
 			case x.Name == "listen" && len(x.Args) > 0:
-				s.listens = append(s.listens, parseListen(x))
+				l := parseListen(x)
+				for _, a := range x.Args[1:] {
+					if strings.Contains(a, "$") {
+						unsettled(fmt.Sprintf("listen at %s has %q, which is decided where it runs", loc(x), a))
+					}
+				}
+				s.listens = append(s.listens, l)
 			case x.Name == "http2" && len(x.Args) == 1:
-				s.h2, s.h2Where = strings.ToLower(x.Args[0]), loc(x)
+				s.h2, s.h2Where = h2Value(x), loc(x)
 			case x.Name == "ssl" && len(x.Args) == 1:
 				s.ssl = strings.EqualFold(x.Args[0], "on")
 			}
 		}
 		if len(s.listens) == 0 {
-			s.listens = []listen{{port: "80", where: s.where + " (no listen: *:80)"}}
+			// *:80, or *:8000 when nginx does not run as root.
+			s.listens = []listen{{port: "80", where: s.where + " (no listen: *:80)"}, {port: "8000", where: s.where + " (no listen: *:8000 when not root)"}}
 		}
 		proxies(d.Block, &s.proxy, 0)
 		out = append(out, s)
@@ -211,6 +247,8 @@ func parseListen(d Directive) listen {
 			l.ssl = true
 		case "http2":
 			l.http2 = true
+		case "default_server", "default":
+			l.dflt = true
 		}
 	}
 	return l

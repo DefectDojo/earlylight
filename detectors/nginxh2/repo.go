@@ -228,10 +228,24 @@ func fromPulled(f repo.Finding, it *engine.Target) (out []engine.Finding) {
 		g.Fix = x.Fix + " Use a release of " + img + " built with the fix (nginx 1.31.9 or 1.30.7), then redeploy."
 		out = append(out, g)
 	}
-	if !found && partial {
+	switch {
+	case len(out) > 0:
+	case partial:
+		// Read in part: what was read clearing (or nothing found) does
+		// not clear the image.
 		g := repoFinding(f)
 		g.Verdict, g.Reason = engine.Unknown, "the image could not be read in full, so an nginx in it may have been missed"
 		g.Message = fmt.Sprintf("image %s (%s) was read only in part (%d files not scanned, %d problems): not checked", at, it.Digest, it.Gaps(), len(it.Problems))
+		for i := range g.CVEs {
+			g.CVEs[i].Verdict, g.CVEs[i].Reason = g.Verdict, g.Reason
+		}
+		out = append(out, g)
+	case !found:
+		// An nginx image in which no nginx binary was recognised (a packed
+		// or renamed build): not checked, never clean.
+		g := repoFinding(f)
+		g.Verdict, g.Reason = engine.Unknown, "no nginx binary was recognised in an image of an nginx family"
+		g.Message = fmt.Sprintf("image %s (%s): no nginx binary was recognised in it: not checked", at, it.Digest)
 		for i := range g.CVEs {
 			g.CVEs[i].Verdict, g.CVEs[i].Reason = g.Verdict, g.Reason
 		}
@@ -353,8 +367,14 @@ func (d *Detector) verifier(o engine.Options) func(ctx context.Context, current,
 		// The platforms that must be there: those the tree builds
 		// (--platform), else every one the current tag has.
 		need, from := cur, current+" has"
-		if len(o.Platforms) > 0 {
+		switch {
+		case len(o.Platforms) > 0:
 			need, from = o.Platforms, "the tree builds (--platform)"
+		case curErr != nil:
+			return "", &repo.Declined{Reason: fmt.Sprintf("the platforms of %s could not be listed (%v), so whether %s covers them is not checked; rescan to confirm, or name the platforms you build with --platform", current, curErr, target)}
+		}
+		if tp == nil && len(need) > 1 {
+			return "", &repo.Declined{Reason: fmt.Sprintf("%s is a single image, and %s needs %s; change it by hand", target, from, strings.Join(need, ", "))}
 		}
 		for _, p := range need {
 			if tp != nil && !containsPlatform(tp, p) {

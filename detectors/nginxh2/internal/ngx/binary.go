@@ -57,8 +57,11 @@ type Binary struct {
 	// ConfPath and Prefix are the defaults compiled in.
 	ConfPath string `json:"conf_path,omitempty"`
 	Prefix   string `json:"prefix,omitempty"`
-	Bits     int    `json:"bits,omitempty"`
-	Arch     string `json:"arch,omitempty"`
+	// ConfRaw is the configuration path as compiled in, before the
+	// prefix was applied: a relative one moves with -p.
+	ConfRaw string `json:"conf_raw,omitempty"`
+	Bits    int    `json:"bits,omitempty"`
+	Arch    string `json:"arch,omitempty"`
 	// Conflict is set when the binary's version strings disagree.
 	Conflict string `json:"conflict,omitempty"`
 }
@@ -263,8 +266,12 @@ func (b *Binary) paths(data []byte) {
 			b.Prefix = strings.Trim(v, "'\"")
 		}
 	}
-	if b.ConfPath == "" && b.Prefix != "" {
-		b.ConfPath = strings.TrimSuffix(b.Prefix, "/") + "/conf/nginx.conf"
+	if b.ConfPath == "" {
+		b.ConfPath = "conf/nginx.conf" // nginx's own default, under the prefix
+	}
+	b.ConfRaw = b.ConfPath
+	if !strings.HasPrefix(b.ConfPath, "/") && b.Prefix == "" {
+		b.ConfPath = ""
 	}
 	if b.ConfPath != "" && !strings.HasPrefix(b.ConfPath, "/") && b.Prefix != "" {
 		b.ConfPath = strings.TrimSuffix(b.Prefix, "/") + "/" + b.ConfPath

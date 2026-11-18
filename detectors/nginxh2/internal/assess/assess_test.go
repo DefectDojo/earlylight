@@ -192,10 +192,40 @@ func TestDistroFixText(t *testing.T) {
 
 func TestConfigFor(t *testing.T) {
 	b := &ngx.Binary{ConfPath: "", Prefix: ""}
-	if m, _, how := configFor(b, nil); m != "/usr/local/nginx/conf/nginx.conf" || how != "nginx's default" {
+	if m, _, how, _ := configFor(b, nil); m != "/usr/local/nginx/conf/nginx.conf" || how != "nginx's default" {
 		t.Errorf("%s %s", m, how)
 	}
-	if _, ok := nginxArgs([]string{"sh", "-c", "echo"}); ok {
+	if _, ok, _ := nginxArgs([]string{"sh", "-c", "echo"}); ok {
 		t.Error("a command without nginx")
+	}
+}
+
+func TestConfigForPrefixAndShell(t *testing.T) {
+	or := ngxtest.Default("x")
+	or.Line, or.ConfPath, or.Configure = "openresty/1.31.8.1", "conf/nginx.conf", "--prefix=/usr/local/openresty/nginx --with-http_v2_module"
+	or.Extra = []string{"  -p prefix     : set prefix path (default: /usr/local/openresty/nginx/)"}
+	b := bin(t, or)
+	if m, _, _, _ := configFor(b, nil); m != "/usr/local/openresty/nginx/conf/nginx.conf" {
+		t.Errorf("default: %s", m)
+	}
+	if m, _, how, _ := configFor(b, []string{"openresty", "-p", "/app/", "-g", "daemon off;"}); m != "/app/conf/nginx.conf" || !strings.Contains(how, "-p") {
+		t.Errorf("-p: %s %s", m, how)
+	}
+	// An absolute compiled-in path does not move with -p.
+	if m, _, _, _ := configFor(bin(t, ngxtest.Default("1.31.8")), []string{"nginx", "-p", "/app/"}); m != "/etc/nginx/nginx.conf" {
+		t.Errorf("absolute: %s", m)
+	}
+	m, _, how, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), []string{"/bin/sh", "-c", "envsubst < /t > /etc/nginx/x.conf && exec nginx -c '/app/nginx.conf' -g 'daemon off;'"})
+	if m != "/app/nginx.conf" || unsure != "" || !strings.Contains(how, "-c") {
+		t.Errorf("sh -c: %s %s %q", m, how, unsure)
+	}
+	if _, _, _, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), []string{"sh", "-c", "nginx -c $CONF"}); unsure == "" {
+		t.Error("a variable in the shell text was not noted")
+	}
+	// Unsure: a weaker answer becomes unknown.
+	fs := byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }"},
+		Command: []string{"sh", "-c", "nginx -c $CONF"}}))
+	if f := fs[knowledge.Flow]; f.State != conf.Unknown {
+		t.Errorf("unsure: %+v", f.State)
 	}
 }

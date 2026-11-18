@@ -101,5 +101,10 @@ of the binary.
 - The configuration decides **exposure**, never the verdict: HTTP/2 off everywhere is reported as "not exposed" on a
   finding that stays vulnerable, because the binary still needs the update. An include that cannot be read, a
   configuration generated at start (ingress-nginx) or not found makes exposure unknown, not off.
+- The configuration read is the one nginx loads: the compiled-in path (a relative one moved by `-p`), or the
+  container command's `-c`, also inside a `sh -c` text; the official image's templates with the image's environment
+  put in as its entrypoint does. A template variable left unset in `listen` or `http2`, a shell text that cannot be
+  read, or a glob nginx's glob(3) would read differently leaves exposure unknown. nginx keeps one socket per port:
+  `ssl` and `http2` on any `listen` of it, and the default server's `http2 on`, count for every server on it.
 - Findings carry CVSS 9.2 (Wiz). A 32-bit build, HTTP/2 without TLS (CVE-2026-123007) and HTTP/2 without a proxy
   directive (CVE-2026-123633) are reported as facts that weaken the published exploit path; none clears a finding.

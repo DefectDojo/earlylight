@@ -23,10 +23,14 @@ package nginxh2
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -116,6 +120,7 @@ const (
 	maxConfTotal = 64 << 20
 	maxConfFiles = 8192
 	maxDB        = 32 << 20
+	maxDBTotal   = 128 << 20
 	maxBinaries  = 512
 )
 
@@ -218,6 +223,7 @@ type scan struct {
 	confFull  bool            // the limit on configuration files was reached
 	tooLarge  map[string]bool // configuration files over maxConf, not kept
 	db        map[string][]byte
+	dbBytes   int
 	ingress   bool
 	f5ingress bool
 	dropped   int
@@ -244,8 +250,9 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		return nil
 	}
 	if keepDB(f.Path) {
-		if len(f.Data) <= maxDB {
+		if len(f.Data) <= maxDB && s.dbBytes+len(f.Data) <= maxDBTotal {
 			s.db[f.Path] = f.Data
+			s.dbBytes += len(f.Data)
 		}
 		return nil
 	}
@@ -474,10 +481,31 @@ func (s *confSource) templates(env []string) {
 			if s.virtual == nil {
 				s.virtual = map[string][]byte{}
 			}
-			s.virtual[path.Join(out, rel)] = b
+			s.virtual[path.Join(out, rel)] = envsubst(b, env)
 		}
 	}
 }
+
+// envsubst puts in the image's environment as the entrypoint's envsubst
+// does: only variables that are set, $NAME and ${NAME}. A variable left
+// as written makes what it decides unknown (internal/conf).
+func envsubst(b []byte, env []string) []byte {
+	vals := map[string]string{}
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			vals[k] = v
+		}
+	}
+	return envRef.ReplaceAllFunc(b, func(m []byte) []byte {
+		name := strings.Trim(string(m), "${}")
+		if v, ok := vals[name]; ok {
+			return []byte(v)
+		}
+		return m
+	})
+}
+
+var envRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*`)
 
 // resolve follows symbolic links within the target, as the kernel would.
 func (s *confSource) resolve(p string) string {
@@ -536,6 +564,14 @@ func (s *confSource) Read(p string) ([]byte, bool, string) {
 }
 
 func (s *confSource) Glob(pattern string) ([]string, bool) {
+	complete := !s.full
+	match := func(pat, p string) bool {
+		ok, err := globMatch(pat, p)
+		if err != nil {
+			complete = false // a pattern nginx's glob(3) reads and this one does not
+		}
+		return ok
+	}
 	seen := map[string]bool{}
 	var out []string
 	add := func(p string) {
@@ -546,7 +582,7 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 	}
 	for _, m := range []map[string][]byte{s.kept, s.virtual} {
 		for p := range m {
-			if ok, _ := path.Match(pattern, p); ok {
+			if match(pattern, p) {
 				add(p)
 			}
 		}
@@ -555,47 +591,89 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 	// ../sites-available/default); Read follows them, and one that leads
 	// nowhere the scan read is reported as not read.
 	for p := range s.links {
-		if ok, _ := path.Match(pattern, p); ok {
+		if match(pattern, p) {
 			add(p)
 		}
 	}
-	// A directory reached through a symbolic link: match its target's
-	// files under the linked name.
-	if dir := path.Dir(pattern); !strings.ContainsAny(dir, "*?[") {
-		if r := s.resolve(dir); r != "" && r != dir {
-			for p := range s.kept {
-				if path.Dir(p) == r {
-					if ok, _ := path.Match(path.Base(pattern), path.Base(p)); ok {
+	dir, base := path.Dir(pattern), path.Base(pattern)
+	wildDir := strings.ContainsAny(dir, "*?[")
+	resolved := pattern
+	if !wildDir {
+		// A directory reached through a symbolic link: its target's files
+		// and links, under the linked name. Whether the list is complete
+		// is decided on the directory the files are really in.
+		switch r := s.resolve(dir); {
+		case r == "":
+			complete = false
+		case r != dir:
+			resolved = path.Join(r, base)
+			for _, m := range []map[string][]byte{s.kept, s.virtual} {
+				for p := range m {
+					if path.Dir(p) == r && match(base, path.Base(p)) {
 						add(path.Join(dir, path.Base(p)))
 					}
 				}
 			}
+			for p := range s.links {
+				if path.Dir(p) == r && match(base, path.Base(p)) {
+					add(path.Join(dir, path.Base(p)))
+				}
+			}
 		}
 	}
-	complete := !s.full && keptByAll(pattern)
+	complete = complete && keptByAll(pattern) && keptByAll(resolved)
 	for p := range s.tooLarge {
-		if ok, _ := path.Match(pattern, p); ok {
+		if match(pattern, p) || match(resolved, p) {
 			complete = false
 		}
 	}
 	if s.root != "" {
-		if full, ok := s.diskPath(pattern); ok {
-			ms, _ := filepath.Glob(full)
-			for _, m := range ms {
-				rel, err := filepath.Rel(s.root, m)
-				if err != nil {
-					continue
-				}
-				p := "/" + filepath.ToSlash(rel)
-				if fi, err := os.Lstat(m); err == nil && fi.Mode().IsRegular() {
-					add(p)
+		// Below a system root the directory is read from disk: every
+		// entry, symbolic links included (Read follows them inside the
+		// root). A directory that cannot be listed leaves the list
+		// incomplete; one that does not exist matches nothing, as for
+		// nginx.
+		complete = !s.full && !wildDir
+		if full, ok := s.diskPath(dir); ok {
+			ents, err := os.ReadDir(full)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				complete = false
+			}
+			for _, e := range ents {
+				if match(base, e.Name()) && (e.Type().IsRegular() || e.Type()&fs.ModeSymlink != 0) {
+					add(path.Join(dir, e.Name()))
 				}
 			}
-			complete = !s.full
+		} else {
+			complete = false
 		}
 	}
 	sort.Strings(out)
 	return out, complete
+}
+
+// globMatch matches a path as nginx's glob(3) does: "[!...]" negates, a
+// wildcard does not match a leading dot, and each "/"-separated part
+// matches on its own.
+func globMatch(pattern, p string) (bool, error) {
+	pp, np := strings.Split(pattern, "/"), strings.Split(p, "/")
+	if len(pp) != len(np) {
+		return false, nil
+	}
+	for i := range pp {
+		pc := strings.ReplaceAll(pp[i], "[!", "[^")
+		if strings.HasPrefix(np[i], ".") && !strings.HasPrefix(pc, ".") {
+			return false, nil
+		}
+		ok, err := path.Match(pc, np[i])
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (s *confSource) diskPath(p string) (string, bool) {
@@ -608,27 +686,34 @@ func (s *confSource) diskPath(p string) (string, bool) {
 	return full, true
 }
 
-// disk reads a regular file below the system root, never through a
-// symbolic link in any component of its path.
+// disk reads a regular file below the system root, following symbolic
+// links only while they stay inside it.
 func (s *confSource) disk(p string, limit int64) []byte {
 	full, ok := s.diskPath(p)
 	if !ok {
 		return nil
 	}
-	rel, _ := filepath.Rel(s.root, full)
-	cur := s.root
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		cur = filepath.Join(cur, part)
-		fi, err := os.Lstat(cur)
-		if err != nil || fi.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
+	real, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return nil
 	}
-	fi, err := os.Lstat(full)
+	root, err := filepath.EvalSymlinks(s.root)
+	if err != nil {
+		return nil
+	}
+	if rel, err := filepath.Rel(root, real); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil
+	}
+	f, err := os.OpenFile(real, os.O_RDONLY|syscallNoFollow, 0)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	fi, err := f.Stat()
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() > limit {
 		return nil
 	}
-	b, err := os.ReadFile(full)
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil || int64(len(b)) > limit {
 		return nil
 	}

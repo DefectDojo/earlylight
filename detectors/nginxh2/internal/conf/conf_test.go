@@ -114,6 +114,11 @@ func TestExposure(t *testing.T) {
 		{"port shared", `http { server { listen 443 ssl http2; server_name a; } server { listen 443 ssl; server_name b; location / { proxy_pass http://u; } } }`, Exposed, Exposed},
 		{"no http", `events {} stream { server { listen 443; proxy_pass x; } }`, NotExposed, NotExposed},
 		{"quic only", `http { server { listen 443 quic; listen 443 ssl; location / { proxy_pass http://u; } } }`, NotExposed, NotExposed},
+		{"ssl on another listen of the port", `http { server { listen 443 ssl default_server; return 444; } server { listen 443; http2 on; location / { proxy_pass http://u; } } }`, Exposed, Exposed},
+		{"default server http2", `http { server { listen 80 default_server; http2 on; return 444; } server { listen 80; server_name a; location / { proxy_pass http://u; } } }`, Cleartext, Exposed},
+		{"template variable in listen", `http { server { listen 443 ssl ${H2}; location / { proxy_pass http://u; } } }`, Unknown, Unknown},
+		{"template variable in http2", `http { server { listen 443 ssl; http2 ${H2}; } }`, Unknown, Unknown},
+		{"no listen, not root", `http { server { http2 on; location / { proxy_pass http://u; } } }`, Cleartext, Exposed},
 		{"nested if", `http { server { listen 443 ssl http2; location / { if ($x) { fastcgi_pass unix:/s; } } } }`, Exposed, Exposed},
 	}
 	for _, c := range cases {
