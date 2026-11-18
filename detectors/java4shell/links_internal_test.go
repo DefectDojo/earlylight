@@ -3,6 +3,7 @@ package java4shell
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -96,5 +97,34 @@ func TestLibraryThatIsALink(t *testing.T) {
 	tg := engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
 	if len(tg.Findings) != 1 || tg.Findings[0].Verdict != engine.Unknown || tg.Findings[0].Path != "/opt/jdk" || !strings.Contains(tg.Findings[0].Reason, "libjvm.so.21") {
 		t.Errorf("filesystem: %+v", tg.Findings)
+	}
+}
+
+// Final review B4: past the cap on VM libraries a runtime is dropped
+// unjudged, so the scan is capped like any other: nothing is cleared, and
+// the target carries a problem.
+func TestLibraryCapClearsNothing(t *testing.T) {
+	root := t.TempDir()
+	other := testlib.Build(testlib.Lib{Machine: "aarch64", Version: "21.0.13+9-LTS"})
+	for i := 0; i < maxLibs; i++ {
+		p := filepath.Join(root, "a", fmt.Sprintf("%04d", i), "lib/server/libjvm.so")
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, other, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := filepath.Join(root, "opt/jdk/lib/server/libjvm.so")
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	if err := os.WriteFile(p, testlib.Build(testlib.Lib{Version: "21.0.13+9-LTS", VBMI: true}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true})
+	if len(tg.Findings) != maxLibs || tg.Count(engine.Fixed) != 0 || tg.Count(engine.Unknown) != maxLibs {
+		t.Errorf("%d findings, %d cleared, %d unknown", len(tg.Findings), tg.Count(engine.Fixed), tg.Count(engine.Unknown))
+	}
+	if len(tg.Problems) != 1 || !strings.Contains(tg.Problems[0], "Java VM libraries") || tg.Gaps() != 1 {
+		t.Errorf("problems %v gaps %d", tg.Problems, tg.Gaps())
 	}
 }

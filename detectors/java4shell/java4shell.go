@@ -344,7 +344,9 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 	case jvm.IsLibraryName(base):
 		if l, ok := jvm.Inspect(f.Path, f.Data); ok {
 			if s.libs.len() >= maxLibs {
+				// A runtime is left unjudged: the scan clears nothing.
 				s.dropped++
+				s.limit(fmt.Sprintf("more than %d Java VM libraries", maxLibs))
 				return []engine.Skip{{Path: f.Path, Reason: fmt.Sprintf("more than %d Java VM libraries in one target; not checked", maxLibs)}}
 			}
 			s.libs.add(f.Path, l)
@@ -509,7 +511,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	cpu, haveCPU := thisCPU()
 	capped := ""
 	if len(s.limits) > 0 {
-		capped = "the scan reached its limit on " + strings.Join(s.limits, " and ") + " for one target, so package owners and JVM options may be missing: nothing is cleared"
+		capped = "the scan reached its limit on " + strings.Join(s.limits, " and ") + " for one target, so runtimes, package owners and JVM options may be missing: nothing is cleared"
 		ctx.Problem("java4shell: " + capped)
 	}
 	var out []engine.Finding
