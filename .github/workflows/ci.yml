@@ -25,6 +25,8 @@ jobs:
         run: |
           go test ./internal/source -run '^$' -fuzz '^FuzzTar$' -fuzztime 30s
           go test ./internal/archive -run '^$' -fuzz '^FuzzWalk$' -fuzztime 30s
+          go test ./internal/image -run '^$' -fuzz '^FuzzFlatten$' -fuzztime 30s
+          go test ./internal/engine -run '^$' -fuzz '^FuzzLimits$' -fuzztime 30s
           go test ./detectors/emudhra/internal/detect -run '^$' -fuzz '^FuzzScan$' -fuzztime 30s
           go test ./detectors/php2shell/internal/detect -run '^$' -fuzz '^FuzzInspect$' -fuzztime 20s
           go test ./detectors/brotli/internal/fingerprint -run '^$' -fuzz '^FuzzFingerprint$' -fuzztime 30s
@@ -36,6 +38,7 @@ jobs:
           go test ./detectors/java4shell/internal/jvm -run '^$' -fuzz '^FuzzInspect$' -fuzztime 30s
           go test ./detectors/java4shell/internal/jvm -run '^$' -fuzz '^FuzzSettings$' -fuzztime 30s
           go test ./detectors/java4shell/internal/knowledge -run '^$' -fuzz '^FuzzParse$' -fuzztime 20s
+          go test ./detectors/java4shell/internal/knowledge -run '^$' -fuzz '^FuzzRPM$' -fuzztime 15s
           go test ./detectors/java4shell/internal/repo -run '^$' -fuzz '^FuzzScanText$' -fuzztime 30s
           go test ./detectors/java4shell/internal/jvm -run '^$' -fuzz '^FuzzParseRelease$' -fuzztime 15s
           go test ./detectors/java4shell/internal/assess -run '^$' -fuzz '^FuzzAPKOwners$' -fuzztime 15s
