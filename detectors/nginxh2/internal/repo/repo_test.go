@@ -618,3 +618,40 @@ func TestW5HelmSubdirectories(t *testing.T) {
 		t.Errorf("templates that set nothing: %+v", f.Props)
 	}
 }
+
+// Round-4 verification nits: a subchart's templates render too, and a
+// linked template is named by its path in the tree.
+func TestX11HelmSubcharts(t *testing.T) {
+	res := scan(t, map[string]string{
+		"chart/values.yaml":                     "image:\n  repository: nginx\n  tag: \"1.29\"\n",
+		"chart/templates/svc.yaml":              "kind: Service\n",
+		"chart/charts/web/templates/deploy.yml": "spec:\n  containers:\n  - name: web\n    volumeMounts:\n    - {name: conf, mountPath: /etc/nginx/conf.d}\n",
+		"packed/values.yaml":                    "image:\n  repository: nginx\n  tag: \"1.30\"\n",
+		"packed/templates/svc.yaml":             "kind: Service\n",
+		"packed/charts/web-1.0.0.tgz":           "\x1f\x8b",
+	})
+	if f := one(t, res, "chart/values.yaml", 2, RuleNotChecked, knowledge.Unknown); !strings.Contains(f.Props["deployment"], "charts/web/templates/deploy.yml") {
+		t.Errorf("a subchart template was not read: %+v", f.Props)
+	}
+	if f := one(t, res, "packed/values.yaml", 2, RuleNotChecked, knowledge.Unknown); f.Props["deployment"] == "" {
+		t.Errorf("a packaged subchart was taken as setting nothing: %+v", f.Props)
+	}
+}
+
+func TestX11HelmLinkMessage(t *testing.T) {
+	root := t.TempDir()
+	for p, b := range map[string]string{
+		"chart/values.yaml":        "image:\n  repository: nginx\n  tag: \"1.29\"\n",
+		"chart/templates/svc.yaml": "kind: Service\n",
+	} {
+		full := filepath.Join(root, p)
+		os.MkdirAll(filepath.Dir(full), 0o755)
+		os.WriteFile(full, []byte(b), 0o644)
+	}
+	os.Symlink("svc.yaml", filepath.Join(root, "chart/templates/link.yaml"))
+	s := &scanner{}
+	why := s.helmTemplates(root, "chart/values.yaml")
+	if !strings.Contains(why, "chart/templates/link.yaml") || strings.Contains(why, root) {
+		t.Errorf("%q", why)
+	}
+}
