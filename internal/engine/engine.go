@@ -186,6 +186,13 @@ type Reader interface {
 	Wants(path string, head []byte, executable bool) bool
 }
 
+// WorkingDirer is implemented by the TargetContext of an image: the
+// working directory its configuration sets ("" is /), against which the
+// runtime resolves a relative command.
+type WorkingDirer interface {
+	WorkingDir() string
+}
+
 // SkipVisitor is implemented by a Scan whose verdicts must not rest on a
 // file's absence. Before Finish it is given every file and directory the
 // walk recorded as not scanned (unreadable, a directory that could not be

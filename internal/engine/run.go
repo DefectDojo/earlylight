@@ -126,6 +126,7 @@ type targetCtx struct {
 	seen      map[string]bool
 	env       []string
 	cmd       []string
+	workdir   string
 	symlinks  map[string]string // absolute path -> target as written
 	hardlinks map[string]string // absolute path -> absolute path it names
 }
@@ -150,6 +151,9 @@ func (c *targetCtx) Kind() TargetKind     { return c.kind }
 func (c *targetCtx) Exists(p string) bool { return c.seen[p] }
 func (c *targetCtx) Env() []string        { return c.env }
 func (c *targetCtx) Command() []string    { return c.cmd }
+
+// WorkingDir is the image configuration's working directory.
+func (c *targetCtx) WorkingDir() string { return c.workdir }
 func (c *targetCtx) Aliases(p string) []string {
 	out := []string{p}
 	seen := map[string]bool{p: true}
@@ -447,6 +451,7 @@ func ScanImage(dets []Detector, ref string, opts Options) *Target {
 			return t
 		}
 		rc, t.Digest, t.Platform, w.ctx.env = o.FS, o.Digest, o.Platform, o.Env
+		w.ctx.workdir = o.WorkingDir
 		w.ctx.cmd = opts.Override.Apply(o.Entrypoint, o.Cmd)
 	}
 	defer rc.Close()

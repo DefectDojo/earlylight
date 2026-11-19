@@ -367,7 +367,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Command:     ctx.Command(),
 		CommandFrom: "the image's command",
 		CommandFor:  s.commandFor(src),
-		Launcher:    s.launcher(links, hardlinks),
+		Launcher:    s.launcher(links, hardlinks, workdirOf(ctx), ctx.Env(), ctx.Exists),
 		Ingress:     s.ingress,
 		Generated:   s.generated(),
 	})
@@ -383,7 +383,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 // image's entrypoint, and every script that entrypoint runs from
 // /docker-entrypoint.d (find -follow: links followed) was read and is an
 // official one by content.
-func (s *scan) launcher(links, hardlinks map[string]string) func(string) (bool, string) {
+func (s *scan) launcher(links, hardlinks map[string]string, workdir string, env []string, exists func(string) bool) func(string) (bool, string) {
 	src := &confSource{links: links, hardlinks: hardlinks}
 	content := func(p string) ([]byte, bool) {
 		r := src.resolve(p)
@@ -400,9 +400,15 @@ func (s *scan) launcher(links, hardlinks map[string]string) func(string) (bool, 
 		return b, ok
 	}
 	return func(word string) (bool, string) {
-		p := word
-		if !strings.HasPrefix(p, "/") {
-			p = "/" + path.Base(p) // relative: the official image runs it from /
+		p, why := resolveCommand(word, workdir, env, func(q string) bool {
+			if exists != nil && exists(q) {
+				return true
+			}
+			_, ok := content(q)
+			return ok
+		})
+		if p == "" {
+			return false, why
 		}
 		b, ok := content(p)
 		if !ok {
@@ -452,6 +458,46 @@ func (s *scan) launcher(links, hardlinks map[string]string) func(string) (bool, 
 		}
 		return true, ""
 	}
+}
+
+// defaultPath is the PATH a container runs with when its image sets none.
+const defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// resolveCommand resolves a command word as the runtime does: an absolute
+// path as written, one with a slash against the working directory, a bare
+// name through the image's PATH. "" when nothing is found.
+func resolveCommand(word, workdir string, env []string, exists func(string) bool) (string, string) {
+	if strings.HasPrefix(word, "/") {
+		return path.Clean(word), ""
+	}
+	if workdir == "" {
+		workdir = "/"
+	}
+	if strings.Contains(word, "/") {
+		return path.Join("/", workdir, word), ""
+	}
+	pathVar, set := defaultPath, false
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "PATH="); ok {
+			pathVar, set = v, true
+		}
+	}
+	for _, d := range strings.Split(pathVar, ":") {
+		if d == "" {
+			d = workdir
+		}
+		if !strings.HasPrefix(d, "/") {
+			d = path.Join("/", workdir, d)
+		}
+		if p := path.Join(d, word); exists(p) {
+			return p, ""
+		}
+	}
+	from := "the default PATH"
+	if set {
+		from = "the image's PATH"
+	}
+	return "", fmt.Sprintf("nginx is started through %s, which is not found on %s, so what it runs is not known", word, from)
 }
 
 func sha(b []byte) string {
@@ -735,6 +781,14 @@ func unitWords(v string) []string {
 		out = append(out, b.String())
 	}
 	return out
+}
+
+// workdirOf is an image's working directory, "" when the target has none.
+func workdirOf(ctx engine.TargetContext) string {
+	if w, ok := ctx.(engine.WorkingDirer); ok {
+		return w.WorkingDir()
+	}
+	return ""
 }
 
 // generated says why the configuration on disk is not what runs.

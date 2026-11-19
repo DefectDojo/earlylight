@@ -64,7 +64,7 @@ func TestV1EntrypointContent(t *testing.T) {
 		s := mk()
 		links := map[string]string{}
 		c.edit(s, links)
-		ok, why := s.launcher(links, nil)(c.word)
+		ok, why := s.launcher(links, nil, "/", nil, nil)(c.word)
 		if ok != c.trust {
 			t.Errorf("%s: trusted %v (%s), want %v", c.name, ok, why, c.trust)
 		}

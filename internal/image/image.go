@@ -31,6 +31,8 @@ type Opened struct {
 	Command []string
 	// Entrypoint and Cmd are the configuration's own.
 	Entrypoint, Cmd []string
+	// WorkingDir is the configuration's working directory ("" is /).
+	WorkingDir string
 }
 
 // Open resolves ref and returns the image's flattened filesystem.
@@ -55,6 +57,7 @@ func opened(img v1.Image) (*Opened, error) {
 		o.Env = cf.Config.Env
 		o.Command = append(append([]string(nil), cf.Config.Entrypoint...), cf.Config.Cmd...)
 		o.Entrypoint, o.Cmd = cf.Config.Entrypoint, cf.Config.Cmd
+		o.WorkingDir = cf.Config.WorkingDir
 		if cf.OS != "" {
 			o.Platform = cf.OS + "/" + cf.Architecture
 			if cf.Variant != "" {
