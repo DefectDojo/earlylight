@@ -564,7 +564,7 @@ func (c *commands) starts(word, binary string) (bool, string) {
 		return false, why
 	}
 	if r := c.real(p); r == "" || r != c.real(binary) {
-		return false, fmt.Sprintf("%s resolves to %s, not to the nginx binary judged (%s), so what it starts is not known", word, p, binary)
+		return false, fmt.Sprintf("the command starts %s (%s), not this binary (%s), so how this binary is started and what it loads is not known", p, word, binary)
 	}
 	return true, ""
 }

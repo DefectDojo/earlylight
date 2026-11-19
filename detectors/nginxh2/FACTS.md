@@ -113,7 +113,9 @@ of the binary.
 - Exposure reads "not exposed" only when all of this holds; anything else is unknown:
   - the command that starts nginx was read, and its nginx word resolves, by path and content the scan read, to the
     very binary judged (a relative path against the image's working directory, a bare name through its `PATH`, a
-    `PATH` search stopping at a link as the runtime does); a base name alone is never trusted. Any word before nginx
+    `PATH` search stopping at a link as the runtime does); a base name alone is never trusted, and a binary the
+    command does not start (`nginx-debug` in the official images) is unknown, or exposed when what it would load
+    turns HTTP/2 on. Any word before nginx
     other than the official entrypoint is unknown: `tini`, `dumb-init`, `env` (with its `PATH` or `--chdir`), `exec`,
     `sh -c` and custom scripts included;
   - the official entrypoint is recognised by SHA-256 (every version in nginx/docker-nginx and
