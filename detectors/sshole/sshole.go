@@ -15,6 +15,8 @@
 package sshole
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -83,6 +85,34 @@ func (d *Detector) Wants(p string, head []byte, _ bool) bool {
 	return archive.IsExecutable(head) || keep(p) || isScript(head)
 }
 
+// Limit is the size Visit keeps a file to, so the engine never reads a
+// larger one: a start script or an account, package or configuration file
+// is never hundreds of MiB. Executables (possible sshd binaries) are read
+// whole.
+func (d *Detector) Limit(p string, head []byte, _ bool) int64 {
+	if archive.IsExecutable(head) {
+		return 0
+	}
+	var most int64
+	if isScript(head) {
+		most = maxScript
+	}
+	if keep(p) {
+		most = max(most, keptLimit(p))
+	}
+	return most
+}
+
+// keptLimit is the most read of a file the verdict reads: a package
+// database can be large (16 MiB, as java4shell's), the others are small.
+func keptLimit(p string) int64 {
+	switch p {
+	case "/lib/apk/db/installed", "/usr/lib/apk/db/installed", "/usr/lib/opkg/status":
+		return maxPackageDB
+	}
+	return maxKept
+}
+
 // isScript reports a "#!" script: a container's entrypoint or startup step.
 func isScript(head []byte) bool { return len(head) > 2 && head[0] == '#' && head[1] == '!' }
 
@@ -112,11 +142,14 @@ func keep(p string) bool {
 		strings.Contains(path.Dir(p), "ssh") && (strings.HasSuffix(base, ".conf") || strings.HasSuffix(base, "config"))
 }
 
-const maxKept = 4 << 20
+const (
+	maxKept      = 4 << 20
+	maxPackageDB = 16 << 20
+)
 
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(kind engine.TargetKind) engine.Scan {
-	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}}
+	return &scan{kind: kind, files: map[string][]byte{}, scripts: map[string][]byte{}, over: map[string]bool{}, unreadScripts: map[string]bool{}, gaps: map[string]bool{}}
 }
 
 type scan struct {
@@ -125,17 +158,113 @@ type scan struct {
 	files       map[string][]byte
 	scripts     map[string][]byte
 	scriptBytes int
+	// over holds the files a verdict reads that were not read (over a size
+	// limit, or unreadable): present, but their content is unknown.
+	over map[string]bool
+	// unreadScripts are files that may be start scripts and were not
+	// read; unreadDirs directories whose contents were not listed.
+	// Past maxUnread, unreadAll stands for the rest.
+	unreadScripts map[string]bool
+	unreadDirs    []string
+	unreadAll     bool
+	// gaps are the files that kept a verdict from being decided.
+	gaps map[string]bool
+}
+
+// maxUnread bounds the unread files and directories one target records.
+const maxUnread = 1 << 16
+
+// unread records a file that was not read: its content is unknown.
+func (s *scan) unread(p string) {
+	if keep(p) {
+		s.over[p] = true
+	}
+	if len(s.unreadScripts) >= maxUnread {
+		s.unreadAll = true
+		return
+	}
+	s.unreadScripts[p] = true // its head is not known here: it may be a script
+}
+
+// VisitOverLimit records a file the scan asked for and did not get, over
+// its limit or --max-file-size. A configuration that includes it, or a
+// start script that was not read, never lets a server be cleared, and an
+// account file, package database or sshd_config not read is a coverage gap
+// once a server is found (FinishSkips). The record here is an exclusion:
+// with no OpenSSH server in the target, none of these files matters.
+func (s *scan) VisitOverLimit(p string, _ int64) []engine.Skip {
+	s.unread(p)
+	return nil
+}
+
+// VisitUnread records a file or directory the walk could not read, as
+// VisitOverLimit does: an include or start script in it is unknown.
+func (s *scan) VisitUnread(p string, dir bool) {
+	if !dir {
+		s.unread(p)
+		return
+	}
+	if len(s.unreadDirs) >= maxUnread {
+		s.unreadAll = true
+		return
+	}
+	s.unreadDirs = append(s.unreadDirs, p)
+}
+
+// Forget drops what was kept of p: an image names it again.
+func (s *scan) Forget(p string) {
+	delete(s.files, p)
+	if b, ok := s.scripts[p]; ok {
+		s.scriptBytes -= len(b)
+		delete(s.scripts, p)
+	}
+	delete(s.over, p)
+	delete(s.unreadScripts, p)
+	bs := s.binaries[:0]
+	for _, b := range s.binaries {
+		if b.Path != p {
+			bs = append(bs, b)
+		}
+	}
+	s.binaries = bs
+}
+
+// FinishSkips reports, when an OpenSSH server was found, the files the
+// verdict reads that were not read and the start scripts that kept a
+// verdict from being decided, as coverage gaps.
+func (s *scan) FinishSkips() []engine.Skip {
+	if len(s.binaries) == 0 {
+		return nil
+	}
+	var out []engine.Skip
+	for p := range s.over {
+		out = append(out, engine.Skip{Path: p, Reason: "not read (over a size limit, or unreadable), and sshole's verdict depends on it; not checked"})
+	}
+	for p := range s.gaps {
+		if !s.over[p] {
+			out = append(out, engine.Skip{Path: p, Reason: "not read (over a size limit, or unreadable), and it can start sshd with other settings, so the verdict is unknown"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
 }
 
 func (s *scan) Visit(f engine.File) []engine.Skip {
 	if f.Member {
 		return nil // installed servers only, not copies inside archives
 	}
-	if isScript(f.Data) && len(f.Data) <= maxScript && s.scriptBytes+len(f.Data) <= maxScripts {
-		s.scripts[f.Path] = f.Data
-		s.scriptBytes += len(f.Data)
+	if isScript(f.Data) {
+		if len(f.Data) <= maxScript && s.scriptBytes+len(f.Data) <= maxScripts {
+			s.scripts[f.Path] = f.Data
+			s.scriptBytes += len(f.Data)
+		} else {
+			// Read for its other use (a file named like sshd_config) or
+			// past the total: not checked as a start script.
+			s.unread(f.Path)
+			delete(s.over, f.Path) // read as a file the verdict reads
+		}
 	}
-	if keep(f.Path) && len(f.Data) <= maxKept && !archive.IsExecutable(f.Data) {
+	if keep(f.Path) && int64(len(f.Data)) <= keptLimit(f.Path) && !archive.IsExecutable(f.Data) {
 		s.files[f.Path] = f.Data
 		return nil
 	}
@@ -149,13 +278,15 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	if len(s.binaries) == 0 {
 		return nil
 	}
-	fs := &files{kept: s.files, root: ctx.SystemRoot()}
+	fs := &files{kept: s.files, over: s.over, unreadDirs: s.unreadDirs, root: ctx.SystemRoot()}
 	links, _ := ctx.Links()
 	res := resolver{links: links, exists: func(p string) bool {
 		if ctx.Exists(p) {
 			return true
 		}
-		return fs.root != "" && fs.diskRegular(p)
+		// A path that may be in a directory that was not listed is taken
+		// to exist: its absence is not known.
+		return fs.root != "" && fs.diskRegular(p) || fs.mayHide(p)
 	}}
 	acc := assess.ParseAccounts(fs.Read("/etc/passwd"), fs.Read("/etc/shadow"), fs.Read("/etc/group"), fs.tcb())
 	owners := map[string]assess.Package{}
@@ -180,6 +311,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		ctx.Annotate("alpine_branch", branch)
 	}
 	found := assess.Run(assess.Input{
+		NotRead:  fs.notRead,
 		Binaries: s.binaries,
 		Owners:   owners,
 		Files:    fs,
@@ -187,10 +319,15 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Resolve:  res.resolve,
 		Branch:   branch,
 		Image:    s.kind == engine.Image,
-		Startup:  assess.Startup{Command: ctx.Command(), Scripts: s.scripts},
+		Startup:  assess.Startup{Command: ctx.Command(), Scripts: s.scripts, Unread: s.unreadScripts, UnreadDirs: s.unreadDirs, UnreadAll: s.unreadAll},
 	})
 	out := make([]engine.Finding, 0, len(found))
 	for _, x := range found {
+		for _, p := range x.Unread {
+			if s.unreadScripts[p] || s.over[p] || fs.inUnreadDir(p) {
+				s.gaps[p] = true
+			}
+		}
 		out = append(out, finding(x))
 	}
 	return out
@@ -260,14 +397,105 @@ func yes(b bool) string {
 // root's own files from disk.
 type files struct {
 	kept map[string][]byte
-	root string
+	over map[string]bool // present but not read: Read is nil
+	// unreadDirs could not be listed: a pattern in one matches a file
+	// that cannot be read.
+	unreadDirs []string
+	root       string
+}
+
+// mayHide reports whether a file matching pattern (a path or a glob) can
+// be in a directory that was not listed, in the walk or on disk under the
+// system root: then what it matches is unknown.
+func (f *files) mayHide(pattern string) bool {
+	pc := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	for _, d := range f.unreadDirs {
+		dc := strings.Split(strings.TrimPrefix(d, "/"), "/")
+		if len(dc) >= len(pc) {
+			continue
+		}
+		in := true
+		for i, c := range dc {
+			if ok, _ := path.Match(pc[i], c); !ok {
+				in = false
+				break
+			}
+		}
+		if in {
+			return true
+		}
+	}
+	return f.root != "" && f.diskHidden(f.root, pc)
+}
+
+// diskHidden reports whether the files under dir matching comps cannot be
+// all listed: a directory on the way that exists and cannot be read. It
+// never follows a symbolic link.
+func (f *files) diskHidden(dir string, comps []string) bool {
+	unknown := func(err error) bool { return err != nil && !errors.Is(err, fs.ErrNotExist) }
+	c := comps[0]
+	if len(comps) == 1 {
+		if hasMeta(c) {
+			_, err := os.ReadDir(dir)
+			return unknown(err)
+		}
+		_, err := os.Lstat(filepath.Join(dir, c))
+		return unknown(err)
+	}
+	if !hasMeta(c) {
+		next := filepath.Join(dir, c)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return unknown(err)
+		}
+		return fi.IsDir() && f.diskHidden(next, comps[1:])
+	}
+	es, err := os.ReadDir(dir)
+	if err != nil {
+		return unknown(err)
+	}
+	for _, e := range es {
+		if ok, _ := path.Match(c, e.Name()); ok && e.IsDir() && f.diskHidden(filepath.Join(dir, e.Name()), comps[1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMeta(s string) bool { return strings.ContainsAny(s, "*?[\\") }
+
+// notRead reports whether a file the verdict reads may be in the target
+// but was not read: over a size limit, unreadable, or in a directory that
+// could not be listed.
+func (f *files) notRead(p string) bool {
+	if _, ok := f.kept[p]; ok {
+		return false
+	}
+	if f.over[p] || f.mayHide(p) {
+		return true
+	}
+	if f.root == "" {
+		return false
+	}
+	_, ok := f.diskFile(p)
+	return ok && f.disk(p) == nil
+}
+
+// inUnreadDir reports whether p lies in a directory that was not listed.
+func (f *files) inUnreadDir(p string) bool {
+	for _, d := range f.unreadDirs {
+		if p == d || strings.HasPrefix(p, strings.TrimSuffix(d, "/")+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *files) Read(p string) []byte {
 	if b, ok := f.kept[p]; ok {
 		return b
 	}
-	if f.root == "" {
+	if f.root == "" || f.over[p] || f.inUnreadDir(p) {
 		return nil
 	}
 	return f.disk(p)
@@ -306,12 +534,13 @@ func (f *files) diskRegular(p string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-// disk reads a regular file below the system root, never through a
-// symbolic link in any component of its path.
-func (f *files) disk(p string) []byte {
+// diskFile returns the OS path of a regular file below the system root,
+// reached through no symbolic link in any component of its path. A file
+// too large to read is still found: Glob lists it, Read gives nil.
+func (f *files) diskFile(p string) (string, bool) {
 	full, ok := f.diskPath(p)
 	if !ok {
-		return nil
+		return "", false
 	}
 	rel, _ := filepath.Rel(f.root, full)
 	cur := f.root
@@ -319,11 +548,22 @@ func (f *files) disk(p string) []byte {
 		cur = filepath.Join(cur, part)
 		fi, err := os.Lstat(cur)
 		if err != nil || fi.Mode()&os.ModeSymlink != 0 {
-			return nil
+			return "", false
 		}
 	}
 	fi, err := os.Lstat(full)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxKept {
+	return full, err == nil && fi.Mode().IsRegular()
+}
+
+// disk reads a regular file below the system root, never through a
+// symbolic link in any component of its path.
+func (f *files) disk(p string) []byte {
+	full, ok := f.diskFile(p)
+	if !ok {
+		return nil
+	}
+	fi, err := os.Lstat(full)
+	if err != nil || fi.Size() > keptLimit(p) {
 		return nil
 	}
 	b, err := os.ReadFile(full)
@@ -336,11 +576,23 @@ func (f *files) disk(p string) []byte {
 func (f *files) Glob(pattern string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for p := range f.kept {
+	match := func(p string) {
 		if ok, _ := path.Match(pattern, p); ok && !seen[p] {
 			seen[p] = true
 			out = append(out, p)
 		}
+	}
+	for p := range f.kept {
+		match(p)
+	}
+	for p := range f.over {
+		match(p)
+	}
+	if f.mayHide(pattern) && !seen[pattern] {
+		// What it matches there is unknown: stand for it with the pattern,
+		// which Read cannot give.
+		seen[pattern] = true
+		out = append(out, pattern)
 	}
 	if f.root != "" {
 		if full, ok := f.diskPath(pattern); ok {
@@ -351,7 +603,7 @@ func (f *files) Glob(pattern string) []string {
 					continue
 				}
 				p := "/" + filepath.ToSlash(rel)
-				if !seen[p] && f.disk(p) != nil {
+				if _, ok := f.diskFile(p); !seen[p] && ok {
 					seen[p] = true
 					out = append(out, p)
 				}

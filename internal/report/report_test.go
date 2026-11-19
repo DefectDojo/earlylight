@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/DefectDojo/earlylight/internal/engine"
+	"github.com/DefectDojo/earlylight/internal/source"
 )
 
 func TestSafe(t *testing.T) {
@@ -50,5 +52,19 @@ func TestJSONCarriesKinds(t *testing.T) {
 	want := []KindInfo{{ID: "lib", Title: "Library", Level: "error", Severity: "9.2"}, {ID: "pin", Title: "Pin not checked", Level: "note"}}
 	if len(got.Detectors) != 1 || !reflect.DeepEqual(got.Detectors[0].Kinds, want) {
 		t.Errorf("kinds = %+v, want %+v", got.Detectors, want)
+	}
+}
+
+// Round-2 review finding 8: a path with a record for each detector that
+// left it unchecked is one item.
+func TestNoteCountsAPathOnce(t *testing.T) {
+	tg := &engine.Target{Name: "img", Type: engine.Image, Files: 2, Skipped: []source.Skip{
+		{Path: "/usr/bin/gprofng-display-html", Reason: "excluded: larger than the 262144-byte limit of java4shell for this file (300000 bytes)", Excluded: true},
+		{Path: "/usr/bin/gprofng-display-html", Reason: "excluded: larger than the 262144-byte limit of sshole for this file (300000 bytes)", Excluded: true},
+	}}
+	var b bytes.Buffer
+	Text(&b, &Report{Tool: "t", Targets: []*engine.Target{tg}}, Options{})
+	if !strings.Contains(b.String(), "NOTE: 1 item(s) were not scanned (0 coverage gaps") {
+		t.Errorf("%s", b.String())
 	}
 }

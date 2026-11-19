@@ -39,9 +39,12 @@ type Result struct {
 // Context supplies what the rules need to know about the rest of the scanned root.
 // Paths are absolute inside the root (for example "/etc/ca-certificates.conf").
 type Context struct {
-	Read   func(absPath string) []byte // file content, nil when absent
-	Exists func(absPath string) bool   // whether a regular file was scanned at that path
-	Env    []string                    // container image Config.Env, "KEY=value" entries
+	Read func(absPath string) []byte // file content, nil when absent
+	// Scanned reports whether the file at that path was read and checked:
+	// a file only known to exist (too large to read) proves nothing about
+	// what it trusts.
+	Scanned func(absPath string) bool
+	Env     []string // container image Config.Env, "KEY=value" entries
 }
 
 func (c Context) env(key string) (string, bool) {
@@ -186,7 +189,7 @@ func botocoreUsesCertifi(p string, ctx Context) bool {
 		if !strings.HasSuffix(site, "/site-packages") && !strings.HasSuffix(site, "/dist-packages") {
 			continue
 		}
-		return ctx.Exists != nil && ctx.Exists(site+"/certifi/cacert.pem")
+		return ctx.Scanned != nil && ctx.Scanned(site+"/certifi/cacert.pem")
 	}
 	return false
 }

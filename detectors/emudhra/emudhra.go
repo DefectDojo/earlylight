@@ -71,7 +71,7 @@ func (d *Detector) Load() error {
 
 // NewScan starts a filesystem or image scan.
 func (d *Detector) NewScan(engine.TargetKind) engine.Scan {
-	return &scan{det: d.det, files: map[string][]byte{}, dedupe: map[string]bool{}}
+	return &scan{det: d.det, files: map[string][]byte{}, dedupe: map[string]bool{}, scanned: map[string]bool{}, foundIn: map[string][]int{}}
 }
 
 // Probe checks the certificate chain a TLS server presents.
@@ -92,6 +92,11 @@ type scan struct {
 	findings []detect.Finding
 	files    map[string][]byte
 	dedupe   map[string]bool
+	scanned  map[string]bool // certifi bundles visited
+	// foundIn indexes findings by the file visited (members included);
+	// gone marks those a later entry for the file dropped.
+	foundIn map[string][]int
+	gone    []bool
 }
 
 // keep reports whether the assessment rules need this file's content: the
@@ -101,9 +106,26 @@ func keep(p string) bool {
 	return p == "/etc/ca-certificates.conf" || strings.HasSuffix(p, "/certifi/core.py")
 }
 
+// Forget drops what was found in p, and inside it: an image names it
+// again, and the last entry is the file. Findings are indexed by the file
+// they were found in, so this costs what p held, not every finding.
+func (s *scan) Forget(p string) {
+	delete(s.files, p)
+	delete(s.scanned, p)
+	for _, i := range s.foundIn[p] {
+		x := s.findings[i]
+		delete(s.dedupe, x.Path+"\x00"+string(x.Kind)+"\x00"+x.SPKI)
+		s.gone[i] = true
+	}
+	delete(s.foundIn, p)
+}
+
 func (s *scan) Visit(f engine.File) []engine.Skip {
 	if keep(f.Path) {
 		s.files[f.Path] = f.Data // raw path: lookups must never alias another file
+	}
+	if !f.Member && strings.HasSuffix(f.Path, "/certifi/cacert.pem") {
+		s.scanned[f.Path] = true // checked here, not only known to exist
 	}
 	found, skips := s.det.ScanAll(f.Path, f.Data)
 	for _, x := range found {
@@ -114,7 +136,15 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 			continue
 		}
 		s.dedupe[k] = true
+		// A member is forgotten with the file that holds it. Only the
+		// engine knows which that is: a directory can be named "app!".
+		outer := f.Path
+		if f.Member && f.Outer != "" {
+			outer = f.Outer
+		}
+		s.foundIn[outer] = append(s.foundIn[outer], len(s.findings))
 		s.findings = append(s.findings, x)
+		s.gone = append(s.gone, false)
 	}
 	var out []engine.Skip
 	for _, sk := range skips {
@@ -124,10 +154,16 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 }
 
 func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
-	rs := assess.Assess(s.findings, assess.Context{
-		Read:   func(p string) []byte { return s.files[p] },
-		Exists: ctx.Exists,
-		Env:    ctx.Env(),
+	found := make([]detect.Finding, 0, len(s.findings))
+	for i, x := range s.findings {
+		if !s.gone[i] {
+			found = append(found, x)
+		}
+	}
+	rs := assess.Assess(found, assess.Context{
+		Read:    func(p string) []byte { return s.files[p] },
+		Scanned: func(p string) bool { return s.scanned[p] },
+		Env:     ctx.Env(),
 	})
 	out := make([]engine.Finding, 0, len(rs))
 	for _, r := range rs {
