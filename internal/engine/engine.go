@@ -192,6 +192,25 @@ type Reader interface {
 	Wants(path string, head []byte, executable bool) bool
 }
 
+// WorkingDirer is implemented by the TargetContext of an image: the
+// working directory its configuration sets ("" is /), against which the
+// runtime resolves a relative command.
+type WorkingDirer interface {
+	WorkingDir() string
+}
+
+// SkipVisitor is implemented by a Scan whose verdicts must not rest on a
+// file's absence. Before Finish it is given every file and directory the
+// walk recorded as not scanned (unreadable, a directory that could not be
+// listed, over --max-file-size, a file a detector failed on), one record
+// per path with every reason, as the target reports them, and with paths
+// inside the system root. Deliberate exclusions (pseudo-filesystems,
+// container storage, a file over a detector's own limit) are left out, and
+// so are the gaps a detector reports only at the end (FinishSkipper).
+type SkipVisitor interface {
+	VisitSkips(skips []Skip)
+}
+
 // Limiter is implemented by detectors that have a size limit of their own
 // on some files, below --max-file-size: an os-release, a start script or a
 // package database is never hundreds of MiB, and one that is should cost

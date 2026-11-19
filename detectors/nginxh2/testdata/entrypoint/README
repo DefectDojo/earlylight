@@ -1,0 +1,3 @@
+These are the official nginx image's entrypoint and /docker-entrypoint.d scripts, copied
+unchanged from github.com/nginx/docker-nginx (entrypoint/, commit a2a986d19a, BSD 2-Clause License,
+Copyright (C) 2011-2023 F5, Inc.), for the tests that recognise them by content.

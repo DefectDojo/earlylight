@@ -1,0 +1,9 @@
+services:
+  old:
+    image: nginx:1.29.8
+  unpriv:
+    image: nginxinc/nginx-unprivileged:1.31.7-alpine
+  ic:
+    image: nginx/nginx-ingress:5.7.1
+  fixed:
+    image: nginx:1.30.7-alpine

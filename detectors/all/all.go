@@ -5,6 +5,7 @@ import (
 	_ "github.com/DefectDojo/earlylight/detectors/brotli"
 	_ "github.com/DefectDojo/earlylight/detectors/emudhra"
 	_ "github.com/DefectDojo/earlylight/detectors/java4shell"
+	_ "github.com/DefectDojo/earlylight/detectors/nginxh2"
 	_ "github.com/DefectDojo/earlylight/detectors/php2shell"
 	_ "github.com/DefectDojo/earlylight/detectors/sshole"
 )

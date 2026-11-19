@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: ing}
+spec:
+  template:
+    spec:
+      containers:
+      - name: controller
+        image: registry.k8s.io/ingress-nginx/controller:v1.15.1@sha256:594ceea76b01c592858f803f9ff4d2cb40542cae2060410b2c95f75907d659e1
+      - name: web
+        image: nginx:1.27.5
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: web-conf}
+data:
+  default.conf: |
+    server {
+      listen 443 ssl http2;
+      location / { proxy_pass http://app:8080; }
+    }
