@@ -1,7 +1,9 @@
 package nginxh2
 
 import (
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"testing"
 
@@ -209,6 +211,67 @@ func TestX4TemplateLimits(t *testing.T) {
 		f.env = append(f.env, env...)
 		f.files["/etc/nginx/templates/default.conf.template"] = []byte("server { listen 80; }")
 		if got := f.exposure(t); got != "unknown" {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+}
+
+// X5: below --root, a wildcard-directory glob keeps links (Read decides
+// them inside the root) and reads a permission error as incomplete.
+func TestX5DiskGlobLinks(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string][]byte{
+		"/opt/sbin/nginx":                   ngxtest.Default("1.31.8").Bytes(),
+		"/opt/app/conf/nginx.conf":          []byte("http { include /opt/app/conf/vhosts/*/site.conf; server { listen 80; } }"),
+		"/opt/app/conf/vhosts/a/site.conf":  []byte("server { listen 80; }"),
+		"/srv/sites/b.conf":                 []byte("server { listen 443 ssl http2; }"),
+		"/etc/systemd/system/nginx.service": []byte("[Service]\nExecStart=/opt/sbin/nginx -c /opt/app/conf/nginx.conf\n"),
+	})
+	os.MkdirAll(filepath.Join(root, "opt/app/conf/vhosts/b"), 0o755)
+	if err := os.Symlink("/srv/sites/b.conf", filepath.Join(root, "opt/app/conf/vhosts/b/site.conf")); err != nil {
+		t.Fatal(err)
+	}
+	tg := engine.ScanFS([]engine.Detector{&Detector{}}, filepath.Join(root, "opt"), engine.Options{SystemRoot: root})
+	if f := find(tg, KindFlow, "/opt/sbin/nginx"); f == nil || f.Facts["exposure"] == "not-exposed" {
+		t.Errorf("an absolute link under the glob: %+v", f)
+	}
+}
+
+func TestX5DiskGlobPermission(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root lists mode 000 directories")
+	}
+	root := t.TempDir()
+	write(t, root, map[string][]byte{
+		"/opt/sbin/nginx":                   ngxtest.Default("1.31.8").Bytes(),
+		"/opt/app/conf/nginx.conf":          []byte("http { include /opt/app/conf/vhosts/*/site.conf; server { listen 80; } }"),
+		"/opt/app/conf/vhosts/a/site.conf":  []byte("server { listen 80; }"),
+		"/opt/app/conf/vhosts/b/site.conf":  []byte("server { listen 443 ssl http2; }"),
+		"/etc/systemd/system/nginx.service": []byte("[Service]\nExecStart=/opt/sbin/nginx -c /opt/app/conf/nginx.conf\n"),
+	})
+	b := filepath.Join(root, "opt/app/conf/vhosts/b")
+	os.Chmod(b, 0)
+	tg := engine.ScanFS([]engine.Detector{&Detector{}}, filepath.Join(root, "opt/sbin"), engine.Options{SystemRoot: root})
+	os.Chmod(b, 0o755)
+	if f := find(tg, KindFlow, "/opt/sbin/nginx"); f == nil || f.Facts["exposure"] != "unknown" {
+		t.Errorf("an unreadable directory under the glob: %+v", f)
+	}
+}
+
+// X6: in an image (or --as-root), a wildcard-directory glob through a
+// linked directory is not taken as complete.
+func TestX6WildcardThroughLink(t *testing.T) {
+	for name, links := range map[string]map[string]string{
+		"the directory":  {"/etc/nginx/sites": "/data/sites"},
+		"a subdirectory": {"/etc/nginx/sites/b": "/data/sites/b"},
+	} {
+		f := officialImage(t)
+		f.files["/etc/nginx/nginx.conf"] = []byte("events {} http { include /etc/nginx/sites/*/site.conf; include /etc/nginx/conf.d/*.conf; }")
+		f.files["/data/sites/b/site.conf"] = []byte("server { listen 443 ssl http2; }")
+		for k, v := range links {
+			f.links[k] = v
+		}
+		if got := f.exposure(t); got == "not-exposed" {
 			t.Errorf("%s: %s", name, got)
 		}
 	}

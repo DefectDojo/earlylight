@@ -1442,6 +1442,18 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 			}
 		}
 		prefix := dir[:strings.IndexAny(dir, "*?[")]
+		// A link on the pattern's path (the directory it starts in, or
+		// one below it) leads where this match does not look.
+		if r := s.resolve(strings.TrimSuffix(prefix, "/")); r == "" || r != path.Clean(strings.TrimSuffix(prefix, "/")) {
+			complete = false
+		}
+		for _, m := range []map[string]string{s.links, s.hardlinks} {
+			for q := range m {
+				if strings.HasPrefix(q, prefix) {
+					complete = false
+				}
+			}
+		}
 		for _, ps := range x.unread {
 			for _, u := range ps {
 				if strings.HasPrefix(u, prefix) {
@@ -1555,10 +1567,22 @@ func (s *confSource) diskGlob(pattern string) ([]string, bool) {
 			}
 			if !strings.ContainsAny(part, "*?[") {
 				p := path.Join(dir, part)
-				if full, ok := s.diskPath(p); ok {
-					if fi, err := os.Stat(full); err == nil && (last && fi.Mode().IsRegular() || !last && fi.IsDir()) {
-						next = append(next, p)
-					}
+				full, ok := s.diskPath(p)
+				if !ok {
+					complete = false
+					continue
+				}
+				fi, err := os.Lstat(full)
+				switch {
+				case err != nil && !errors.Is(err, fs.ErrNotExist):
+					complete = false
+				case err != nil:
+				case fi.Mode()&fs.ModeSymlink != 0 && last:
+					next = append(next, p) // Read follows it inside the root
+				case fi.Mode()&fs.ModeSymlink != 0:
+					complete = false // a linked directory: not followed here
+				case last && fi.Mode().IsRegular() || !last && fi.IsDir():
+					next = append(next, p)
 				}
 				continue
 			}
@@ -1586,14 +1610,14 @@ func (s *confSource) diskGlob(pattern string) ([]string, bool) {
 					continue
 				}
 				p := path.Join(dir, e.Name())
-				fi, err := os.Stat(filepath.Join(full, e.Name()))
-				if err != nil {
-					if e.Type()&fs.ModeSymlink != 0 && last {
-						next = append(next, p) // Read reports it as not read
-					}
-					continue
-				}
-				if last && fi.Mode().IsRegular() || !last && fi.IsDir() {
+				switch {
+				case e.Type()&fs.ModeSymlink != 0 && last:
+					next = append(next, p) // Read follows it inside the root, or reports it
+				case e.Type()&fs.ModeSymlink != 0:
+					// A linked directory: its target is decided inside the
+					// root, which this walk does not do.
+					complete = false
+				case last && e.Type().IsRegular() || !last && e.IsDir():
 					next = append(next, p)
 				}
 			}
