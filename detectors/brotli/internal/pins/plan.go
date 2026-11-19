@@ -234,11 +234,12 @@ func unchecked(root string, s *scanner, file string, line int, rule string, prop
 			return notChecked("line %d of %s holds no value of this kind now, and line %d was not checked (%s): the pin may have moved there", line, file, sk.Line, scrub(root, sk.Reason))
 		}
 	}
-	if moved && (s.exprAt[judgedKey{file, line, rule, ""}] || s.exprAt[judgedKey{file, line, "", ""}]) {
-		// The release on the line is now read from a variable or an
-		// expression (nvm install $V, a URL with ${V}): changed in place,
-		// not known to be fixed.
-		return notChecked("line %d of %s now sets the release from a variable or expression the scan does not resolve", line, file)
+	if moved && line >= 1 && line <= n && unresolvedRe.MatchString(splitLines(content)[line-1]) {
+		// No release of the rule is judged on the line, and the line now
+		// holds a value the scan does not resolve (nvm install $V, a URL
+		// with ${V}, $(cat .nvmrc), a template): the pin may be there,
+		// changed in place. Whatever the slot, it is not known to be fixed.
+		return notChecked("line %d of %s now holds a value the scan does not resolve (a variable, a command or a template)", line, file)
 	}
 	for _, q := range s.pins {
 		if q.file != file || q.prod.rule() != rule {

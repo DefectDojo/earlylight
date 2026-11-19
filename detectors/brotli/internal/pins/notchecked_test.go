@@ -747,7 +747,7 @@ func TestExpressionInPlace(t *testing.T) {
 	// A variable the file sets to a release is read where it is set: the
 	// reference to it is no gap.
 	root := t.TempDir()
-	write(t, root, map[string]string{"Dockerfile": "ARG NODE_VERSION=24.22.1\nFROM debian:12\nENV NODE_VERSION=$NODE_VERSION\n"})
+	write(t, root, map[string]string{"Dockerfile": "ARG NODE_VERSION=24.22.1\nFROM debian:12\nARG NODE_VERSION\nENV NODE_VERSION=$NODE_VERSION\n"})
 	if res, err := pins.Scan(context.Background(), root, nil, pins.Options{}); err != nil || len(res.Skips) != 0 || len(res.Findings) != 0 {
 		t.Errorf("a set variable: %v %+v", err, res)
 	}
@@ -864,10 +864,10 @@ func TestVersionVariablesResolved(t *testing.T) {
 		what, file, body string
 		want             []want
 	}{
-		{"ENV from a fixed ARG", "Dockerfile", "ARG NODE_VERSION=24.22.1\nFROM debian:12\nENV NODE_VERSION=$NODE_VERSION\n", nil},
-		{"ENV from a vulnerable ARG of another name", "Dockerfile", "ARG BUILD_NODE=24.22.0\nFROM debian:12\nENV NODE_VERSION=$BUILD_NODE\n", []want{{3, "24.22.0"}}},
-		{"ENV from a vulnerable ARG of its name: one finding", "Dockerfile", "ARG NODE_VERSION=24.22.0\nFROM debian:12\nENV NODE_VERSION=${NODE_VERSION}\n", []want{{1, "24.22.0"}}},
-		{"ENV from the ARG the FROM reads: the image finding", "Dockerfile", "ARG NODE_VERSION=24.22.0\nFROM node:${NODE_VERSION}\nENV NODE_VERSION=$NODE_VERSION\n", []want{{2, "24.22.0"}}},
+		{"ENV from a fixed ARG", "Dockerfile", "ARG NODE_VERSION=24.22.1\nFROM debian:12\nARG NODE_VERSION\nENV NODE_VERSION=$NODE_VERSION\n", nil},
+		{"ENV from a vulnerable ARG of another name", "Dockerfile", "ARG BUILD_NODE=24.22.0\nFROM debian:12\nARG BUILD_NODE\nENV NODE_VERSION=$BUILD_NODE\n", []want{{4, "24.22.0"}}},
+		{"ENV from a vulnerable ARG of its name: one finding", "Dockerfile", "ARG NODE_VERSION=24.22.0\nFROM debian:12\nARG NODE_VERSION\nENV NODE_VERSION=${NODE_VERSION}\n", []want{{1, "24.22.0"}}},
+		{"ENV from the ARG the FROM reads: the image finding", "Dockerfile", "ARG NODE_VERSION=24.22.0\nFROM node:${NODE_VERSION}\nARG NODE_VERSION\nENV NODE_VERSION=$NODE_VERSION\n", []want{{2, "24.22.0"}}},
 		{"a fixed default", "Dockerfile", "FROM debian:12\nENV NODE_VERSION=${NODE_VERSION:-24.22.1}\n", nil},
 		{"a vulnerable default", "Dockerfile", "FROM debian:12\nENV NODE_VERSION=${NODE_VERSION:-24.22.0}\n", []want{{2, "24.22.0"}}},
 		{"commented-out lines", "Dockerfile", "# ENV NODE_VERSION=24.22.0\n# ENV NODE_VERSION=$UNSET\nFROM debian:12\n  # RUN nvm install 18\n", nil},
@@ -888,7 +888,7 @@ func TestVersionVariablesResolved(t *testing.T) {
 	// The fix of an ENV that reads an ARG moves the ARG; of a default, the
 	// default.
 	for _, c := range []struct{ body, want string }{
-		{"ARG BUILD_NODE=24.22.0\nFROM debian:12\nENV NODE_VERSION=$BUILD_NODE\n", "ARG BUILD_NODE=24.22.1"},
+		{"ARG BUILD_NODE=24.22.0\nFROM debian:12\nARG BUILD_NODE\nENV NODE_VERSION=$BUILD_NODE\n", "ARG BUILD_NODE=24.22.1"},
 		{"FROM debian:12\nENV NODE_VERSION=${NODE_VERSION:-24.22.0}\n", "ENV NODE_VERSION=${NODE_VERSION:-24.22.1}"},
 	} {
 		root := t.TempDir()
@@ -974,4 +974,139 @@ func TestJudgedSourceStrings(t *testing.T) {
 			t.Errorf("%s %q: the fixed value is recorded under %v, the finding's source is %q", c.file, c.now, got, f.Props["source"])
 		}
 	}
+}
+
+// The class: a release slot whose value is not a literal release after
+// what the scan resolves (a $, a backtick, $( ), ${{ }}, << >>, or a
+// parameter expansion it does not evaluate) is never judged fixed. It
+// declines "rescan to confirm" at fix time, and is listed as not checked
+// only where the value cannot be resolved (a version variable, a
+// structured slot), not for a shell command or URL.
+func TestUnresolvedSlotNeverFixed(t *testing.T) {
+	ctx := context.Background()
+	env := func(v string) string { return "FROM debian:12\nENV NODE_VERSION=" + v + "\n" }
+	for _, c := range []struct {
+		what, file, was, now string
+		listed               bool
+	}{
+		{"${V:?err}", "Dockerfile", env("24.22.0"), env("${V:?set V}"), true},
+		{"${V%.*}", "Dockerfile", env("24.22.0"), env("${V%.*}"), true},
+		{"${V:+alt}", "Dockerfile", env("24.22.0"), env("${V:+24.22.1}"), true},
+		{"a quoted default", "Dockerfile", env("24.22.0"), env(`${V:-"24.22.1"}`), true},
+		{"a default with a suffix", "Dockerfile", env("24.22.0"), env("${V:-24.22.1}-$X"), true},
+		{"export from $(cat ..)", "install.sh", "export NODE_VERSION=24.22.0\n", "export NODE_VERSION=$(cat .nvmrc)\n", true},
+		{"export from backticks", "install.sh", "export NODE_VERSION=24.22.0\n", "export NODE_VERSION=`cat .nvmrc`\n", true},
+		{"nvm install v$V", "install.sh", "nvm install 24.22.0\n", "nvm install v$V\n", false},
+		{"nvm install 24$SUFFIX", "install.sh", "nvm install 24.22.0\n", "nvm install 24$SUFFIX\n", false},
+		{"nvm install `cat .nvmrc`", "install.sh", "nvm install 24.22.0\n", "nvm install `cat .nvmrc`\n", false},
+		{"a quoted asdf value", "install.sh", "asdf install nodejs 24.22.0\n", "asdf install nodejs \"$V\"\n", false},
+		{"a quoted volta value", "install.sh", "volta install node@24.22.0\n", "volta install node@\"$V\"\n", false},
+		{"a quoted dotnet-install version", "install.sh", "./dotnet-install.sh --runtime dotnet --version 8.0.32\n", "./dotnet-install.sh --runtime dotnet --version \"$V\"\n", false},
+		{"a managed runtime from a variable", "serverless.yml", "provider:\n  runtime: nodejs18.x\n", "provider:\n  runtime: ${self:custom.runtime}\n", false},
+		{"a managed runtime with a variable major", "serverless.yml", "provider:\n  runtime: nodejs18.x\n", "provider:\n  runtime: nodejs${NODE}.x\n", false},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.was})
+		res, err := pins.Scan(ctx, root, nil, pins.Options{})
+		if err != nil || len(res.Findings) != 1 {
+			t.Fatalf("%s: %v %+v", c.what, err, res.Findings)
+		}
+		f := res.Findings[0]
+		write(t, root, map[string]string{c.file: c.now})
+		res, err = pins.Scan(ctx, root, nil, pins.Options{})
+		listed := err == nil && len(res.Skips) == 1 && res.Skips[0].Line == f.Line
+		if err != nil || listed != c.listed || len(res.Findings) != 0 || (!c.listed && len(res.Skips) != 0) {
+			t.Errorf("%s: want listed %v and no finding: %v findings %+v skips %+v", c.what, c.listed, err, res.Findings, res.Skips)
+		}
+		ch, already, err := plan(root, f)
+		mustDecline(t, c.what, ch, already, err)
+	}
+}
+
+// In JavaScript and TypeScript a leading # is a private field, not a
+// comment; in Python it is a comment.
+func TestHashLines(t *testing.T) {
+	for _, c := range []struct {
+		file, body string
+		n          int
+	}{
+		{"stack.ts", "class S {\n  #runtime = Runtime.NODEJS_16_X;\n}\n", 1},
+		{"stack.js", "class S {\n  #runtime = lambda.Runtime.NODEJS_16_X\n}\n", 1},
+		{"stack.py", "# runtime=Runtime.NODEJS_16_X\n", 0},
+		{"stack.ts", "  // runtime: Runtime.NODEJS_16_X\n", 0},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.body})
+		res, err := pins.Scan(context.Background(), root, nil, pins.Options{})
+		if err != nil || len(res.Findings) != c.n {
+			t.Errorf("%s %q: %v %+v", c.file, c.body, err, res.Findings)
+		}
+	}
+}
+
+// ARG scope across Dockerfile stages: an ENV reads the ARG its own stage
+// declares (a global ARG only through an ARG line in the stage), and a
+// variable-fed edit is made by hand when the ARG is set in more than one
+// place or a FROM reads it.
+func TestARGStageScope(t *testing.T) {
+	ctx := context.Background()
+	type want struct {
+		line    int
+		current string
+		fixable bool
+	}
+	for _, c := range []struct {
+		what, body string
+		want       []want
+		skips      int
+	}{
+		{"a global ARG not declared in the stage", "ARG B=24.22.0\nFROM debian:12 AS a\nENV NODE_VERSION=$B\n", nil, 1},
+		{"a global ARG declared in the stage", "ARG B=24.22.0\nFROM debian:12 AS a\nARG B\nENV NODE_VERSION=$B\n", []want{{4, "24.22.0", true}}, 0},
+		{"an ARG of another stage", "FROM debian:12 AS a\nARG B=24.22.1\nFROM debian:12 AS b\nENV NODE_VERSION=$B\n", nil, 1},
+		{"each stage its own ARG", "FROM debian:12 AS a\nARG B=24.22.0\nENV NODE_VERSION=$B\nFROM debian:12 AS b\nARG B=24.21.0\nENV NODE_VERSION=$B\n",
+			[]want{{3, "24.22.0", false}, {6, "24.21.0", false}}, 0},
+		{"an ARG a FROM reads", "ARG B=24.22.0\nFROM debian:${B} AS a\nARG B\nENV NODE_VERSION=$B\n", []want{{4, "24.22.0", false}}, 0},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{"Dockerfile": c.body})
+		res, err := pins.Scan(ctx, root, nil, pins.Options{})
+		if err != nil || len(res.Findings) != len(c.want) || len(res.Skips) != c.skips {
+			t.Errorf("%s: %v findings %+v skips %+v", c.what, err, res.Findings, res.Skips)
+			continue
+		}
+		for k, w := range c.want {
+			f := res.Findings[k]
+			if f.Line != w.line || f.Props["current"] != w.current || f.Fixable != w.fixable {
+				t.Errorf("%s: %+v, want %+v", c.what, f, w)
+			}
+			if !w.fixable {
+				if ch, already, err := plan(root, f); ch != nil || already || err == nil {
+					t.Errorf("%s: a by-hand edit planned: %+v %v %v", c.what, ch, already, err)
+				}
+			}
+		}
+	}
+	// A pin whose stage now reads an ARG set only in another stage is not
+	// fixed.
+	root := t.TempDir()
+	write(t, root, map[string]string{"Dockerfile": "FROM debian:12 AS a\nARG B=24.22.1\nFROM debian:12 AS b\nENV NODE_VERSION=24.22.0\n"})
+	f := only(t, root, pins.RuleNode)
+	write(t, root, map[string]string{"Dockerfile": "FROM debian:12 AS a\nARG B=24.22.1\nFROM debian:12 AS b\nENV NODE_VERSION=$B\n"})
+	ch, already, err := plan(root, f)
+	mustDecline(t, "an ARG of another stage", ch, already, err)
+}
+
+// A version file value that starts like a release but goes on as a
+// variable is listed, not judged.
+func TestVersionFileValueWithVariable(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string]string{".nvmrc": "24.22.0\n"})
+	f := only(t, root, pins.RuleNode)
+	write(t, root, map[string]string{".nvmrc": "24.22.1$SUFFIX\n"})
+	res, err := pins.Scan(context.Background(), root, nil, pins.Options{})
+	if err != nil || len(res.Findings) != 0 || len(res.Skips) != 1 {
+		t.Errorf("%v %+v", err, res)
+	}
+	ch, already, err := plan(root, f)
+	mustDecline(t, ".nvmrc 24.22.1$SUFFIX", ch, already, err)
 }

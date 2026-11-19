@@ -82,7 +82,7 @@ func (s *scanner) nodePin(prod product, source, desc, rel string, lines []string
 // addJudged adds a judged value written at col of line (col -1: not
 // editable verbatim).
 func (s *scanner) addJudged(prod product, source, desc, rel string, line, col int, value string, j judgement) {
-	if j.vd == notJudged {
+	if j.vd == notJudged || unresolvedRe.MatchString(value) {
 		s.expression(rel, line, desc, value)
 		return
 	}
@@ -490,11 +490,15 @@ var textPatterns = []textPattern{
 	{re: regexp.MustCompile(`\bRuntime\.DOTNET_CORE_(\d)_\d\b`), prod: dotnet, source: "managed-runtime", desc: "AWS CDK Lambda runtime", line: true, sourceOnly: true, managed: true},
 }
 
-// versionVarExprRe finds a runtime version variable set from another
-// variable: ENV NODE_VERSION=$BUILD_NODE, ${BUILD_NODE}, or
-// ${BUILD_NODE:-24.22.1}. Groups: 1 the version variable, 2 the expression,
-// 3 the braced name, 4 its default operator, 5 the default, 6 a bare name.
-var versionVarExprRe = regexp.MustCompile(`\b(?:ENV|ARG|export)\s+(NODE_VERSION|BUN_VERSION|DOTNET_VERSION|ASPNET_VERSION|ASPNETCORE_VERSION)[= ]["']?(\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([^}"'\s]*))?\}|([A-Za-z_][A-Za-z0-9_]*)))`)
+// versionVarRe finds a runtime version variable and the value it is set
+// to, as written: group 1 the variable, group 2 the value token.
+var versionVarRe = regexp.MustCompile(`\b(?:ENV|ARG|export)\s+(NODE_VERSION|BUN_VERSION|DOTNET_VERSION|ASPNET_VERSION|ASPNETCORE_VERSION)[= ](\S+)`)
+
+// varRefRe is a value that reads one variable, plainly or with a literal
+// default: $X, ${X}, ${X:-24.22.1}, ${X-24.22.1}. Anything else with a $ or
+// a backtick (${X:?..}, ${X%..}, ${X:+..}, a quoted default, $(..), a
+// suffix) is not evaluated.
+var varRefRe = regexp.MustCompile(`^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)(v?[0-9][0-9A-Za-z.+-]*))?\})$`)
 
 // versionVars are the version variables' products and sources.
 var versionVars = map[string]struct {
@@ -508,90 +512,164 @@ var versionVars = map[string]struct {
 // assignRe finds a variable set to a release (ARG BUILD_NODE=24.22.0).
 var assignRe = regexp.MustCompile(`\b(?:ENV|ARG|export)\s+([A-Za-z_][A-Za-z0-9_]*)[= ]["']?(v?[0-9][0-9A-Za-z.+-]*)`)
 
-// exprValue is a value written as a reference the scan does not resolve.
-const exprValue = `(\$\{\{[^}]*\}\}|\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_][A-Za-z0-9_]*)`
+// unresolvedRe finds a value the scan does not resolve: a variable, a
+// command substitution, a template or a parameter.
+var unresolvedRe = regexp.MustCompile("\\$[A-Za-z_{(]|`|<<")
 
-// exprPatterns are the release slots of the text patterns with such a value
-// in them (nvm install $V, a download URL with ${V}). An ordinary scan
-// does not list them, since the shell sets them in ways it does not
-// follow; a plan never reads one as a pin fixed in place.
-var exprPatterns = []struct {
-	re   *regexp.Regexp
-	prod product
-}{
-	{regexp.MustCompile(`nodejs\.org/(?:dist|download/release)/v?` + exprValue), node},
-	{regexp.MustCompile(`\b(?:nvm|fnm)\s+(?:install|use)\s+(?:--lts=)?["']?` + exprValue), node},
-	{regexp.MustCompile(`\bvolta\s+(?:install|pin)\s+node@` + exprValue), node},
-	{regexp.MustCompile(`\basdf\s+(?:install|local|global|set)\s+nodejs\s+` + exprValue), node},
-	{regexp.MustCompile(`\bmise\s+(?:use|install)\s+(?:-g\s+|--global\s+)?node(?:js)?@` + exprValue), node},
-	{regexp.MustCompile(`(?:deb|rpm)\.nodesource\.com/setup_` + exprValue), node},
-	{regexp.MustCompile(`^\s*NODE_VERSION:\s*["']?` + exprValue), node},
-	{regexp.MustCompile(`bun\.sh/install[^\n]*bun-v` + exprValue), bun},
-	{regexp.MustCompile(`^\s*BUN_VERSION:\s*["']?` + exprValue), bun},
-	{regexp.MustCompile(`dotnet-install\.(?:sh|ps1)\b[^\n]*(?:--version|-Version)\s+` + exprValue), dotnet},
-}
-
-// commentLine reports a line that is a comment in the files the text
-// patterns read (#: shell, Dockerfile, YAML, TOML, Makefile, Python;
-// //: JavaScript, TypeScript, C#, Go, Java, Kotlin, Bicep, Terraform).
-func commentLine(l string) bool {
+// commentLine reports a line that is a comment in rel's language: # in
+// shell, Dockerfile, YAML, TOML, Makefile, Python and Terraform; // in
+// JavaScript, TypeScript, C#, Go, Java, Kotlin, Bicep and Terraform. In
+// JavaScript and TypeScript a leading # is a private field.
+func commentLine(rel, l string) bool {
 	t := strings.TrimLeft(l, " \t")
+	switch path.Ext(strings.ToLower(rel)) {
+	case ".ts", ".js", ".mjs", ".cjs", ".java", ".cs", ".go", ".kt", ".bicep":
+		return strings.HasPrefix(t, "//")
+	case ".py":
+		return strings.HasPrefix(t, "#")
+	}
 	return strings.HasPrefix(t, "#") || strings.HasPrefix(t, "//")
 }
 
+// dockerScope is what a Dockerfile's stages need to resolve an ARG: the
+// FROM lines (0-based), and the lines that declare each ARG without a value.
+type dockerScope struct {
+	froms    []int
+	declared map[string][]int
+}
+
+func newDockerScope(lines []string) dockerScope {
+	ds := dockerScope{declared: map[string][]int{}}
+	for i, l := range lines {
+		f := strings.Fields(l)
+		if len(f) < 2 {
+			continue
+		}
+		switch strings.ToUpper(f[0]) {
+		case "FROM":
+			ds.froms = append(ds.froms, i)
+		case "ARG":
+			if !strings.Contains(f[1], "=") {
+				ds.declared[f[1]] = append(ds.declared[f[1]], i)
+			}
+		}
+	}
+	return ds
+}
+
+// stage returns the FROM line that starts line i's stage, or -1 before any.
+func (ds dockerScope) stage(i int) int {
+	start := -1
+	for _, f := range ds.froms {
+		if f <= i {
+			start = f
+		}
+	}
+	return start
+}
+
+// value returns the assignment of name that line i reads, or ok false: in a
+// file without stages the last one above it; in a Dockerfile stage the last
+// one in the stage, or the global ARG (above the first FROM) when the stage
+// declares the ARG.
+func (ds dockerScope) value(assigned map[string][][3]int, name string, i int) ([3]int, bool) {
+	start := ds.stage(i)
+	var got [3]int
+	ok := false
+	for _, a := range assigned[name] {
+		if a[0] < i && a[0] > start {
+			got, ok = a, true
+		}
+	}
+	if ok || start < 0 {
+		return got, ok
+	}
+	declared := false
+	for _, d := range ds.declared[name] {
+		declared = declared || (d > start && d < i)
+	}
+	if !declared {
+		return got, false
+	}
+	for _, a := range assigned[name] {
+		if a[0] < ds.froms[0] {
+			got, ok = a, true
+		}
+	}
+	return got, ok
+}
+
+// sharedARG reports a variable a by-hand edit is safer for: set in more
+// than one place, or read by a FROM, where moving it changes another stage
+// or the base image.
+func (ds dockerScope) sharedARG(lines []string, assigned map[string][][3]int, name string) bool {
+	if len(assigned[name]) > 1 {
+		return true
+	}
+	for _, f := range ds.froms {
+		if strings.Contains(lines[f], "$"+name) || strings.Contains(lines[f], "${"+name) {
+			return true
+		}
+	}
+	return false
+}
+
 // versionVar judges a version variable set from another variable: by the
-// value that variable was last set to above it in the file, edited there;
-// else by a ${X:-default}'s default; else it is listed as not checked (a
-// build argument or environment value from outside the file).
-func (s *scanner) versionVar(rel string, lines []string, i int, m []int, assigned map[string][][3]int) {
+// value that variable holds there (in a Dockerfile, in the line's stage),
+// edited where it is set; else by a ${X:-default}'s default; else it is
+// listed as not checked. A value the scan does not evaluate is listed too.
+func (s *scanner) versionVar(rel string, lines []string, i int, m []int, assigned map[string][][3]int, ds dockerScope) {
 	l := lines[i]
 	vv := versionVars[l[m[2]:m[3]]]
 	desc := fmt.Sprintf("%s (%s)", l[m[2]:m[3]], path.Base(rel))
+	tok := l[m[4]:m[5]]
+	if !unresolvedRe.MatchString(tok) {
+		return // a literal: the text patterns judge it
+	}
+	r := varRefRe.FindStringSubmatchIndex(tok)
+	if r == nil {
+		s.expression(rel, i+1, desc, tok)
+		return
+	}
 	name := ""
 	switch {
-	case m[6] >= 0:
-		name = l[m[6]:m[7]]
-	case m[12] >= 0:
-		name = l[m[12]:m[13]]
+	case r[2] >= 0:
+		name = tok[r[2]:r[3]]
+	case r[4] >= 0:
+		name = tok[r[4]:r[5]]
 	}
-	if at := assigned[name]; len(at) > 0 {
-		var last [3]int // line, start and end of the value
-		for _, a := range at {
-			if a[0] < i {
-				last = a
-			}
-		}
-		if last[2] > 0 {
-			v := lines[last[0]][last[1]:last[2]]
-			j := judgeValue(vv.prod, v, false)
-			if j.vd == notJudged {
-				s.unresolved(rel, i+1, vv.prod.rule())
-				return
-			}
-			p := pin{prod: vv.prod, source: vv.source, desc: desc, file: rel, line: i + 1, editFile: rel, editLine: last[0] + 1, col: -1, j: j, via: true}
-			if k := strings.Index(v, j.current); j.current != "" && k >= 0 {
-				p.col = last[1] + k
-			}
-			s.add(p)
-			return
-		}
-	}
-	if m[8] >= 0 && m[10] >= 0 && m[11] > m[10] {
-		v := l[m[10]:m[11]]
+	if a, ok := ds.value(assigned, name, i); ok {
+		v := lines[a[0]][a[1]:a[2]]
 		j := judgeValue(vv.prod, v, false)
 		if j.vd == notJudged {
-			s.unresolved(rel, i+1, vv.prod.rule())
+			s.expression(rel, i+1, desc, tok)
 			return
 		}
-		p := pin{prod: vv.prod, source: vv.source, desc: desc, file: rel, line: i + 1, editFile: rel, editLine: i + 1, col: -1, j: j}
+		p := pin{prod: vv.prod, source: vv.source, desc: desc, file: rel, line: i + 1, editFile: rel, editLine: a[0] + 1, col: -1, j: j, via: true}
 		if k := strings.Index(v, j.current); j.current != "" && k >= 0 {
-			p.col = m[10] + k
+			p.col = a[1] + k
+		}
+		if p.col >= 0 && ds.sharedARG(lines, assigned, name) {
+			p.col, p.notes = -1, fmt.Sprintf("%s is set in more than one place or read by a FROM, so moving it changes another stage or the base image", name)
 		}
 		s.add(p)
 		return
 	}
-	s.expression(rel, i+1, desc, l[m[4]:m[5]])
-	s.unresolved(rel, i+1, vv.prod.rule())
+	if r[8] >= 0 {
+		v := tok[r[8]:r[9]]
+		j := judgeValue(vv.prod, v, false)
+		if j.vd == notJudged {
+			s.expression(rel, i+1, desc, tok)
+			return
+		}
+		p := pin{prod: vv.prod, source: vv.source, desc: desc, file: rel, line: i + 1, editFile: rel, editLine: i + 1, col: -1, j: j}
+		if k := strings.Index(v, j.current); j.current != "" && k >= 0 {
+			p.col = m[4] + r[8] + k
+		}
+		s.add(p)
+		return
+	}
+	s.expression(rel, i+1, desc, tok)
 }
 
 // sha256Re finds a pinned checksum, which a download's version change would
@@ -624,9 +702,11 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 	// Variables the file sets to a release, by line: a version variable
 	// that reads one is judged by it.
 	var assigned map[string][][3]int
+	var ds dockerScope
 	if !src {
+		ds = newDockerScope(lines)
 		for i, l := range lines {
-			if commentLine(l) {
+			if commentLine(rel, l) {
 				continue
 			}
 			for _, m := range assignRe.FindAllStringSubmatchIndex(l, -1) {
@@ -642,17 +722,12 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 		if i%4096 == 0 && s.ctx != nil && s.ctx.Err() != nil {
 			return
 		}
-		if commentLine(l) {
+		if commentLine(rel, l) {
 			continue
 		}
 		if !src {
-			if m := versionVarExprRe.FindStringSubmatchIndex(l); m != nil {
-				s.versionVar(rel, lines, i, m, assigned)
-			}
-			for _, ep := range exprPatterns {
-				if ep.re.MatchString(l) {
-					s.unresolved(rel, i+1, ep.prod.rule())
-				}
+			if m := versionVarRe.FindStringSubmatchIndex(l); m != nil {
+				s.versionVar(rel, lines, i, m, assigned, ds)
 			}
 		}
 		for _, tp := range textPatterns {
@@ -664,6 +739,9 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 				continue
 			}
 			v := l[m[2]:m[3]]
+			if m[3] < len(l) && strings.ContainsRune("$`{(%", rune(l[m[3]])) {
+				continue // only the start of a value the scan does not resolve (24$SUFFIX)
+			}
 			desc := fmt.Sprintf("%s (%s)", tp.desc, path.Base(rel))
 			if tp.line {
 				s.judge(rel, i+1, tp.prod.rule(), tp.source)

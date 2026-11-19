@@ -323,19 +323,6 @@ type scanner struct {
 	// judged there, whatever the verdict: what a plan finds on a finding's
 	// line when the pin is gone.
 	judged map[judgedKey]bool
-	// exprAt holds file, line and rule ("" source) where a release slot
-	// holds a value the scan does not resolve (nvm install $V, a URL with
-	// ${V}): not listed as not checked, but never a fix in place.
-	exprAt map[judgedKey]bool
-}
-
-// unresolved records that line of file sets a release of rule from a value
-// the scan does not resolve.
-func (s *scanner) unresolved(file string, line int, rule string) {
-	if s.exprAt == nil {
-		s.exprAt = map[judgedKey]bool{}
-	}
-	s.exprAt[judgedKey{file, line, rule, ""}] = true
 }
 
 type judgedKey struct {
@@ -678,7 +665,9 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 // textPin judges value written at byte col of line and adds the pin.
 func (s *scanner) textPin(prod product, source, desc, rel string, line, col int, value string) {
 	j := judgeValue(prod, value, false)
-	if j.vd == notJudged {
+	if j.vd == notJudged || unresolvedRe.MatchString(value) {
+		// Never judged from a value the scan does not resolve, even when
+		// it starts like a release (24.22.1$X).
 		s.expression(rel, line, desc, value)
 		return
 	}
@@ -940,18 +929,13 @@ func (s *scanner) images(files []string) error {
 // imageSource is Props["source"] of an official runtime image's pin.
 var imageSource = map[product]string{node: "node-image", dotnet: "dotnet-image", bun: "bun-image", dotnetSDK: "dotnet-sdk-image"}
 
-// exprRef matches a value written as a reference the scan does not
-// resolve: ${{ ... }}, ${VAR}, $VAR, $(VAR), << parameters.x >>.
-var exprRef = regexp.MustCompile(`\$\{\{|\$\{[A-Za-z_]|\$[A-Za-z_]|\$\(|<<`)
-
 // expression records a value written as an expression as not checked: a
 // pin changed to one in place is not fixed, and is not known to be.
 func (s *scanner) expression(rel string, line int, desc, value string) {
-	if line < 1 || !exprRef.MatchString(value) {
+	if line < 1 || !unresolvedRe.MatchString(value) {
 		return
 	}
 	s.skips = append(s.skips, Skip{File: rel, Line: line, Reason: clean(fmt.Sprintf("%s is %s, an expression the scan does not resolve; check the release it selects by hand", desc, value), 300)})
-	s.unresolved(rel, line, "")
 }
 
 func (s *scanner) judgeImage(r refs.Ref) {
