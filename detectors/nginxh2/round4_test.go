@@ -144,3 +144,24 @@ func TestW6UnitIndex(t *testing.T) {
 		t.Errorf("3,000 units with 150,000 links took %s", d)
 	}
 }
+
+// W7: below a system root, a glob with a wildcard in its directory part
+// reads the directories from disk, as --as-root does.
+func TestW7WildcardBelowRoot(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, map[string][]byte{
+		"/opt/sbin/nginx":                   ngxtest.Default("1.31.8").Bytes(),
+		"/opt/app/conf/nginx.conf":          []byte("http { include /opt/app/conf/vhosts/*/site.conf; }"),
+		"/opt/app/conf/vhosts/a/site.conf":  []byte("server { listen 80; }"),
+		"/opt/app/conf/vhosts/b/site.conf":  []byte("server { listen 443 ssl http2; }"),
+		"/etc/systemd/system/nginx.service": []byte("[Service]\nExecStart=/opt/sbin/nginx -c /opt/app/conf/nginx.conf\n"),
+	})
+	for name, tg := range map[string]*engine.Target{
+		"--as-root": engine.ScanFS([]engine.Detector{&Detector{}}, root, engine.Options{AsRoot: true}),
+		"--root":    engine.ScanFS([]engine.Detector{&Detector{}}, root+"/opt", engine.Options{SystemRoot: root}),
+	} {
+		if f := find(tg, KindFlow, "/opt/sbin/nginx"); f == nil || f.Facts["exposure"] != "exposed" {
+			t.Errorf("%s: %+v", name, f)
+		}
+	}
+}

@@ -1328,8 +1328,11 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 		// A wildcard in the directory part: every path is a candidate, so
 		// only a few such globs are matched.
 		s.wildGlobs++
-		if s.wildGlobs > maxWildGlobs || s.root != "" {
+		if s.wildGlobs > maxWildGlobs {
 			return nil, false
+		}
+		if s.root != "" {
+			return s.diskGlob(pattern)
 		}
 		for _, ps := range x.files {
 			for _, p := range ps {
@@ -1427,6 +1430,81 @@ func (s *confSource) Glob(pattern string) ([]string, bool) {
 	}
 	sort.Strings(out)
 	return out, complete
+}
+
+// maxDiskGlobEntries bounds the directory entries one wildcard glob
+// reads from disk below a system root.
+const maxDiskGlobEntries = 20000
+
+// diskGlob matches a pattern with a wildcard in its directory part
+// against the disk below the system root, one part at a time, as glob(3)
+// does: directories (links to directories too) for the middle parts,
+// regular files and links for the last. A directory that cannot be
+// listed, one the walk did not read, or more entries than the bound
+// leaves the list incomplete.
+func (s *confSource) diskGlob(pattern string) ([]string, bool) {
+	parts := strings.Split(strings.TrimPrefix(path.Clean(pattern), "/"), "/")
+	complete, seen := !s.full, 0
+	cur := []string{"/"}
+	for i, part := range parts {
+		last := i == len(parts)-1
+		var next []string
+		for _, dir := range cur {
+			if _, ok := s.unreadAt(dir); ok && dir != "/" {
+				complete = false
+			}
+			if !strings.ContainsAny(part, "*?[") {
+				p := path.Join(dir, part)
+				if full, ok := s.diskPath(p); ok {
+					if fi, err := os.Stat(full); err == nil && (last && fi.Mode().IsRegular() || !last && fi.IsDir()) {
+						next = append(next, p)
+					}
+				}
+				continue
+			}
+			full, ok := s.diskPath(dir)
+			if !ok {
+				complete = false
+				continue
+			}
+			ents, err := os.ReadDir(full)
+			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					complete = false
+				}
+				continue
+			}
+			for _, e := range ents {
+				if seen++; seen > maxDiskGlobEntries {
+					return nil, false
+				}
+				ok, err := globMatch(part, e.Name())
+				if err != nil {
+					complete = false
+				}
+				if !ok {
+					continue
+				}
+				p := path.Join(dir, e.Name())
+				fi, err := os.Stat(filepath.Join(full, e.Name()))
+				if err != nil {
+					if e.Type()&fs.ModeSymlink != 0 && last {
+						next = append(next, p) // Read reports it as not read
+					}
+					continue
+				}
+				if last && fi.Mode().IsRegular() || !last && fi.IsDir() {
+					next = append(next, p)
+				}
+			}
+		}
+		cur = next
+	}
+	if s.unreadAll {
+		complete = false
+	}
+	sort.Strings(cur)
+	return cur, complete
 }
 
 // globMatch matches a path as nginx's glob(3) does: "[!...]" negates, a
