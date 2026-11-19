@@ -601,3 +601,20 @@ func TestVNitNewerLineText(t *testing.T) {
 		}
 	}
 }
+
+// Round-3 verification 5: Helm templates in subdirectories are read.
+func TestW5HelmSubdirectories(t *testing.T) {
+	res := scan(t, map[string]string{
+		"chart/values.yaml":               "image:\n  repository: nginx\n  tag: \"1.29\"\n",
+		"chart/templates/_helpers.tpl":    "{{- define \"x\" -}}{{- end -}}\n",
+		"chart/templates/web/deploy.yaml": "spec:\n  containers:\n  - name: web\n    volumeMounts:\n    - {name: conf, mountPath: /etc/nginx/conf.d}\n",
+		"plain/values.yaml":               "image:\n  repository: nginx\n  tag: \"1.30\"\n",
+		"plain/templates/web/deploy.yaml": "spec:\n  containers:\n  - name: web\n    image: x\n",
+	})
+	if f := one(t, res, "chart/values.yaml", 2, RuleNotChecked, knowledge.Unknown); f.Props["deployment"] == "" {
+		t.Errorf("a template in a subdirectory was not read: %+v", f.Props)
+	}
+	if f := one(t, res, "plain/values.yaml", 2, RuleNotChecked, knowledge.Unknown); f.Props["deployment"] != "" {
+		t.Errorf("templates that set nothing: %+v", f.Props)
+	}
+}

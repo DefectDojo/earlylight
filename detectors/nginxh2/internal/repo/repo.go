@@ -367,25 +367,46 @@ func (s *scanner) helmTemplates(root, values string) string {
 	if err != nil {
 		return "the chart's templates could not be read, so what they set for the image is not known"
 	}
-	ents, err := os.ReadDir(full)
-	if err != nil {
+	if fi, err := os.Stat(full); err != nil || !fi.IsDir() {
 		return "the values are for a chart whose templates are not in this tree, so what they set for the image (command, mounted configuration) is not known"
 	}
-	for _, e := range ents {
-		if !e.Type().IsRegular() {
-			continue
-		}
-		b, err := readFile(root, path.Join(dir, e.Name()))
+	// Every template, in every subdirectory, as Helm renders them.
+	why, seen := "", 0
+	err = filepath.WalkDir(full, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return "the chart template " + path.Join(dir, e.Name()) + " could not be read"
+			why = "a chart template directory could not be read (" + err.Error() + ")"
+			return filepath.SkipAll
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			if d.Type()&fs.ModeSymlink != 0 {
+				why = "the chart template " + p + " is a symbolic link, which is not followed"
+				return filepath.SkipAll
+			}
+			return nil
+		}
+		if seen++; seen > 4096 {
+			why = "the chart has more templates than the detector reads"
+			return filepath.SkipAll
+		}
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		b, err := readFile(root, rel)
+		if err != nil {
+			why = "the chart template " + rel + " could not be read"
+			return filepath.SkipAll
 		}
 		for _, k := range []string{"volumeMounts", "command:", "args:", "envFrom", "env:"} {
 			if strings.Contains(string(b), k) {
-				return fmt.Sprintf("the chart template %s sets %s, so the image may load another configuration or command", path.Join(dir, e.Name()), strings.TrimSuffix(k, ":"))
+				why = fmt.Sprintf("the chart template %s sets %s, so the image may load another configuration or command", rel, strings.TrimSuffix(k, ":"))
+				return filepath.SkipAll
 			}
 		}
+		return nil
+	})
+	if err != nil && why == "" {
+		why = "the chart's templates could not be read"
 	}
-	return ""
+	return why
 }
 
 // mappingWithImageAt finds the mapping whose image key's value is on line.
