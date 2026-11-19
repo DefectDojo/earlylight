@@ -218,7 +218,41 @@ func keepDB(p string) bool {
 		n := pkgdb.DpkgListName(p)
 		return strings.Contains(n, "nginx") || strings.Contains(n, "openresty") || strings.Contains(n, "angie") || strings.Contains(n, "tengine")
 	}
-	return strings.HasPrefix(p, "/docker-entrypoint.d/") || unitPath(p) || strings.HasSuffix(p, ".service") || envFileDir(p)
+	return strings.HasPrefix(p, "/docker-entrypoint.d/") || unitPath(p) || strings.HasSuffix(p, ".service") || envFileDir(p) || managerPath(p)
+}
+
+// managerConf are the service manager's settings and the drop-in
+// directories next to them; managerGenerators hold programs that set the
+// manager's environment. Either can give a unit variables it does not
+// set itself.
+var (
+	managerConf       = []string{"/etc/systemd/system.conf", "/run/systemd/system.conf", "/usr/local/lib/systemd/system.conf", "/usr/lib/systemd/system.conf", "/lib/systemd/system.conf"}
+	managerGenerators = []string{"/etc/systemd/system-environment-generators/", "/run/systemd/system-environment-generators/", "/usr/local/lib/systemd/system-environment-generators/", "/usr/lib/systemd/system-environment-generators/", "/lib/systemd/system-environment-generators/"}
+)
+
+// managerConfPath reports the manager's settings file or a drop-in of it.
+func managerConfPath(p string) bool {
+	for _, c := range managerConf {
+		if p == c || strings.HasPrefix(p, c+".d/") {
+			return true
+		}
+	}
+	return false
+}
+
+// managerPath reports a file of the service manager's own settings.
+func managerPath(p string) bool {
+	for _, c := range managerConf {
+		if p == c || strings.HasPrefix(p, c+".d/") {
+			return true
+		}
+	}
+	for _, g := range managerGenerators {
+		if strings.HasPrefix(p, g) {
+			return true
+		}
+	}
+	return false
 }
 
 // envFileDir reports a file where units keep their EnvironmentFile
@@ -258,6 +292,9 @@ type scan struct {
 	scripts     map[string][]byte // "#!" scripts, by path
 	units       map[string]map[string]bool
 	epSeen      map[string]bool // every file seen under /docker-entrypoint.d
+	generator   string          // a manager environment generator seen
+	mgrDone     bool
+	mgrWhy      string
 	scriptBytes int
 	unread      map[string]string
 	unreadAll   bool
@@ -285,7 +322,12 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		if len(f.Data) <= maxDB && s.dbBytes+len(f.Data) <= maxDBTotal {
 			s.db[f.Path] = f.Data
 			s.dbBytes += len(f.Data)
+		} else {
+			s.VisitSkips([]engine.Skip{{Path: f.Path, Reason: "over the detector's size limits"}})
 		}
+	}
+	if s.generator == "" && managerPath(f.Path) && !managerConfPath(f.Path) {
+		s.generator = f.Path
 	}
 	if archive.IsExecutable(f.Data) {
 		switch path.Base(f.Path) {
@@ -314,6 +356,10 @@ func (s *scan) Visit(f engine.File) []engine.Skip {
 		if len(f.Data) <= maxDB && s.dbBytes+len(f.Data) <= maxDBTotal {
 			s.db[f.Path] = f.Data
 			s.dbBytes += len(f.Data)
+		} else {
+			// Not kept is not absent: a unit or environment file
+			// dropped here leaves what it sets unknown.
+			s.VisitSkips([]engine.Skip{{Path: f.Path, Reason: "over the detector's size limits"}})
 		}
 		return nil
 	}
@@ -816,28 +862,49 @@ func (s *scan) systemdStarts(src *confSource) ([]unitStart, string) {
 			}
 			files = append(files, db)
 		}
-		var exec string
-		var around []string
-		var envs []string     // Environment= assignments, in order
-		var envFiles []string // EnvironmentFile= paths, "-" kept
+		var execs []string
+		around := map[string][]string{} // one list per directive, as systemd keeps them
+		var envs []string               // Environment= assignments, in order
+		var envFiles []string           // EnvironmentFile= paths, "-" kept
 		pidFile := ""
+		odd := "" // the first setting the scan does not apply exactly
+		note := func(why string) {
+			if odd == "" {
+				odd = why
+			}
+		}
 		for _, f := range files {
 			for _, l := range strings.Split(string(f), "\n") {
 				l = strings.TrimSpace(l)
+				if strings.HasSuffix(l, "\\") {
+					note(fmt.Sprintf("the line %q is continued on the next", clip(l)))
+				}
+				if l == "" || l[0] == '#' || l[0] == ';' {
+					continue
+				}
 				k, v, ok := strings.Cut(l, "=")
 				if !ok {
 					continue
 				}
-				v = strings.TrimSpace(v)
-				x := strings.TrimLeft(v, "-@:+!")
-				switch strings.TrimSpace(k) {
+				k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+				switch k {
+				case "ExecStart", "ExecStartPre", "ExecStartPost", "ExecCondition", "Environment", "EnvironmentFile", "PIDFile":
+					if strings.Contains(v, "%") {
+						note(fmt.Sprintf("%s=%s uses a specifier (%%), which the scan does not expand", k, clip(v)))
+					}
+				}
+				switch k {
 				case "ExecStart":
-					exec = x
-				case "ExecStartPre", "ExecStartPost", "ExecCondition":
-					if x == "" {
-						around = nil
+					if v == "" {
+						execs = nil
 					} else {
-						around = append(around, x)
+						execs = append(execs, v)
+					}
+				case "ExecStartPre", "ExecStartPost", "ExecCondition":
+					if v == "" {
+						around[k] = nil
+					} else {
+						around[k] = append(around[k], v)
 					}
 				case "Environment":
 					if v == "" {
@@ -846,6 +913,9 @@ func (s *scan) systemdStarts(src *confSource) ([]unitStart, string) {
 						envs = append(envs, unitWords(v)...)
 					}
 				case "EnvironmentFile":
+					if strings.ContainsAny(v, "*?[") {
+						note(fmt.Sprintf("EnvironmentFile=%s is a glob, which the scan does not expand", clip(v)))
+					}
 					if v == "" {
 						envFiles = nil
 					} else {
@@ -853,10 +923,15 @@ func (s *scan) systemdStarts(src *confSource) ([]unitStart, string) {
 					}
 				case "PIDFile":
 					pidFile = v
+				case "PassEnvironment", "UnsetEnvironment", "RootDirectory", "RootImage", "MountImages", "ExtensionImages",
+					"ExtensionDirectories", "BindPaths", "BindReadOnlyPaths", "TemporaryFileSystem":
+					if v != "" {
+						note(fmt.Sprintf("%s=%s is set, which changes what nginx reads in a way the scan does not apply", k, clip(v)))
+					}
 				}
 			}
 		}
-		if exec == "" {
+		if len(execs) == 0 {
 			continue
 		}
 		// EnvironmentFile= overrides Environment=, whatever their order.
@@ -871,59 +946,240 @@ func (s *scan) systemdStarts(src *confSource) ([]unitStart, string) {
 			ef = strings.TrimPrefix(ef, "-")
 			b, real, ok := s.unitRead(src, ef)
 			_, unread := src.unreadAt(real)
+			var diskErr error
+			if !ok && !unread && src.root != "" {
+				_, diskErr = src.diskRead(real, maxDB)
+			}
 			switch {
-			case unread && u.unsure == "":
-				u.unsure = fmt.Sprintf("%s reads its environment from %s, which was not read", u.unit, ef)
-			case !ok && !optional && u.unsure == "":
-				u.unsure = fmt.Sprintf("%s reads its environment from %s, which is not in the target", u.unit, ef)
-			case !ok && src.root == "" && !envFileDir(real) && !unitPath(real) && u.unsure == "":
+			case unread:
+				note(fmt.Sprintf("%s reads its environment from %s, which was not read", u.unit, ef))
+			case diskErr != nil && !errors.Is(diskErr, fs.ErrNotExist):
+				note(fmt.Sprintf("%s reads its environment from %s, which could not be read (%v)", u.unit, ef, diskErr))
+			case !ok && !optional:
+				note(fmt.Sprintf("%s reads its environment from %s, which is not in the target", u.unit, ef))
+			case !ok && src.root == "" && !envFileDir(real) && !unitPath(real):
 				// Optional, but outside what the scan reads whole: whether
 				// it is there is not known.
-				u.unsure = fmt.Sprintf("%s reads its environment from %s, which the scan does not read", u.unit, ef)
+				note(fmt.Sprintf("%s reads its environment from %s, which the scan does not read", u.unit, ef))
 			case ok:
-				for k, v := range envFile(b) {
+				vars, why := envFile(b)
+				if why != "" {
+					note(fmt.Sprintf("%s reads its environment from %s, where %s", u.unit, ef, why))
+				}
+				for k, v := range vars {
 					env[k] = v
 				}
 			}
 		}
-		cmd := expandUnit(exec, env)
+		exec := execs[len(execs)-1]
+		pfx, x := execPrefix(exec)
+		cmd := expandUnit(x, env)
 		if len(cmd) == 0 || !nginxStart(path.Base(cmd[0])) {
 			continue
 		}
 		u.cmd = cmd
-		for _, a := range around {
-			w := expandUnit(a, env)
-			if !harmless(w, pidFile) && u.unsure == "" {
-				u.unsure = fmt.Sprintf("%s runs %q before or after nginx starts, which can change the configuration", u.unit, a)
+		if len(execs) > 1 {
+			note(fmt.Sprintf("%s has more than one ExecStart=", u.unit))
+		}
+		if strings.ContainsAny(pfx, "@|") || strings.Contains(pfx, ":") && strings.Contains(x, "$") {
+			note(fmt.Sprintf("ExecStart=%s has a prefix that changes how it runs", clip(exec)))
+		}
+		lines := []string{x}
+		for _, k := range []string{"ExecCondition", "ExecStartPre", "ExecStartPost"} {
+			for _, a := range around[k] {
+				p, ax := execPrefix(a)
+				lines = append(lines, ax)
+				if strings.ContainsAny(p, "@|:") || !harmless(expandUnit(ax, env), pidFile, cmd[0]) {
+					note(fmt.Sprintf("%s runs %q before or after nginx starts, which can change the configuration", u.unit, clip(a)))
+				}
 			}
+		}
+		for _, l := range lines {
+			if n := unsetVar(l, env); n != "" {
+				if why := s.managerEnv(src); why != "" {
+					note(fmt.Sprintf("%s uses $%s, which the unit does not set, and %s", u.unit, n, why))
+				}
+			}
+		}
+		if u.unsure == "" {
+			u.unsure = odd
 		}
 		out = append(out, u)
 	}
 	return out, ""
 }
 
+// managerEnv reports, once per scan, why a variable a unit does not set
+// may still be set for it: the manager's DefaultEnvironment= or
+// ManagerEnvironment=, an environment generator, or a settings file or
+// directory that was not read. Empty means the unit's own settings are
+// all there is (the kernel command line aside).
+func (s *scan) managerEnv(src *confSource) string {
+	if s.mgrDone {
+		return s.mgrWhy
+	}
+	s.mgrDone = true
+	s.mgrWhy = s.managerEnvWhy(src)
+	return s.mgrWhy
+}
+
+func (s *scan) managerEnvWhy(src *confSource) string {
+	if s.generator != "" {
+		return "the environment generator " + s.generator + " can set it"
+	}
+	under := func(dir string) []string {
+		var out []string
+		for _, m := range []map[string]string{src.links, src.hardlinks, s.unread} {
+			for p := range m {
+				if strings.HasPrefix(p, dir) {
+					out = append(out, p)
+				}
+			}
+		}
+		for p := range s.db {
+			if strings.HasPrefix(p, dir) {
+				out = append(out, p)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	listDisk := func(dir string) ([]string, string) {
+		if src.root == "" {
+			return nil, ""
+		}
+		full, ok := src.diskPath(dir)
+		if !ok {
+			return nil, ""
+		}
+		ents, err := os.ReadDir(full)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, dir + " could not be listed (" + err.Error() + ")"
+		}
+		var out []string
+		for _, e := range ents {
+			out = append(out, strings.TrimSuffix(dir, "/")+"/"+e.Name())
+		}
+		return out, ""
+	}
+	for _, g := range managerGenerators {
+		if why, ok := src.unreadAt(strings.TrimSuffix(g, "/")); ok {
+			return g + " was not read (" + why + ")"
+		}
+		if ps := under(g); len(ps) > 0 {
+			return "the environment generator " + ps[0] + " can set it"
+		}
+		ps, why := listDisk(g)
+		if why != "" {
+			return why
+		}
+		if len(ps) > 0 {
+			return "the environment generator " + ps[0] + " can set it"
+		}
+	}
+	for _, c := range managerConf {
+		files := []string{c}
+		files = append(files, under(c+".d/")...)
+		ps, why := listDisk(c + ".d")
+		if why != "" {
+			return why
+		}
+		files = append(files, ps...)
+		for _, f := range files {
+			b, real, ok := s.unitRead(src, f)
+			if !ok {
+				if why, un := src.unreadAt(real); un {
+					return f + " was not read (" + why + ")"
+				}
+				if src.root != "" {
+					if _, err := src.diskRead(real, maxDB); err != nil && !errors.Is(err, fs.ErrNotExist) {
+						return f + " could not be read (" + err.Error() + ")"
+					}
+				}
+				continue
+			}
+			for _, l := range strings.Split(string(b), "\n") {
+				l = strings.TrimSpace(l)
+				if strings.HasSuffix(l, "\\") {
+					return f + " has a continued line"
+				}
+				k, v, ok := strings.Cut(l, "=")
+				k = strings.TrimSpace(k)
+				if ok && (k == "DefaultEnvironment" || k == "ManagerEnvironment") && strings.TrimSpace(v) != "" {
+					return f + " sets " + k + "="
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// execPrefix splits an Exec line's special prefixes ("-", "@", ":", "+",
+// "!", "|") from its command.
+func execPrefix(v string) (string, string) {
+	x := strings.TrimLeft(v, "-@:+!|")
+	return v[:len(v)-len(x)], x
+}
+
+// clip shortens a unit line quoted in a reason.
+func clip(s string) string {
+	if len(s) > 120 {
+		return s[:120] + "..."
+	}
+	return s
+}
+
+// unsetVar returns a variable an Exec line uses that env does not set.
+func unsetVar(line string, env map[string]string) string {
+	for _, w := range unitWords(line) {
+		if m := bareUnitVar.FindStringSubmatch(w); m != nil {
+			if _, ok := env[m[1]]; !ok {
+				return m[1]
+			}
+			continue
+		}
+		for _, r := range bracedUnitVar.FindAllString(w, -1) {
+			if _, ok := env[r[2:len(r)-1]]; !ok {
+				return r[2 : len(r)-1]
+			}
+		}
+	}
+	return ""
+}
+
 // envFile reads an EnvironmentFile: KEY=VALUE lines, # and ; comments,
-// quotes removed.
-func envFile(b []byte) map[string]string {
+// one pair of quotes around a value removed. why is set for a line systemd
+// may read differently (a continued line, an escape, a variable, a quote
+// inside a value, a key that is not a plain name such as "export NAME").
+func envFile(b []byte) (map[string]string, string) {
 	out := map[string]string{}
+	why := ""
 	for _, l := range strings.Split(string(b), "\n") {
 		l = strings.TrimSpace(l)
 		if l == "" || l[0] == '#' || l[0] == ';' {
 			continue
 		}
-		l = strings.TrimPrefix(l, "export ")
 		k, v, ok := strings.Cut(l, "=")
-		if !ok || len(out) >= 1024 {
-			continue
-		}
-		v = strings.TrimSpace(v)
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
 		if len(v) >= 2 && (v[0] == '"' && v[len(v)-1] == '"' || v[0] == '\'' && v[len(v)-1] == '\'') {
 			v = v[1 : len(v)-1]
 		}
-		out[strings.TrimSpace(k)] = v
+		if !ok || !envName.MatchString(k) || strings.ContainsAny(v, "\\$\"'`") {
+			if why == "" {
+				why = fmt.Sprintf("the line %q may be read differently by systemd", clip(l))
+			}
+			continue
+		}
+		if len(out) < 1024 {
+			out[k] = v
+		} else if why == "" {
+			why = "more variables are set than the scan keeps"
+		}
 	}
-	return out
+	return out, why
 }
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // expandUnit splits an Exec line into words and puts in the unit's
 // environment as systemd does: a word that is one $NAME becomes the
@@ -949,15 +1205,16 @@ var (
 )
 
 // harmless reports a command run around nginx's start that cannot change
-// its configuration: an nginx test, or rm -f of the pid file.
-func harmless(w []string, pidFile string) bool {
+// its configuration: a test by the very nginx the unit starts, or rm -f of
+// the pid file by the system's rm.
+func harmless(w []string, pidFile, nginx string) bool {
 	if len(w) == 0 {
 		return false
 	}
-	if nginxStart(path.Base(w[0])) {
+	if w[0] == nginx {
 		return nginxTest(w[1:])
 	}
-	if path.Base(w[0]) != "rm" {
+	if w[0] != "/bin/rm" && w[0] != "/usr/bin/rm" {
 		return false
 	}
 	files := 0
@@ -1697,33 +1954,46 @@ func (s *confSource) diskPath(p string) (string, bool) {
 // disk reads a regular file below the system root, following symbolic
 // links only while they stay inside it.
 func (s *confSource) disk(p string, limit int64) []byte {
+	b, _ := s.diskRead(p, limit)
+	return b
+}
+
+// diskRead is disk with the reason a file was not read: an error matching
+// fs.ErrNotExist only when it is not there.
+func (s *confSource) diskRead(p string, limit int64) ([]byte, error) {
 	full, ok := s.diskPath(p)
 	if !ok {
-		return nil
+		return nil, errors.New("outside the system root")
 	}
 	real, err := filepath.EvalSymlinks(full)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	root, err := filepath.EvalSymlinks(s.root)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	if rel, err := filepath.Rel(root, real); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil
+		return nil, errors.New("a link leaves the system root")
 	}
 	f, err := os.OpenFile(real, os.O_RDONLY|syscallNoFollow, 0)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() > limit {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > limit {
+		return nil, errors.New("not a regular file within the size limit")
 	}
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil || int64(len(b)) > limit {
-		return nil
+	if err == nil && int64(len(b)) > limit {
+		err = errors.New("over the size limit")
 	}
-	return b
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }

@@ -296,3 +296,95 @@ func TestX7WalkTime(t *testing.T) {
 		t.Errorf("100,000 links and 9 binaries took %s", d)
 	}
 }
+
+// X8, X9, X10: systemd settings the scan cannot apply exactly, and
+// commands around the start judged by their path, not their name.
+func TestX8X10Units(t *testing.T) {
+	base := func(unit string) map[string][]byte {
+		return map[string][]byte{
+			"/usr/sbin/nginx":                       ngxtest.Default("1.31.8").Bytes(),
+			"/etc/nginx/nginx.conf":                 []byte("http { server { listen 80; } }"),
+			"/usr/lib/systemd/system/nginx.service": []byte("[Service]\nPIDFile=/run/nginx.pid\n" + unit),
+		}
+	}
+	exposure := func(fs map[string][]byte) string {
+		if f := find(scanFS(t, fs, engine.Options{}), KindFlow, "/usr/sbin/nginx"); f != nil {
+			return f.Facts["exposure"]
+		}
+		return "no finding"
+	}
+	ok := "ExecStartPre=/usr/bin/rm -f /run/nginx.pid\nExecStartPre=/usr/sbin/nginx -t\nExecStart=/usr/sbin/nginx\n"
+	if got := exposure(base(ok)); got != "not-exposed" {
+		t.Fatalf("the stock unit: %s", got)
+	}
+	for name, unit := range map[string]string{
+		"rm elsewhere":                  "ExecStartPre=/opt/tools/rm -f /run/nginx.pid\nExecStart=/usr/sbin/nginx\n",
+		"another nginx -t":              "ExecStartPre=/opt/tools/nginx -t\nExecStart=/usr/sbin/nginx\n",
+		"a reset of another directive":  "ExecStartPre=/usr/bin/sed -i x /etc/nginx/nginx.conf\nExecStartPost=\nExecStart=/usr/sbin/nginx\n",
+		"%N in an EnvironmentFile path": "EnvironmentFile=-/etc/sysconfig/%N\nExecStart=/usr/sbin/nginx $OPTS\n",
+		"a glob in an EnvironmentFile":  "EnvironmentFile=-/etc/sysconfig/ngin*\nExecStart=/usr/sbin/nginx $OPTS\n",
+		"a continued Environment":       "Environment=\"OPTS=-c \\\n /etc/nginx/h2.conf\"\nExecStart=/usr/sbin/nginx $OPTS\n",
+		"PassEnvironment":               "PassEnvironment=OPTS\nExecStart=/usr/sbin/nginx $OPTS\n",
+		"BindReadOnlyPaths":             "BindReadOnlyPaths=/etc/nginx/h2.conf:/etc/nginx/nginx.conf\nExecStart=/usr/sbin/nginx\n",
+		"RootDirectory":                 "RootDirectory=/srv/chroot\nExecStart=/usr/sbin/nginx\n",
+		"TemporaryFileSystem":           "TemporaryFileSystem=/etc/nginx\nExecStart=/usr/sbin/nginx\n",
+	} {
+		if got := exposure(base(unit)); got != "unknown" {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	for name, unit := range map[string]string{
+		"argv0 prefix":          "ExecStart=@/usr/sbin/nginx nginx -c /etc/nginx/h2.conf\n",
+		"two ExecStart":         "ExecStart=/usr/bin/sed -i x /etc/nginx/nginx.conf\nExecStart=/usr/sbin/nginx\n",
+		"a shell prefix on Pre": "ExecStartPre=|/usr/sbin/nginx -t\nExecStart=/usr/sbin/nginx\n",
+	} {
+		if got := exposure(base(unit)); got != "unknown" {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+	// "export NAME=" is not stripped: systemd may read the line otherwise.
+	fs := base("EnvironmentFile=/etc/sysconfig/nginx\nExecStart=/usr/sbin/nginx $OPTS\n")
+	fs["/etc/sysconfig/nginx"] = []byte("export OPTS=-c /etc/nginx/h2.conf\n")
+	fs["/etc/nginx/h2.conf"] = []byte("http { server { listen 443 ssl http2; } }")
+	if got := exposure(fs); got != "unknown" {
+		t.Errorf("an export line: %s", got)
+	}
+	// A variable the unit does not set is empty, unless the manager can
+	// set it.
+	unset := "ExecStart=/usr/sbin/nginx $OPTS\n"
+	if got := exposure(base(unset)); got != "not-exposed" {
+		t.Errorf("an unset variable: %s", got)
+	}
+	fs = base(unset)
+	fs["/etc/systemd/system.conf.d/env.conf"] = []byte("[Manager]\nDefaultEnvironment=OPTS=\"-c /etc/nginx/h2.conf\"\n")
+	if got := exposure(fs); got != "unknown" {
+		t.Errorf("DefaultEnvironment: %s", got)
+	}
+	fs = base(unset)
+	fs["/usr/lib/systemd/system-environment-generators/90-x"] = []byte("#!/bin/sh\necho OPTS=-c\n")
+	if got := exposure(fs); got != "unknown" {
+		t.Errorf("an environment generator: %s", got)
+	}
+}
+
+// X9: an optional EnvironmentFile that exists but cannot be read, below
+// --root, is not taken as absent.
+func TestX9UnreadableEnvironmentFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads mode 000 files")
+	}
+	root := t.TempDir()
+	write(t, root, map[string][]byte{
+		"/usr/sbin/nginx":                       ngxtest.Default("1.31.8").Bytes(),
+		"/etc/nginx/nginx.conf":                 []byte("http { server { listen 80; } }"),
+		"/usr/lib/systemd/system/nginx.service": []byte("[Service]\nEnvironmentFile=-/etc/sysconfig/nginx\nExecStart=/usr/sbin/nginx $OPTS\n"),
+		"/etc/sysconfig/nginx":                  []byte("OPTS=-c /x\n"),
+	})
+	p := filepath.Join(root, "etc/sysconfig/nginx")
+	os.Chmod(p, 0)
+	tg := engine.ScanFS([]engine.Detector{&Detector{}}, filepath.Join(root, "usr"), engine.Options{SystemRoot: root})
+	os.Chmod(p, 0o644)
+	if f := find(tg, KindFlow, "/usr/sbin/nginx"); f == nil || f.Facts["exposure"] != "unknown" {
+		t.Errorf("%+v", f)
+	}
+}

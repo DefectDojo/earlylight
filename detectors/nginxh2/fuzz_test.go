@@ -30,8 +30,11 @@ func FuzzSource(f *testing.F) {
 		us := &scan{db: map[string][]byte{"/lib/systemd/system/nginx.service": []byte(unit), "/etc/systemd/system/nginx.service.d/a.conf": []byte(tmpl)}}
 		us.systemdStarts(&confSource{links: lm})
 		nginxTest(unitWords(unit))
-		expandUnit(unit, envFile([]byte(tmpl)))
-		harmless(unitWords(unit), "/run/nginx.pid")
+		vars, _ := envFile([]byte(tmpl))
+		expandUnit(unit, vars)
+		unsetVar(unit, vars)
+		execPrefix(unit)
+		harmless(unitWords(unit), "/run/nginx.pid", "/usr/sbin/nginx")
 		resolveCommand(p, pattern, strings.Split(env, ","), func(q string) bool { return q == pattern })
 		ls := &scan{scripts: map[string][]byte{"/docker-entrypoint.sh": []byte(tmpl), "/docker-entrypoint.d/" + path.Base(p): []byte(unit)}}
 		ls.commands(lm, nil, pattern, strings.Split(env, ","), nil).launcher(p)
