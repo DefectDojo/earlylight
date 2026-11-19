@@ -5,7 +5,9 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/ngxtest"
 	"github.com/DefectDojo/earlylight/internal/archive"
@@ -274,5 +276,23 @@ func TestX6WildcardThroughLink(t *testing.T) {
 		if got := f.exposure(t); got == "not-exposed" {
 			t.Errorf("%s: %s", name, got)
 		}
+	}
+}
+
+// X7: the entrypoint walk is linear and answered once per scan, however
+// many links /docker-entrypoint.d holds and however many binaries there
+// are.
+func TestX7WalkTime(t *testing.T) {
+	f := officialImage(t)
+	for i := 0; i < 100000; i++ {
+		f.links["/docker-entrypoint.d/l"+strconv.Itoa(i)] = "/opt/dir"
+	}
+	for i := 0; i < 8; i++ {
+		f.files["/opt/nginx"+strconv.Itoa(i)+"/sbin/nginx"] = ngxtest.Default("1.31.8").Bytes()
+	}
+	start := time.Now()
+	f.run(t)
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("100,000 links and 9 binaries took %s", d)
 	}
 }
