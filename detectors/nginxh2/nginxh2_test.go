@@ -155,14 +155,20 @@ func TestScanBelowRoot(t *testing.T) {
 func TestTemplates(t *testing.T) {
 	s := &confSource{kept: map[string][]byte{
 		"/etc/nginx/templates/default.conf.template": []byte("server { listen ${PORT} ssl http2; }"),
-		"/srv/t/x.conf.tpl":                          []byte("server { listen 1 ssl http2; }"),
+		"/etc/nginx/tpl/x.conf.tpl":                  []byte("server { listen 1 ssl http2; }"),
 	}}
 	s.templates(nil)
 	if _, ok, _ := s.Read("/etc/nginx/conf.d/default.conf"); !ok {
 		t.Error("default template not mapped")
 	}
 	s2 := &confSource{kept: s.kept}
-	s2.templates([]string{"NGINX_ENVSUBST_TEMPLATE_DIR=/srv/t", "NGINX_ENVSUBST_TEMPLATE_SUFFIX=.tpl", "NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/http.d"})
+	if why := s2.templates([]string{"NGINX_ENVSUBST_TEMPLATE_DIR=/etc/nginx/tpl", "NGINX_ENVSUBST_TEMPLATE_SUFFIX=.tpl", "NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/http.d"}); why != "" {
+		t.Errorf("templates under /etc/nginx: %s", why)
+	}
+	// A template directory the scan does not read whole is not applied.
+	if why := (&confSource{kept: s.kept}).templates([]string{"NGINX_ENVSUBST_TEMPLATE_DIR=/srv/t"}); why == "" {
+		t.Error("templates from /srv/t were taken as read whole")
+	}
 	if _, ok, _ := s2.Read("/etc/nginx/http.d/x.conf"); !ok {
 		t.Error("template settings from the environment not used")
 	}

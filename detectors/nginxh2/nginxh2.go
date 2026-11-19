@@ -364,9 +364,10 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	links, hardlinks := ctx.Links()
 	src := &confSource{kept: s.conf, full: s.confFull, tooLarge: s.tooLarge, root: ctx.SystemRoot(), links: links, hardlinks: hardlinks, unread: s.unread, unreadAll: s.unreadAll}
 	cmds := s.commands(links, hardlinks, workdirOf(ctx), ctx.Env(), ctx.Exists)
+	tplWhy := ""
 	if s.kind == engine.Image && assess.OfficialEntrypointRuns(ctx.Command(), cmds.launcher) && s.db["/docker-entrypoint.d/20-envsubst-on-templates.sh"] != nil {
 		// Only then does the entrypoint write the templates.
-		src.templates(ctx.Env())
+		tplWhy = src.templates(ctx.Env())
 	}
 	id, like, ver := osRelease(s.read(src, "/etc/os-release", "/usr/lib/os-release"))
 	distro := knowledge.DistroOf(id, like)
@@ -397,7 +398,7 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Launcher:    cmds.launcher,
 		Starts:      cmds.starts,
 		Ingress:     s.ingress,
-		Generated:   s.generated(),
+		Generated:   firstOf2(s.generated(), tplWhy),
 	})
 	out := make([]engine.Finding, 0, len(found))
 	for _, x := range found {
@@ -1055,6 +1056,13 @@ func workdirOf(ctx engine.TargetContext) string {
 	return ""
 }
 
+func firstOf2(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
 // generated says why the configuration on disk is not what runs.
 func (s *scan) generated() string {
 	if s.f5ingress && !s.ingress {
@@ -1203,7 +1211,7 @@ type confSource struct {
 
 // templates maps the official image's /etc/nginx/templates/*.template to
 // the /etc/nginx/conf.d files its entrypoint writes from them.
-func (s *confSource) templates(env []string) {
+func (s *confSource) templates(env []string) string {
 	dir, out, suffix := "/etc/nginx/templates", "/etc/nginx/conf.d", ".template"
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
@@ -1214,7 +1222,12 @@ func (s *confSource) templates(env []string) {
 			out = v
 		case "NGINX_ENVSUBST_TEMPLATE_SUFFIX":
 			suffix = v
+		case "NGINX_ENVSUBST_FILTER":
+			return "the entrypoint puts in only the variables NGINX_ENVSUBST_FILTER selects, which the scan does not apply"
 		}
+	}
+	if !keptByAll(path.Clean("/"+dir) + "/*") {
+		return "the entrypoint writes templates from " + dir + ", which the scan does not read whole"
 	}
 	dir, out = path.Clean("/"+dir), path.Clean("/"+out)
 	for p, b := range s.kept {
@@ -1226,6 +1239,7 @@ func (s *confSource) templates(env []string) {
 			s.virtual[path.Join(out, rel)] = envsubst(b, env)
 		}
 	}
+	return ""
 }
 
 // envsubst puts in the image's environment as the entrypoint's envsubst

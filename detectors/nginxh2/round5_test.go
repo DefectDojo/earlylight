@@ -196,3 +196,20 @@ func TestX4Templates(t *testing.T) {
 	}
 	_ = path.Base
 }
+
+// X4: templates the scan cannot apply exactly leave exposure unknown: a
+// template directory outside what the scan reads whole, or a filter on
+// the variables put in.
+func TestX4TemplateLimits(t *testing.T) {
+	for name, env := range map[string][]string{
+		"a template directory elsewhere": {"NGINX_ENVSUBST_TEMPLATE_DIR=/srv/tpl"},
+		"a variable filter":              {"NGINX_ENVSUBST_FILTER=^NGINX_"},
+	} {
+		f := officialImage(t)
+		f.env = append(f.env, env...)
+		f.files["/etc/nginx/templates/default.conf.template"] = []byte("server { listen 80; }")
+		if got := f.exposure(t); got != "unknown" {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+}
