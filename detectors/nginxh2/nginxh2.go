@@ -256,6 +256,7 @@ type scan struct {
 	tooLarge    map[string]bool // configuration files over maxConf, not kept
 	db          map[string][]byte
 	scripts     map[string][]byte // "#!" scripts, by path
+	units       map[string]map[string]bool
 	scriptBytes int
 	unread      map[string]string
 	unreadAll   bool
@@ -593,18 +594,8 @@ type unitStart struct {
 // directory on disk. why is set when the directory could not be listed.
 func (s *scan) unitFiles(src *confSource, dir string) (names map[string]bool, why string) {
 	names = map[string]bool{}
-	add := func(p string) {
-		if rest, ok := strings.CutPrefix(p, dir+"/"); ok && rest != "" && !strings.Contains(rest, "/") {
-			names[rest] = true
-		}
-	}
-	for p := range s.db {
-		add(p)
-	}
-	for _, m := range []map[string]string{src.links, src.hardlinks, s.unread} {
-		for p := range m {
-			add(p)
-		}
+	for n := range s.unitIndex(src)[dir] {
+		names[n] = true
 	}
 	if w, ok := src.unreadAt(dir); ok {
 		why = dir + " was not read (" + w + ")"
@@ -621,6 +612,37 @@ func (s *scan) unitFiles(src *confSource, dir string) (names map[string]bool, wh
 		}
 	}
 	return names, why
+}
+
+// unitIndex lists, once per scan, the names in each directory under the
+// unit directories (files read, links, records of files not read), so a
+// unit's drop-in directories are looked up, not searched for.
+func (s *scan) unitIndex(src *confSource) map[string]map[string]bool {
+	if s.units != nil {
+		return s.units
+	}
+	s.units = map[string]map[string]bool{}
+	add := func(p string) {
+		for _, d := range unitDirs {
+			if strings.HasPrefix(p, d) {
+				dir := path.Dir(p)
+				if s.units[dir] == nil {
+					s.units[dir] = map[string]bool{}
+				}
+				s.units[dir][path.Base(p)] = true
+				return
+			}
+		}
+	}
+	for p := range s.db {
+		add(p)
+	}
+	for _, m := range []map[string]string{src.links, src.hardlinks, s.unread} {
+		for p := range m {
+			add(p)
+		}
+	}
+	return s.units
 }
 
 // unitRead reads a unit or drop-in, following links inside the target.

@@ -1,8 +1,10 @@
 package nginxh2
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/ngxtest"
 	"github.com/DefectDojo/earlylight/internal/engine"
@@ -121,5 +123,24 @@ func TestW3W4UnitEnvironment(t *testing.T) {
 	fs["/etc/nginx/conf.d/a.conf"] = []byte("server { listen 80; }")
 	if got := exposure(fs); !strings.HasPrefix(got, "unknown") {
 		t.Errorf("an optional file the scan does not read: %s", got)
+	}
+}
+
+// W6: reading many units does not walk every link of the target per
+// unit directory.
+func TestW6UnitIndex(t *testing.T) {
+	db := map[string][]byte{}
+	for i := 0; i < 3000; i++ {
+		db["/usr/lib/systemd/system/u"+strconv.Itoa(i)+".service"] = []byte("[Service]\nExecStart=/bin/true\n")
+	}
+	links := map[string]string{}
+	for i := 0; i < 150000; i++ {
+		links["/usr/share/x/l"+strconv.Itoa(i)] = "/y"
+	}
+	s := &scan{kind: engine.Filesystem, db: db}
+	start := time.Now()
+	s.systemdStarts(&confSource{links: links})
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("3,000 units with 150,000 links took %s", d)
 	}
 }
