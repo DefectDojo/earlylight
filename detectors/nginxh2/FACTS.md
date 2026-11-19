@@ -113,11 +113,15 @@ of the binary.
 - Exposure reads "not exposed" only when the command that starts nginx was read and every file it loads was read:
   - the command is the image's or, on a host, the `ExecStart` of the systemd unit that runs that binary: the unit of
     the first directory that has it (`/etc`, `/run`, `/lib`, `/usr/lib`), links followed, every drop-in applied, read
-    from disk below a system root; a unit, drop-in or unit directory not read, or an `ExecStartPre`, `ExecStartPost`
-    or `ExecCondition` other than an nginx test, is unknown;
-  - a word before nginx is passed over only when its content is the official nginx image's entrypoint (SHA-256 of
-    every version in nginx/docker-nginx and docker-nginx-unprivileged), and every `.sh` and `.envsh` entry it runs
-    from `/docker-entrypoint.d` (links followed, as `find -follow` does) was read and is that name's official script;
+    from disk below a system root, its `Environment=` and `EnvironmentFile=` applied as systemd applies them
+    (nginx.org's pkg-oss unit starts `nginx -c ${conffile} $cmdopts`); a unit, drop-in, unit directory or
+    environment file not read, or an `ExecStartPre`, `ExecStartPost` or `ExecCondition` other than an nginx test or
+    `rm -f` of the pid file, is unknown;
+  - a word before nginx is resolved as the runtime does (a relative path against the image's working directory, a
+    bare name through its `PATH`; unresolved is unknown) and passed over only when the file's content is the official
+    nginx image's entrypoint (SHA-256 of every version in nginx/docker-nginx and docker-nginx-unprivileged), and every
+    `.sh` and `.envsh` file it runs from `/docker-entrypoint.d` (links to files and directories followed, as
+    `find -follow` does) was read and is that name's official script;
     tini, dumb-init, env and exec pass through; another wrapper, a custom or unread script, or no command is unknown;
   - nginx's own option parsing is followed (`-qc file`, `-p`, `-g` whose includes are loaded); a `sh -c` text is read
     with quotes and line continuations, calls that only test, show or signal (`-t`, `-T`, `-v`, `-V`, `-s`, `-h`) are
@@ -129,8 +133,11 @@ of the binary.
     (2 Mi tokens, 16 MiB; reading stops there) is unknown;
   - in a source tree, an image read from its registry under a deployment that sets its command, arguments,
     environment or mounts is unknown: a Compose service (with its override files, `extends` and `volumes_from`), a
-    Kubernetes container, a GitLab CI service, Helm values whose chart templates set them or are not in the tree, and
-    a Dockerfile that builds on the image through any chain of stage aliases.
+    Kubernetes container, a GitLab CI service, Helm values whose chart templates (in any subdirectory) set them or are
+    not in the tree, and a Dockerfile that builds on the image through any chain of stage aliases. What the tree
+    cannot show is not checked either way: a Compose file merged only with `-f` (`docker-compose.prod.yml`) is not
+    known to apply to a service, and a GitHub Actions service's `volumes` are not read, so an image read under those
+    reports its own exposure.
 - The configuration read is the one nginx loads: the compiled-in path (a relative one moved by `-p`), or the command's
   `-c`; the official image's templates with the image's environment put in as its entrypoint does. Globs follow
   glob(3) (`[!x]`, `[[:digit:]]`, no leading dots); symbolic and hard links are followed inside the target. nginx keeps
