@@ -20,6 +20,7 @@ var fuzzNames = []string{".nvmrc", ".tool-versions", "mise.toml", "package.json"
 // the file the finding names.
 func FuzzPins(f *testing.F) {
 	for _, s := range []string{"20\n", "FROM node:24.22.0-slim\n", "{\"engines\":{\"node\":\"20.x\"}}", "pycurl==7.48.0\n",
+		"ARG B=24.22.0\nFROM debian:12\nENV NODE_VERSION=${B:-24.21.0}\n# nvm install $V\nnvm install $(cat .nvmrc)\n",
 		"\ufeff{\"sdk\": {/* \"version\": \"8.0.1\" */ \"version\": \"8.0.415\"}} // \"https://x\"\n",
 		"jobs:\n  a:\n    strategy:\n      matrix:\n        n: [20]\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.n }}\n"} {
 		for i := range fuzzNames {
