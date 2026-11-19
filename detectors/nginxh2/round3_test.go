@@ -13,7 +13,7 @@ import (
 
 // Findings of the round-2 verification (job 1118-150713-c2aa).
 
-func official(t *testing.T, name string) []byte {
+func official(t testing.TB, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "entrypoint", name))
 	if err != nil {
