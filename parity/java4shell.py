@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Check the java4shell detector against Java runtimes whose status is known.
+
+usage: python3 parity/java4shell.py path/to/earlylight [case ...]
+
+With case names, only those run and only their rows of the results file
+change.
+
+Needs Docker and registry access. Cases are in parity/java4shell/cases.json:
+published images (scanned from the registry by tag, the digest recorded),
+images built from parity/java4shell/*.Dockerfile (scanned from `docker save`
+archives), one built image exported and scanned as a filesystem, and a
+source tree scanned offline. Each case's findings are compared with the
+expected [platform, path, kind, verdict, status, version_from] rows, which come from
+FACTS.md (fixed releases, the release that introduced the decoder, OpenJ9,
+architecture), not from earlier runs. Writes parity/JAVA4SHELL-RESULTS.md.
+"""
+import json
+import os
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CASES = os.path.join(HERE, "java4shell")
+
+
+def scan(tool, args):
+    # Flags go before the target: the command line stops reading flags there.
+    out = subprocess.run([tool] + args[:2] + ["--detector", "java4shell", "--format", "json", "--show-cleared"] + args[2:],
+                         capture_output=True, text=True)
+    try:
+        return json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return {"targets": [{"error": (out.stderr or out.stdout).strip()[:300]}]}
+
+
+def rows(report, repo=False):
+    got, digests = [], []
+    for t in report.get("targets", []):
+        if t.get("error"):
+            got.append(["error", t["error"][:120], "", "", "", ""])
+        if t.get("digest"):
+            digests.append(t.get("platform", "") + " " + t["digest"])
+        for f in t.get("findings", []):
+            if repo:
+                got.append([f["path"] + ":" + str(f.get("line", 0)), f["kind"], f["verdict"]])
+            else:
+                facts = f.get("facts", {})
+                got.append([t.get("platform", ""), f["path"], f["kind"], f["verdict"], facts.get("status", ""), facts.get("version_from", "")])
+    return got, digests
+
+
+def safe_extract(tar, dest):
+    # The exported image is ours, but keep members inside dest anyway.
+    for m in tar.getmembers():
+        p = os.path.realpath(os.path.join(dest, m.name))
+        if not p.startswith(os.path.realpath(dest) + os.sep) or m.isdev():
+            continue
+        try:
+            tar.extract(m, dest, set_attrs=False, filter="fully_trusted")
+        except (OSError, tarfile.TarError):
+            pass
+
+
+def run_case(tool, c, tmp):
+    kind = c["mode"]
+    if kind == "registry":
+        args = ["scan", "image"]
+        if c.get("platform"):
+            args += ["--platform", c["platform"]]
+        return rows(scan(tool, args + [c["ref"]]))
+    if kind == "repo":
+        return rows(scan(tool, ["scan", "repo", "--offline", os.path.join(CASES, c["dir"])]), repo=True)
+    tag = "earlylight-parity-java4shell:" + c["name"]
+    subprocess.run(["docker", "build", "-q", "-t", tag, "-f", os.path.join(CASES, c["dockerfile"]), CASES],
+                   check=True, stdout=subprocess.DEVNULL)
+    if kind == "build":
+        tar = os.path.join(tmp, c["name"] + ".tar")
+        subprocess.run(["docker", "save", tag, "-o", tar], check=True)
+        return rows(scan(tool, ["scan", "image", "docker-archive:" + tar]))
+    # kind == "fs": export the container filesystem and scan it as a system root.
+    cid = subprocess.run(["docker", "create", tag], check=True, capture_output=True, text=True).stdout.strip()
+    try:
+        tar = os.path.join(tmp, c["name"] + "-fs.tar")
+        subprocess.run(["docker", "export", cid, "-o", tar], check=True)
+    finally:
+        subprocess.run(["docker", "rm", cid], check=True, stdout=subprocess.DEVNULL)
+    root = os.path.join(tmp, c["name"] + "-root")
+    os.makedirs(root)
+    with tarfile.open(tar) as t:
+        safe_extract(t, root)
+    got, _ = rows(scan(tool, ["scan", "fs", "--as-root", root]))
+    return [["fs"] + g[1:] for g in got], []
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    tool = os.path.abspath(sys.argv[1])
+    only = set(sys.argv[2:])
+    cases = json.load(open(os.path.join(CASES, "cases.json")))
+    results, failed = [], 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for c in cases:
+            if only and c["name"] not in only:
+                continue
+            got, digests = run_case(tool, c, tmp)
+            want = c["expected"]
+            ok = sorted(got) == sorted(want)
+            failed += not ok
+            results.append((c, ok, got, want, digests))
+            print(("pass " if ok else "FAIL ") + c["name"], flush=True)
+    # Named cases update their own rows and keep the others' (a registry's
+    # pull limit can stop a full run part way).
+    path = os.path.join(HERE, "JAVA4SHELL-RESULTS.md")
+    lines = {}
+    if only and os.path.exists(path):
+        for l in open(path):
+            if l.startswith("| ") and not l.startswith("| Case") and not l.startswith("| ---"):
+                lines[l.split(" | ")[0][2:]] = l
+    for c, ok, got, want, digests in results:
+        cell = "<br>".join(" ".join(str(x) for x in g if x) for g in sorted(got)) or "none"
+        what = c["what"]
+        if c.get("ref"):
+            what += "<br>`" + c["ref"] + "`" + "".join("<br>" + d for d in digests)
+        lines[c["name"]] = f"| {c['name']} | {what} | {'pass' if ok else 'FAIL (want ' + json.dumps(want) + ')'} | {cell} |\n"
+    order = [c["name"] for c in cases if c["name"] in lines]
+    passed = sum(1 for n in order if lines[n].split(" | ")[2] == "pass")
+    with open(path, "w") as f:
+        f.write("# Java4Shell fixture results\n\nGenerated by `parity/java4shell.py`. Each row's expected findings come from "
+                "[FACTS.md](../detectors/java4shell/FACTS.md). Registry images are scanned by tag; the digest scanned is listed.\n\n"
+                "| Case | What | Result | Findings (platform, path, kind, verdict, status, version from) |\n| --- | --- | --- | --- |\n")
+        for n in order:
+            f.write(lines[n])
+        f.write(f"\n{passed}/{len(order)} cases match.\n")
+    print(f"{passed}/{len(order)} cases match")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()
