@@ -202,9 +202,11 @@ type WorkingDirer interface {
 // SkipVisitor is implemented by a Scan whose verdicts must not rest on a
 // file's absence. Before Finish it is given every file and directory the
 // walk recorded as not scanned (unreadable, a directory that could not be
-// listed, over --max-file-size, a file a detector failed on), with paths
+// listed, over --max-file-size, a file a detector failed on), one record
+// per path with every reason, as the target reports them, and with paths
 // inside the system root. Deliberate exclusions (pseudo-filesystems,
-// container storage) are left out.
+// container storage, a file over a detector's own limit) are left out, and
+// so are the gaps a detector reports only at the end (FinishSkipper).
 type SkipVisitor interface {
 	VisitSkips(skips []Skip)
 }

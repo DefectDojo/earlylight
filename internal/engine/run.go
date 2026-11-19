@@ -221,6 +221,10 @@ type walker struct {
 	// exclusions are the exclusion records made for each scan, by path, so
 	// a gap the scan reports at the end replaces its exclusion.
 	exclusions []map[string]string
+	// walked is how many of t.Skipped the walker recorded during a
+	// filesystem walk, with paths inside the system root; the source
+	// walk's records follow, below the directory it started at.
+	walked int
 	// linked counts the hard links that name each path.
 	linked map[string]int
 	// wasLink holds every path the walk met as a symbolic link, even one
@@ -597,8 +601,15 @@ func (w *walker) visitHeadSafely(id string, h HeadVisitor, p string, head []byte
 
 func (w *walker) finish() {
 	defer func() { w.t.Skipped = oneRecordPerPath(w.t.Skipped) }()
+	var gaps []Skip // the walk's, for every SkipVisitor alike
+	for _, s := range w.scans {
+		if _, ok := s.(SkipVisitor); ok {
+			gaps = w.walkGaps()
+			break
+		}
+	}
 	for i, s := range w.scans {
-		w.visitSkips(i, s)
+		w.visitSkips(i, s, gaps)
 		fs, err := finishSafely(s, w.ctx)
 		if err != nil {
 			w.t.Error = fmt.Sprintf("detector %s failed: %v", w.dets[i].Manifest().ID, err)
@@ -619,25 +630,37 @@ func (w *walker) finish() {
 	}
 }
 
-// visitSkips gives a SkipVisitor the walk's coverage gaps. The walk
-// records paths below the directory it started at; archive members carry
-// their outer file's full path already.
-func (w *walker) visitSkips(i int, s Scan) {
+// walkGaps are the coverage gaps the walk recorded, one per path as the
+// target reports them (oneRecordPerPath), with paths inside the system
+// root. They are taken before any Finish, so what one detector reports at
+// the end (FinishSkipper: a file over its own limit, which the others were
+// shown) is not a gap for another, whatever the order.
+func (w *walker) walkGaps() []Skip {
+	recs := make([]source.Skip, len(w.t.Skipped))
+	for k, sk := range w.t.Skipped {
+		// The walker's records are inside the system root already, and
+		// so are archive members, which carry their outer file's path.
+		if k >= w.walked && !strings.Contains(sk.Path, "!/") {
+			sk.Path = w.abs(sk.Path)
+		}
+		recs[k] = sk
+	}
+	var gaps []Skip
+	for _, sk := range oneRecordPerPath(recs) {
+		if !sk.Excluded && !strings.HasPrefix(sk.Reason, "excluded:") {
+			gaps = append(gaps, Skip{Path: sk.Path, Reason: sk.Reason})
+		}
+	}
+	return gaps
+}
+
+// visitSkips gives a SkipVisitor the walk's coverage gaps.
+func (w *walker) visitSkips(i int, s Scan, gaps []Skip) {
 	sv, ok := s.(SkipVisitor)
 	if !ok {
 		return
 	}
-	var skips []Skip
-	for _, sk := range w.t.Skipped {
-		if sk.Excluded || strings.HasPrefix(sk.Reason, "excluded:") {
-			continue
-		}
-		p := sk.Path
-		if !strings.Contains(p, "!/") {
-			p = w.abs(p)
-		}
-		skips = append(skips, Skip{Path: p, Reason: sk.Reason})
-	}
+	skips := append([]Skip(nil), gaps...) // each scan its own copy
 	defer func() {
 		if r := recover(); r != nil {
 			w.t.Problems = append(w.t.Problems, fmt.Sprintf("detector %s failed reading the files not scanned (%v)", w.dets[i].Manifest().ID, r))
@@ -752,6 +775,7 @@ func ScanFS(dets []Detector, root string, opts Options) *Target {
 		w.ctx.sysRoot = sysRoot
 	}
 	skips, n, err := source.Dir(real, so, w.visit)
+	w.walked = len(t.Skipped)
 	t.Skipped, t.Files = append(t.Skipped, skips...), n
 	if err != nil {
 		t.Error = err.Error()
