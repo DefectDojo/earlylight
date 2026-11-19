@@ -377,7 +377,7 @@ func (d *Detector) verifier(o engine.Options, label string) func(ctx context.Con
 		}
 		// The platforms that must be there: those the tree builds
 		// (--platform), else every one the current tag has.
-		need, from := cur, current+" has"
+		need, from := cur, current
 		switch {
 		case len(o.Platforms) > 0:
 			need, from = o.Platforms, label
@@ -389,7 +389,7 @@ func (d *Detector) verifier(o engine.Options, label string) func(ctx context.Con
 		}
 		for _, p := range need {
 			if tp != nil && !containsPlatform(tp, p) {
-				return "", &repo.Declined{Reason: fmt.Sprintf("%s is not published for %s, which %s (it may still be being published); try again later or change it by hand", target, p, from)}
+				return "", &repo.Declined{Reason: missingPlatform(target, p, from)}
 			}
 		}
 		judge := repoPlatforms(o, "")
@@ -477,7 +477,7 @@ func (d *Detector) Fix(ctx context.Context, dirs []string, o engine.Options, std
 	reg := repo.Registry{}
 	if !o.Offline {
 		reg.Tags = tagLister(o)
-		reg.Verify = memoVerify(d.verifier(o, "the tree builds (--platform)"))
+		reg.Verify = memoVerify(d.verifier(o, "the tree's --platform"))
 		reg.APKIndex = apkIndex(o)
 	}
 	// One verifier per platform list, each reading a pair once.
@@ -593,7 +593,17 @@ func verifyOptions(o engine.Options, f repo.Finding) (engine.Options, string) {
 		o.Platforms = []string{f.Platform}
 		return o, "the FROM line's --platform"
 	}
-	return o, "the tree builds (--platform)"
+	return o, "the tree's --platform"
+}
+
+// missingPlatform says that a target lacks a platform: one the current
+// tag has, or one the tree's or the FROM line's --platform names.
+func missingPlatform(target, platform, from string) string {
+	verb := "needs"
+	if !strings.Contains(from, "--platform") {
+		verb = "has" // the current tag
+	}
+	return fmt.Sprintf("%s is not published for %s, which %s %s (it may still be being published); try again later or change it by hand", target, platform, from, verb)
 }
 
 func indent(s string) string {

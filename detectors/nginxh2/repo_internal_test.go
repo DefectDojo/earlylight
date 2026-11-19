@@ -2,6 +2,7 @@ package nginxh2
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/knowledge"
@@ -144,10 +145,22 @@ func TestVNits(t *testing.T) {
 		t.Errorf("FROM label: %q", from)
 	}
 	_, from = verifyOptions(engine.Options{Platforms: []string{"linux/amd64"}}, repo.Finding{})
-	if from != "the tree builds (--platform)" {
+	if from != "the tree's --platform" {
 		t.Errorf("--platform label: %q", from)
 	}
 }
 
 // first is the options verifyOptions returns.
 func first(o engine.Options, _ string) engine.Options { return o }
+
+// Round-3 nit: the sentence for a missing platform reads whole.
+func TestWNitPlatformSentence(t *testing.T) {
+	_, from := verifyOptions(engine.Options{}, repo.Finding{Platform: "linux/riscv64"})
+	got := missingPlatform("nginx:1.31.9", "linux/riscv64", from)
+	if got != "nginx:1.31.9 is not published for linux/riscv64, which the FROM line's --platform needs (it may still be being published); try again later or change it by hand" {
+		t.Errorf("%q", got)
+	}
+	if got := missingPlatform("nginx:1.31.9", "linux/386", "nginx:1.31.8"); !strings.Contains(got, "which nginx:1.31.8 has (") {
+		t.Errorf("%q", got)
+	}
+}
