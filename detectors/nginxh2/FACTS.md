@@ -110,22 +110,33 @@ of the binary.
   release.
 - The configuration decides **exposure**, never the verdict: HTTP/2 off everywhere is reported as "not exposed" on a
   finding that stays vulnerable, because the binary still needs the update.
-- Exposure reads "not exposed" only when the command that starts nginx was read and every file it loads was read:
-  - the command is the image's or, on a host, the `ExecStart` of the systemd unit that runs that binary: the unit of
-    the first directory that has it (`/etc`, `/run`, `/lib`, `/usr/lib`), links followed, every drop-in applied, read
-    from disk below a system root, its `Environment=` and `EnvironmentFile=` applied as systemd applies them
-    (nginx.org's pkg-oss unit starts `nginx -c ${conffile} $cmdopts`); a unit, drop-in, unit directory or
-    environment file not read, or an `ExecStartPre`, `ExecStartPost` or `ExecCondition` other than an nginx test or
-    `rm -f` of the pid file, is unknown;
-  - a word before nginx is resolved as the runtime does (a relative path against the image's working directory, a
-    bare name through its `PATH`; unresolved is unknown) and passed over only when the file's content is the official
-    nginx image's entrypoint (SHA-256 of every version in nginx/docker-nginx and docker-nginx-unprivileged), and every
-    `.sh` and `.envsh` file it runs from `/docker-entrypoint.d` (links to files and directories followed, as
-    `find -follow` does) was read and is that name's official script;
-    tini, dumb-init, env and exec pass through; another wrapper, a custom or unread script, or no command is unknown;
-  - nginx's own option parsing is followed (`-qc file`, `-p`, `-g` whose includes are loaded); a `sh -c` text is read
-    with quotes and line continuations, calls that only test, show or signal (`-t`, `-T`, `-v`, `-V`, `-s`, `-h`) are
-    passed over, and any other command before the start is unknown;
+- Exposure reads "not exposed" only when all of this holds; anything else is unknown:
+  - the command that starts nginx was read, and its nginx word resolves, by path and content the scan read, to the
+    very binary judged (a relative path against the image's working directory, a bare name through its `PATH`, a
+    `PATH` search stopping at a link as the runtime does); a base name alone is never trusted. Any word before nginx
+    other than the official entrypoint is unknown: `tini`, `dumb-init`, `env` (with its `PATH` or `--chdir`), `exec`,
+    `sh -c` and custom scripts included;
+  - the official entrypoint is recognised by SHA-256 (every version in nginx/docker-nginx and
+    docker-nginx-unprivileged), is given `nginx` or `nginx-debug` as its first argument, and every file reachable in
+    `/docker-entrypoint.d` (any name, extension or size, with or without `#!`, through any link) was read and is that
+    name's official script; a link out of the directory, or a file not read, is unknown. The templates are applied
+    only then, as `20-envsubst-on-templates.sh` applies them, and only from a template directory the scan reads
+    whole; `NGINX_ENVSUBST_FILTER` is unknown;
+  - on a host, the command is the `ExecStart` of the systemd unit that runs that binary: the unit of the first
+    directory that has it (`/etc`, `/run`, `/lib`, `/usr/lib`), links followed, every drop-in applied, read from disk
+    below a system root. Its `Environment=` and `EnvironmentFile=` are read for the plain forms only (nginx.org's
+    pkg-oss unit starts `nginx -c ${conffile} $cmdopts`): a specifier (`%`), a glob in an `EnvironmentFile=` path, a
+    continued line, an environment file line with `export`, an escape, a variable or an inner quote, an environment
+    file that is there but not read, more than one `ExecStart=`, an `@`, `|` or `:` prefix, and `PassEnvironment=`,
+    `UnsetEnvironment=`, `RootDirectory=`, `RootImage=`, `MountImages=`, `ExtensionImages=`,
+    `ExtensionDirectories=`, `BindPaths=`, `BindReadOnlyPaths=` or `TemporaryFileSystem=` are unknown. A variable
+    the unit does not set is empty only when the manager's `system.conf` and its drop-ins were read and set no
+    `DefaultEnvironment=` or `ManagerEnvironment=`, and no environment generator is installed; the kernel command
+    line (`systemd.setenv=`) is not read. A unit, drop-in, unit directory or environment file not read is unknown.
+    `ExecStartPre`, `ExecStartPost` and `ExecCondition` (each its own list) may only run `/bin/rm` or `/usr/bin/rm -f`
+    of the pid file, or a test by the very binary `ExecStart` runs;
+  - nginx's own option parsing is followed (`-qc file`, `-p`, `-g` whose includes are loaded); a command that only
+    tests, shows or signals (`-t`, `-T`, `-v`, `-V`, `-s`, `-h`) serves nothing;
   - an include the walk could not read (the engine's not-scanned records), one that is not kept, a glob the scan does
     not read whole, a configuration generated at start (ingress-nginx, the F5 controller), a template variable left
     unset in `listen`, in `http2` or standing for a whole directive (not inside `map`, `geo`, `split_clients`,
@@ -139,8 +150,10 @@ of the binary.
     known to apply to a service, and a GitHub Actions service's `volumes` are not read, so an image read under those
     reports its own exposure.
 - The configuration read is the one nginx loads: the compiled-in path (a relative one moved by `-p`), or the command's
-  `-c`; the official image's templates with the image's environment put in as its entrypoint does. Globs follow
-  glob(3) (`[!x]`, `[[:digit:]]`, no leading dots); symbolic and hard links are followed inside the target. nginx keeps
+  `-c`; the official image's templates with the image's environment put in as its entrypoint does, when it runs
+  them. Globs follow glob(3) (`[!x]`, `[[:digit:]]`, no leading dots); symbolic and hard links are followed inside the
+  target. Below a system root a glob is read from disk: a link that is matched is kept and followed, a linked
+  directory on the way, or a directory that cannot be listed (`EACCES`), leaves it incomplete, so exposure unknown. nginx keeps
   one socket per port: `ssl` and `http2` on any `listen` of it, and the default server's `http2 on`, count for every
   server on it. Anything that opens upstream connections while a request is served (`*_pass`, Lua handlers, njs,
   `auth_request`, `mirror`, `perl`) counts as a proxy for CVE-2026-123633.
