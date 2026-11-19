@@ -17,10 +17,6 @@ import (
 // nginxNames are the words that start an nginx build.
 var nginxNames = map[string]bool{"nginx": true, "nginx-debug": true, "openresty": true, "angie": true, "tengine": true}
 
-// launchers start the next word as the command without touching the
-// configuration.
-var launchers = map[string]bool{"tini": true, "tini-static": true, "dumb-init": true, "exec": true, "env": true, "--": true}
-
 // configFor returns the configuration file a binary loads, the -g
 // directives, where the path came from, and why the answer is unsure ("" when
 // the start command was read in full).
@@ -33,9 +29,20 @@ func configFor(b *ngx.Binary, in Input) (string, []conf.Directive, string, strin
 	if in.CommandFor != nil {
 		cmd, from, none = in.CommandFor(b.Path)
 	}
-	args, unsure := startArgs(cmd, in.Launcher)
+	args, word, unsure := startArgs(cmd, in.Launcher)
 	if len(cmd) == 0 && none != "" {
 		unsure = none
+	}
+	if unsure == "" && word != "" {
+		// The word must start the very binary judged.
+		switch {
+		case in.Starts == nil:
+			unsure = "which binary " + word + " starts was not checked"
+		default:
+			if ok, why := in.Starts(word, b.Path); !ok {
+				unsure = why
+			}
+		}
 	}
 	if from == "" {
 		from = "the start command"
@@ -80,40 +87,53 @@ func configFor(b *ngx.Binary, in Input) (string, []conf.Directive, string, strin
 	return path.Clean("/" + main), extra, how, unsure
 }
 
-// startArgs returns nginx's arguments in a start command and why the
-// configuration read may not be what runs.
-func startArgs(cmd []string, launcher func(string) (bool, string)) ([]string, string) {
+// startArgs returns nginx's arguments in a start command, the word that
+// starts nginx, and why the configuration read may not be what runs. Only
+// two starts are read: the nginx binary itself, and the official image's
+// entrypoint (trusted by its content) given nginx or nginx-debug as its
+// first argument. Anything else that runs first (tini, env, a shell, a
+// wrapper) is trusted by nothing the scan can check, so it is unsure.
+func startArgs(cmd []string, launcher func(string) (bool, string)) ([]string, string, string) {
 	if len(cmd) == 0 {
-		return nil, "no command that starts nginx was read (an image without one, or a host whose service unit was not found)"
+		return nil, "", "no command that starts nginx was read (an image without one, or a host whose service unit was not found)"
 	}
-	for i := 0; i < len(cmd); i++ {
-		w := cmd[i]
-		b := path.Base(w)
-		switch {
-		case nginxNames[b] && noServe(cmd[i+1:]):
-			return nil, "the command runs nginx only to test or show it, so what serves is started elsewhere"
-		case nginxNames[b]:
-			return varArgs(cmd[i+1:])
-		case launchers[b] || strings.HasPrefix(w, "-") && i > 0 && launchers[path.Base(cmd[i-1])] || strings.Contains(w, "=") && i > 0 && path.Base(cmd[i-1]) == "env":
-		case b == "sh" || b == "bash" || b == "ash" || b == "dash":
-			for j := i + 1; j < len(cmd); j++ {
-				if strings.HasPrefix(cmd[j], "-") && strings.Contains(cmd[j], "c") && j+1 < len(cmd) {
-					return shellStart(cmd[j+1])
-				}
+	i := 0
+	if !nginxNames[path.Base(cmd[0])] {
+		ok, why := false, ""
+		if launcher != nil {
+			ok, why = launcher(cmd[0])
+		}
+		if !ok {
+			if why == "" {
+				why = fmt.Sprintf("nginx is started through %s, which can change the configuration or the options it is given", cmd[0])
 			}
-			return nil, "the container starts a shell script, which can change the configuration"
-		default:
-			if launcher != nil {
-				ok, why := launcher(w)
-				if ok {
-					continue
-				}
-				return nil, why
-			}
-			return nil, fmt.Sprintf("nginx is started through %s, which can change the configuration or the options it is given", w)
+			return nil, "", why
+		}
+		i = 1
+		if i >= len(cmd) || cmd[i] != "nginx" && cmd[i] != "nginx-debug" {
+			return nil, "", "the entrypoint is not given nginx as its first argument, so what it runs is not read"
 		}
 	}
-	return nil, "the start command does not run nginx"
+	w := cmd[i]
+	if !nginxNames[path.Base(w)] {
+		return nil, "", fmt.Sprintf("nginx is started through %s, which can change the configuration or the options it is given", w)
+	}
+	if noServe(cmd[i+1:]) {
+		return nil, "", "the command runs nginx only to test or show it, so what serves is started elsewhere"
+	}
+	args, unsure := varArgs(cmd[i+1:])
+	return args, w, unsure
+}
+
+// OfficialEntrypointRuns reports a command whose first word is the
+// official entrypoint given nginx or nginx-debug: only then does it run
+// /docker-entrypoint.d and write the templates.
+func OfficialEntrypointRuns(cmd []string, launcher func(string) (bool, string)) bool {
+	if len(cmd) < 2 || launcher == nil || cmd[1] != "nginx" && cmd[1] != "nginx-debug" {
+		return false
+	}
+	ok, _ := launcher(cmd[0])
+	return ok
 }
 
 func varArgs(args []string) ([]string, string) {
@@ -123,99 +143,6 @@ func varArgs(args []string) ([]string, string) {
 		}
 	}
 	return args, ""
-}
-
-// shellStart reads a "sh -c" text. It must run nginx and nothing else
-// that could change the configuration first: any other command (sed,
-// envsubst, a script) makes the answer unsure.
-func shellStart(text string) ([]string, string) {
-	cmds, ok := shellCommands(text)
-	if !ok {
-		return nil, "nginx is started from a shell command that could not be read word by word"
-	}
-	for _, ws := range cmds {
-		for len(ws) > 0 && (ws[0] == "exec" || strings.Contains(ws[0], "=") && !strings.HasPrefix(ws[0], "-")) {
-			ws = ws[1:]
-		}
-		switch {
-		case len(ws) == 0, ws[0] == "set":
-		case nginxNames[path.Base(ws[0])] && noServe(ws[1:]):
-			// nginx -t, -T, -v, -V, -s or -h: tests, shows or signals,
-			// and does not serve; the start comes later.
-		case nginxNames[path.Base(ws[0])]:
-			return varArgs(ws[1:])
-		default:
-			return nil, fmt.Sprintf("the shell command runs %s before nginx, which can change the configuration", ws[0])
-		}
-	}
-	return nil, "the shell command does not run nginx"
-}
-
-// shellCommands splits a shell text into simple commands of words: quotes
-// group, a backslash escapes the next character and joins a line it ends,
-// and ; & | and newlines separate commands. A substitution or redirection
-// makes it unreadable here.
-func shellCommands(text string) ([][]string, bool) {
-	var cmds [][]string
-	var cur []string
-	var w strings.Builder
-	in, q := false, byte(0)
-	flush := func() {
-		if in {
-			cur = append(cur, w.String())
-			w.Reset()
-			in = false
-		}
-	}
-	for i := 0; i < len(text); i++ {
-		c := text[i]
-		switch {
-		case q == '\'':
-			if c == q {
-				q = 0
-			} else {
-				w.WriteByte(c)
-			}
-		case q == '"':
-			switch {
-			case c == q:
-				q = 0
-			case c == '\\' && i+1 < len(text):
-				i++
-				if text[i] != '\n' {
-					w.WriteByte(text[i])
-				}
-			case c == '`' || c == '$' && i+1 < len(text) && text[i+1] == '(':
-				return nil, false
-			default:
-				w.WriteByte(c)
-			}
-		case c == '\\' && i+1 < len(text):
-			i++
-			if text[i] != '\n' {
-				w.WriteByte(text[i])
-				in = true
-			}
-		case c == '"' || c == '\'':
-			q, in = c, true
-		case c == ' ' || c == '\t':
-			flush()
-		case c == ';' || c == '&' || c == '|' || c == '\n':
-			flush()
-			cmds = append(cmds, cur)
-			cur = nil
-		case c == '`' || c == '<' || c == '>' || c == '(' || c == ')' || c == '$' && i+1 < len(text) && text[i+1] == '(':
-			return nil, false
-		default:
-			w.WriteByte(c)
-			in = true
-		}
-	}
-	if q != 0 {
-		return nil, false
-	}
-	flush()
-	return append(cmds, cur), true
 }
 
 // noServe reports nginx arguments with an option that makes nginx test,

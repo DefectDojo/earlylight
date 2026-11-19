@@ -34,6 +34,6 @@ func FuzzSource(f *testing.F) {
 		harmless(unitWords(unit), "/run/nginx.pid")
 		resolveCommand(p, pattern, strings.Split(env, ","), func(q string) bool { return q == pattern })
 		ls := &scan{scripts: map[string][]byte{"/docker-entrypoint.sh": []byte(tmpl), "/docker-entrypoint.d/" + path.Base(p): []byte(unit)}}
-		ls.launcher(lm, nil, pattern, strings.Split(env, ","), nil)(p)
+		ls.commands(lm, nil, pattern, strings.Split(env, ","), nil).launcher(p)
 	})
 }

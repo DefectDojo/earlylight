@@ -15,7 +15,6 @@ func FuzzStart(f *testing.F) {
 	f.Add("", "'unterminated", "10-listen-on-ipv6-by-default.sh")
 	f.Fuzz(func(t *testing.T, lead, rest, script string) {
 		cmd := append(strings.Fields(lead), rest)
-		shellCommands(rest)
 		nginxOptions(strings.Fields(rest))
 		b := &ngx.Binary{ConfPath: "/etc/nginx/nginx.conf", ConfRaw: "/etc/nginx/nginx.conf"}
 		main, _, _, _ := configFor(b, Input{Command: cmd, Launcher: func(w string) (bool, string) { return w == script, "" }})

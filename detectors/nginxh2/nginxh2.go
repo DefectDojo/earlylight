@@ -257,6 +257,7 @@ type scan struct {
 	db          map[string][]byte
 	scripts     map[string][]byte // "#!" scripts, by path
 	units       map[string]map[string]bool
+	epSeen      map[string]bool // every file seen under /docker-entrypoint.d
 	scriptBytes int
 	unread      map[string]string
 	unreadAll   bool
@@ -269,6 +270,22 @@ type scan struct {
 func (s *scan) Visit(f engine.File) []engine.Skip {
 	if f.Member {
 		return nil // installed servers only
+	}
+	if strings.HasPrefix(f.Path, "/docker-entrypoint.d/") {
+		// Everything there is run or skipped by the official
+		// entrypoint: each file is recorded, and kept to be checked.
+		if s.epSeen == nil {
+			s.epSeen = map[string]bool{}
+		}
+		if len(s.epSeen) < maxUnread {
+			s.epSeen[f.Path] = true
+		} else {
+			s.unreadAll = true
+		}
+		if len(f.Data) <= maxDB && s.dbBytes+len(f.Data) <= maxDBTotal {
+			s.db[f.Path] = f.Data
+			s.dbBytes += len(f.Data)
+		}
 	}
 	if archive.IsExecutable(f.Data) {
 		switch path.Base(f.Path) {
@@ -346,7 +363,9 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	}
 	links, hardlinks := ctx.Links()
 	src := &confSource{kept: s.conf, full: s.confFull, tooLarge: s.tooLarge, root: ctx.SystemRoot(), links: links, hardlinks: hardlinks, unread: s.unread, unreadAll: s.unreadAll}
-	if s.kind == engine.Image && s.db["/docker-entrypoint.d/20-envsubst-on-templates.sh"] != nil {
+	cmds := s.commands(links, hardlinks, workdirOf(ctx), ctx.Env(), ctx.Exists)
+	if s.kind == engine.Image && assess.OfficialEntrypointRuns(ctx.Command(), cmds.launcher) && s.db["/docker-entrypoint.d/20-envsubst-on-templates.sh"] != nil {
+		// Only then does the entrypoint write the templates.
 		src.templates(ctx.Env())
 	}
 	id, like, ver := osRelease(s.read(src, "/etc/os-release", "/usr/lib/os-release"))
@@ -375,7 +394,8 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 		Command:     ctx.Command(),
 		CommandFrom: "the image's command",
 		CommandFor:  s.commandFor(src),
-		Launcher:    s.launcher(links, hardlinks, workdirOf(ctx), ctx.Env(), ctx.Exists),
+		Launcher:    cmds.launcher,
+		Starts:      cmds.starts,
 		Ingress:     s.ingress,
 		Generated:   s.generated(),
 	})
@@ -386,119 +406,185 @@ func (s *scan) Finish(ctx engine.TargetContext) []engine.Finding {
 	return out
 }
 
-// launcher returns a check of a word that starts a container's command
-// before nginx: it is trusted only when its content is the official nginx
-// image's entrypoint, and every script that entrypoint runs from
-// /docker-entrypoint.d (find -follow: links followed) was read and is an
-// official one by content.
-func (s *scan) launcher(links, hardlinks map[string]string, workdir string, env []string, exists func(string) bool) func(string) (bool, string) {
-	src := &confSource{links: links, hardlinks: hardlinks}
-	content := func(p string) ([]byte, bool) {
-		r := src.resolve(p)
-		if r == "" {
-			return nil, false
-		}
-		if to, ok := hardlinks[r]; ok {
-			r = to
-		}
-		if b, ok := s.scripts[r]; ok {
-			return b, true
-		}
-		b, ok := s.db[r]
-		return b, ok
+// commands resolves the words of a target's start command and judges
+// the official entrypoint, once per scan.
+type commands struct {
+	s         *scan
+	src       *confSource
+	links     map[string]string
+	hardlinks map[string]string
+	workdir   string
+	env       []string
+	exists    func(string) bool
+	epDone    bool
+	epOK      bool
+	epWhy     string
+	words     map[string]wordAnswer
+}
+
+type wordAnswer struct {
+	ok  bool
+	why string
+}
+
+func (s *scan) commands(links, hardlinks map[string]string, workdir string, env []string, exists func(string) bool) *commands {
+	return &commands{s: s, src: &confSource{links: links, hardlinks: hardlinks}, links: links, hardlinks: hardlinks,
+		workdir: workdir, env: env, exists: exists, words: map[string]wordAnswer{}}
+}
+
+// real follows a path's links inside the target ("" for a loop).
+func (c *commands) real(p string) string {
+	r := c.src.resolve(p)
+	if to, ok := c.hardlinks[r]; ok && r != "" {
+		r = to
 	}
-	return func(word string) (bool, string) {
-		p, why := resolveCommand(word, workdir, env, func(q string) bool {
-			if exists != nil && exists(q) {
-				return true
-			}
-			_, ok := content(q)
-			return ok
-		})
-		if p == "" {
-			return false, why
-		}
-		b, ok := content(p)
-		if !ok {
-			return false, fmt.Sprintf("nginx is started through %s, which was not read", word)
-		}
-		if !officialScripts["docker-entrypoint.sh"][sha(b)] {
-			return false, fmt.Sprintf("nginx is started through %s, which is not the official nginx image's entrypoint and can change the configuration", word)
-		}
-		if s.unreadAll {
-			return false, "more files were not scanned than the detector keeps a record of, so the entrypoint's scripts are not known"
-		}
-		// Walk /docker-entrypoint.d as find -follow does: links to
-		// directories are descended into, and every .sh and .envsh file
-		// reached is run.
-		var known []string
-		for _, m := range []map[string][]byte{s.scripts, s.db} {
-			for q := range m {
-				known = append(known, q)
-			}
-		}
-		for _, m := range []map[string]string{links, hardlinks, s.unread} {
-			for q := range m {
-				known = append(known, q)
-			}
-		}
-		under := func(dir string) []string {
-			var out []string
-			for _, q := range known {
-				if strings.HasPrefix(q, dir+"/") {
-					out = append(out, q)
-				}
-			}
-			return out
-		}
-		type place struct{ shown, real string }
-		start := src.resolve("/docker-entrypoint.d")
-		if start == "" {
-			return false, "/docker-entrypoint.d is a symbolic link loop"
-		}
-		if why, ok := s.unread[start]; ok {
-			return false, fmt.Sprintf("the entrypoint runs the scripts in /docker-entrypoint.d, which was not read (%s)", why)
-		}
-		queue := []place{{"/docker-entrypoint.d", start}}
-		visited := map[string]bool{start: true}
-		for len(queue) > 0 {
-			pl := queue[0]
-			queue = queue[1:]
-			for _, q := range under(pl.real) {
-				shown := pl.shown + strings.TrimPrefix(q, pl.real)
-				if why, ok := s.unread[q]; ok {
-					return false, fmt.Sprintf("the entrypoint runs what is in /docker-entrypoint.d, and %s was not read (%s)", shown, why)
-				}
-				_, isLink := links[q]
-				name := path.Base(q)
-				b, read := content(q)
-				if isLink && !read {
-					t := src.resolve(q)
-					if t == "" || len(under(t)) == 0 {
-						return false, fmt.Sprintf("the entrypoint follows %s, which leads to nothing the scan read", shown)
-					}
-					if !visited[t] {
-						if len(visited) > 64 {
-							return false, "/docker-entrypoint.d leads to more directories than the detector follows"
-						}
-						visited[t] = true
-						queue = append(queue, place{shown, t})
-					}
-					continue
-				}
-				if !strings.HasSuffix(name, ".sh") && !strings.HasSuffix(name, ".envsh") {
-					continue // the entrypoint ignores other files
-				}
-				if !read {
-					return false, fmt.Sprintf("the entrypoint runs %s, which was not read", shown)
-				}
-				if !officialScripts[name][sha(b)] {
-					return false, fmt.Sprintf("the entrypoint runs %s, which is not one of the official image's scripts and can change the configuration", shown)
-				}
-			}
-		}
-		return true, ""
+	return r
+}
+
+// content is a kept file's bytes, through links.
+func (c *commands) content(p string) ([]byte, bool) {
+	r := c.real(p)
+	if r == "" {
+		return nil, false
 	}
+	if b, ok := c.s.scripts[r]; ok {
+		return b, true
+	}
+	b, ok := c.s.db[r]
+	return b, ok
+}
+
+// present reports a path that is in the target: a file the walk read or
+// kept, or a link, read or not (a PATH search stops at the first).
+func (c *commands) present(q string) bool {
+	if _, ok := c.links[q]; ok {
+		return true
+	}
+	if _, ok := c.hardlinks[q]; ok {
+		return true
+	}
+	if c.exists != nil && c.exists(q) {
+		return true
+	}
+	if _, ok := c.s.unread[q]; ok {
+		return true
+	}
+	_, ok := c.content(q)
+	return ok
+}
+
+// resolve resolves a command word as the runtime does.
+func (c *commands) resolve(word string) (string, string) {
+	return resolveCommand(word, c.workdir, c.env, c.present)
+}
+
+// launcher reports whether a word that starts the command is the official
+// nginx image's entrypoint (by content), with everything it runs from
+// /docker-entrypoint.d read and official.
+func (c *commands) launcher(word string) (bool, string) {
+	if a, ok := c.words[word]; ok {
+		return a.ok, a.why
+	}
+	ok, why := c.launcherOnce(word)
+	c.words[word] = wordAnswer{ok, why}
+	return ok, why
+}
+
+func (c *commands) launcherOnce(word string) (bool, string) {
+	p, why := c.resolve(word)
+	if p == "" {
+		return false, why
+	}
+	b, ok := c.content(p)
+	if !ok {
+		return false, fmt.Sprintf("nginx is started through %s, which was not read", word)
+	}
+	if !officialScripts["docker-entrypoint.sh"][sha(b)] {
+		return false, fmt.Sprintf("nginx is started through %s, which is not the official nginx image's entrypoint and can change the configuration", word)
+	}
+	if !c.epDone {
+		c.epOK, c.epWhy = c.entrypointDir()
+		c.epDone = true
+	}
+	return c.epOK, c.epWhy
+}
+
+// starts reports whether a word that starts nginx resolves to the binary
+// judged, through the working directory, PATH and links.
+func (c *commands) starts(word, binary string) (bool, string) {
+	p, why := c.resolve(word)
+	if p == "" {
+		return false, why
+	}
+	if r := c.real(p); r == "" || r != c.real(binary) {
+		return false, fmt.Sprintf("%s resolves to %s, not to the nginx binary judged (%s), so what it starts is not known", word, p, binary)
+	}
+	return true, ""
+}
+
+// entrypointDir checks /docker-entrypoint.d as the official entrypoint
+// runs it (find -follow): every file reachable there, whatever its name,
+// size or first line, must have been read and be one of the official
+// scripts; a directory link that leads out of it, or anything not read,
+// leaves exposure unknown.
+func (c *commands) entrypointDir() (bool, string) {
+	const dir = "/docker-entrypoint.d"
+	s := c.s
+	if s.unreadAll {
+		return false, "more files were not scanned than the detector keeps a record of, so the entrypoint's scripts are not known"
+	}
+	if r := c.real(dir); r != dir {
+		return false, dir + " is a symbolic link, so what the entrypoint runs is not read"
+	}
+	if why, ok := s.unread[dir]; ok {
+		return false, fmt.Sprintf("the entrypoint runs what is in %s, which was not read (%s)", dir, why)
+	}
+	var paths []string
+	add := func(q string) {
+		if strings.HasPrefix(q, dir+"/") {
+			paths = append(paths, q)
+		}
+	}
+	for q := range s.epSeen {
+		add(q)
+	}
+	for _, m := range []map[string][]byte{s.scripts, s.db} {
+		for q := range m {
+			if !s.epSeen[q] {
+				add(q)
+			}
+		}
+	}
+	for _, m := range []map[string]string{c.links, c.hardlinks, s.unread} {
+		for q := range m {
+			add(q)
+		}
+	}
+	sort.Strings(paths)
+	for _, q := range paths {
+		if why, ok := s.unread[q]; ok {
+			return false, fmt.Sprintf("the entrypoint runs what is in %s, and %s was not read (%s)", dir, q, why)
+		}
+		if _, isLink := c.links[q]; isLink {
+			t := c.real(q)
+			if t == "" || !strings.HasPrefix(t, dir+"/") {
+				if _, read := c.content(q); !read {
+					return false, fmt.Sprintf("%s leads out of %s to %s, which the scan does not read whole", q, dir, t)
+				}
+			}
+		}
+		b, read := c.content(q)
+		if !read {
+			if _, isLink := c.links[q]; isLink && strings.HasPrefix(c.real(q), dir+"/") {
+				continue // a link to a directory inside: its files are listed themselves
+			}
+			return false, fmt.Sprintf("the entrypoint runs what is in %s, and %s was not read", dir, q)
+		}
+		if !officialScripts[path.Base(q)][sha(b)] {
+			return false, fmt.Sprintf("%s holds %s, which is not one of the official image's scripts and can change the configuration", dir, q)
+		}
+	}
+	return true, ""
 }
 
 // defaultPath is the PATH a container runs with when its image sets none.

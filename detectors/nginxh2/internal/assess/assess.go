@@ -53,6 +53,9 @@ type Input struct {
 	// the command can be passed over: the official image's entrypoint,
 	// recognised by its content and its scripts'.
 	Launcher func(word string) (bool, string)
+	// Starts says whether a command word that starts nginx resolves (as
+	// the runtime resolves it) to the binary judged.
+	Starts func(word, binary string) (bool, string)
 	// Ingress is set when the target holds the ingress-nginx controller,
 	// which writes nginx.conf at start with HTTP/2 on by default.
 	Ingress bool

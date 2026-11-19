@@ -35,7 +35,7 @@ func TestW1RelativeEntrypoint(t *testing.T) {
 		{"missing.sh", "/", nil, false},
 		{"bin/ok.sh", "/opt", nil, true},
 	} {
-		ok, why := s.launcher(nil, nil, c.dir, c.env, exists)(c.word)
+		ok, why := s.commands(nil, nil, c.dir, c.env, exists).launcher(c.word)
 		if ok != c.trust {
 			t.Errorf("%s in %s with %v: trusted %v (%s), want %v", c.word, c.dir, c.env, ok, why, c.trust)
 		}
@@ -54,7 +54,9 @@ func TestW2LinkedDirectory(t *testing.T) {
 	}{
 		{"a script in the linked directory", map[string][]byte{"/opt/scripts/40-h2.sh": []byte("#!/bin/sh\nsed -i x\n")}, nil, false},
 		{"an envsh in it", map[string][]byte{"/opt/scripts/sub/a.envsh": []byte("#!/bin/sh\nexport X=1\n")}, nil, false},
-		{"an official script in it", map[string][]byte{"/opt/scripts/30-tune-worker-processes.sh": official(t, "30-tune-worker-processes.sh")}, nil, true},
+		// A directory link out of /docker-entrypoint.d is unknown whatever
+		// it holds: the scan does not keep every file there (round 5).
+		{"an official script in it", map[string][]byte{"/opt/scripts/30-tune-worker-processes.sh": official(t, "30-tune-worker-processes.sh")}, nil, false},
 		{"something there not read", nil, map[string]string{"/opt/scripts/50.sh": "permission denied"}, false},
 		{"a link to nothing read", nil, nil, false},
 	} {
@@ -63,7 +65,7 @@ func TestW2LinkedDirectory(t *testing.T) {
 			s.scripts[p] = b
 		}
 		links := map[string]string{"/docker-entrypoint.d/extra": "/opt/scripts"}
-		ok, why := s.launcher(links, nil, "/", nil, nil)("/docker-entrypoint.sh")
+		ok, why := s.commands(links, nil, "/", nil, nil).launcher("/docker-entrypoint.sh")
 		if ok != c.trust {
 			t.Errorf("%s: trusted %v (%s), want %v", c.name, ok, why, c.trust)
 		}

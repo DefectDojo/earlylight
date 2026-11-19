@@ -66,7 +66,7 @@ func TestRunExposed(t *testing.T) {
 
 func TestRunNotExposedStaysVulnerable(t *testing.T) {
 	fs := byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.30.6"))}, Source: mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }"},
-		Command: []string{"nginx", "-g", "daemon off;"}}))
+		Command: []string{"nginx", "-g", "daemon off;"}, Starts: okStarts}))
 	f := fs[knowledge.Flow]
 	if f.Status != knowledge.Vulnerable || f.State != conf.NotExposed || f.Severity != "medium" || !strings.Contains(f.Message, "still needs the update") {
 		t.Errorf("%+v", f)
@@ -119,7 +119,7 @@ func TestRunConflictUnknown(t *testing.T) {
 func TestRunCommandConfig(t *testing.T) {
 	src := mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }", "/app/nginx.conf": h2conf}
 	in := Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: src,
-		Command: []string{"/docker-entrypoint.sh", "nginx", "-c", "/app/nginx.conf", "-g", "daemon off;"}, CommandFrom: "the container command",
+		Command: []string{"/docker-entrypoint.sh", "nginx", "-c", "/app/nginx.conf", "-g", "daemon off;"}, CommandFrom: "the container command", Starts: okStarts,
 		Launcher: func(w string) (bool, string) { return w == "/docker-entrypoint.sh", "" }}
 	f := byCVE(Run(in))[knowledge.Flow]
 	if f.State != conf.Exposed || f.Facts["config"] != "/app/nginx.conf" || f.Facts["config_from"] != "the container command's -c" {
@@ -197,7 +197,7 @@ func TestConfigFor(t *testing.T) {
 	if m, _, how, _ := configFor(b, Input{}); m != "/usr/local/nginx/conf/nginx.conf" || how != "nginx's default" {
 		t.Errorf("%s %s", m, how)
 	}
-	if _, unsure := startArgs([]string{"sh", "-c", "echo"}, nil); unsure == "" {
+	if _, _, unsure := startArgs([]string{"sh", "-c", "echo"}, nil); unsure == "" {
 		t.Error("a command without nginx")
 	}
 }
@@ -217,9 +217,13 @@ func TestConfigForPrefixAndShell(t *testing.T) {
 	if m, _, _, _ := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"nginx", "-p", "/app/"}}); m != "/etc/nginx/nginx.conf" {
 		t.Errorf("absolute: %s", m)
 	}
-	m, _, how, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"/bin/sh", "-c", "exec nginx -c '/app/nginx.conf' -g 'daemon off;'"}})
+	// A shell start is not read (round 5): unsure.
+	if _, _, _, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"/bin/sh", "-c", "exec nginx -c '/app/nginx.conf' -g 'daemon off;'"}, Starts: okStarts}); unsure == "" {
+		t.Error("sh -c was read")
+	}
+	m, _, how, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"nginx", "-c", "/app/nginx.conf", "-g", "daemon off;"}, Starts: okStarts})
 	if m != "/app/nginx.conf" || unsure != "" || !strings.Contains(how, "-c") {
-		t.Errorf("sh -c: %s %s %q", m, how, unsure)
+		t.Errorf("-c: %s %s %q", m, how, unsure)
 	}
 	// Something that writes the configuration first: unsure.
 	if _, _, _, unsure := configFor(bin(t, ngxtest.Default("1.31.8")), Input{Command: []string{"/bin/sh", "-c", "envsubst < /t > /etc/nginx/x.conf && exec nginx"}}); unsure == "" {
@@ -245,7 +249,7 @@ func TestR2StartCommand(t *testing.T) {
 	// /docker-entrypoint.sh is the official entrypoint here.
 	trusted := func(w string) (bool, string) { return w == "/docker-entrypoint.sh", "not the official entrypoint" }
 	run := func(cmd []string) conf.State {
-		return byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: cmd, Launcher: trusted}))[knowledge.Flow].State
+		return byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: cmd, Starts: okStarts, Launcher: trusted}))[knowledge.Flow].State
 	}
 	for _, c := range []struct {
 		name string
@@ -253,7 +257,7 @@ func TestR2StartCommand(t *testing.T) {
 		want conf.State
 	}{
 		{"official", []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}, conf.NotExposed},
-		{"tini", []string{"/sbin/tini", "--", "nginx", "-g", "daemon off;"}, conf.NotExposed},
+		{"tini", []string{"/sbin/tini", "--", "nginx", "-g", "daemon off;"}, conf.Unknown},
 		{"no command", nil, conf.Unknown},
 		{"s6 init", []string{"/init"}, conf.Unknown},
 		{"start script", []string{"/start.sh"}, conf.Unknown},
@@ -261,8 +265,8 @@ func TestR2StartCommand(t *testing.T) {
 		{"supervisord", []string{"supervisord", "-c", "/etc/supervisord.conf"}, conf.Unknown},
 		{"wrapper then nginx", []string{"/usr/local/bin/wrap", "nginx"}, conf.Unknown},
 		{"sed in sh -c", []string{"sh", "-c", "sed -i 's/listen 80;/listen 443 ssl http2;/' /etc/nginx/nginx.conf && nginx -g 'daemon off;'"}, conf.Unknown},
-		{"exec in sh -c", []string{"sh", "-c", "exec nginx -g 'daemon off;'"}, conf.NotExposed},
-		{"continuation", []string{"sh", "-c", "exec nginx \\\n -c /etc/nginx/h2.conf"}, conf.Exposed},
+		{"exec in sh -c", []string{"sh", "-c", "exec nginx -g 'daemon off;'"}, conf.Unknown},
+		{"continuation", []string{"sh", "-c", "exec nginx \\\n -c /etc/nginx/h2.conf"}, conf.Unknown},
 		{"-qc", []string{"nginx", "-qc", "/etc/nginx/h2.conf"}, conf.Exposed},
 		{"-g include", []string{"nginx", "-c", "/x.conf", "-g", "include /etc/nginx/h2.conf;"}, conf.Exposed},
 	} {
@@ -365,20 +369,25 @@ func TestV5OldCoreWitness(t *testing.T) {
 	}
 }
 
-// Verification 6: an nginx call that only tests or shows the
-// configuration is not the start.
+// Verification 6, and round 5: a shell start is never read (it is trusted
+// by nothing the scan can check); a command that only tests nginx is not
+// the start.
 func TestV6ShellTestCall(t *testing.T) {
 	off := mem{"/etc/nginx/nginx.conf": "http { server { listen 80; } }"}
-	run := func(text string) conf.State {
-		return byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: []string{"sh", "-c", text}}))[knowledge.Flow].State
+	run := func(cmd ...string) conf.State {
+		return byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: cmd, Starts: okStarts}))[knowledge.Flow].State
 	}
-	if got := run("nginx -t && sed -i 's/80/443 ssl http2/' /etc/nginx/nginx.conf && nginx -g 'daemon off;'"); got != conf.Unknown {
-		t.Errorf("sed after nginx -t: %s", got)
+	if got := run("sh", "-c", "nginx -t && exec nginx -g 'daemon off;'"); got != conf.Unknown {
+		t.Errorf("a shell start: %s", got)
 	}
-	if got := run("nginx -V; nginx -t -q && exec nginx -g 'daemon off;'"); got != conf.NotExposed {
-		t.Errorf("tests then the start: %s", got)
-	}
-	if got := byCVE(Run(Input{Binaries: []*ngx.Binary{bin(t, ngxtest.Default("1.31.8"))}, Source: off, Command: []string{"nginx", "-T"}}))[knowledge.Flow].State; got != conf.Unknown {
+	if got := run("nginx", "-T"); got != conf.Unknown {
 		t.Errorf("a command that only tests: %s", got)
 	}
+	if got := run("nginx", "-g", "daemon off;"); got != conf.NotExposed {
+		t.Errorf("nginx itself: %s", got)
+	}
 }
+
+// okStarts stands for the adapter's check that the word starts the binary
+// judged.
+func okStarts(string, string) (bool, string) { return true, "" }
