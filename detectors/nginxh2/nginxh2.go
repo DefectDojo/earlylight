@@ -218,7 +218,14 @@ func keepDB(p string) bool {
 		n := pkgdb.DpkgListName(p)
 		return strings.Contains(n, "nginx") || strings.Contains(n, "openresty") || strings.Contains(n, "angie") || strings.Contains(n, "tengine")
 	}
-	return strings.HasPrefix(p, "/docker-entrypoint.d/") || unitPath(p) || strings.HasSuffix(p, ".service")
+	return strings.HasPrefix(p, "/docker-entrypoint.d/") || unitPath(p) || strings.HasSuffix(p, ".service") || envFileDir(p)
+}
+
+// envFileDir reports a file where units keep their EnvironmentFile
+// (/etc/sysconfig/nginx, /etc/default/nginx): kept whole, so one that is
+// not kept is not there.
+func envFileDir(p string) bool {
+	return strings.HasPrefix(p, "/etc/sysconfig/") || strings.HasPrefix(p, "/etc/default/")
 }
 
 // unitDirs hold systemd units; a unit's drop-ins are in <dir>/<unit>.d.
@@ -700,8 +707,11 @@ func (s *scan) systemdStarts(src *confSource) ([]unitStart, string) {
 			}
 			files = append(files, db)
 		}
-		var exec []string
+		var exec string
 		var around []string
+		var envs []string     // Environment= assignments, in order
+		var envFiles []string // EnvironmentFile= paths, "-" kept
+		pidFile := ""
 		for _, f := range files {
 			for _, l := range strings.Split(string(f), "\n") {
 				l = strings.TrimSpace(l)
@@ -709,38 +719,151 @@ func (s *scan) systemdStarts(src *confSource) ([]unitStart, string) {
 				if !ok {
 					continue
 				}
-				v = strings.TrimLeft(strings.TrimSpace(v), "-@:+!")
+				v = strings.TrimSpace(v)
+				x := strings.TrimLeft(v, "-@:+!")
 				switch strings.TrimSpace(k) {
 				case "ExecStart":
-					if v == "" {
-						exec = nil
-					} else {
-						exec = unitWords(v)
-					}
+					exec = x
 				case "ExecStartPre", "ExecStartPost", "ExecCondition":
-					if v == "" {
+					if x == "" {
 						around = nil
 					} else {
-						around = append(around, v)
+						around = append(around, x)
 					}
+				case "Environment":
+					if v == "" {
+						envs = nil
+					} else {
+						envs = append(envs, unitWords(v)...)
+					}
+				case "EnvironmentFile":
+					if v == "" {
+						envFiles = nil
+					} else {
+						envFiles = append(envFiles, v)
+					}
+				case "PIDFile":
+					pidFile = v
 				}
 			}
 		}
-		if len(exec) == 0 || !nginxStart(path.Base(exec[0])) {
+		if exec == "" {
 			continue
 		}
-		u.cmd = exec
-		for _, a := range around {
-			w := unitWords(a)
-			if len(w) == 0 || !nginxStart(path.Base(w[0])) || !nginxTest(w[1:]) {
-				if u.unsure == "" {
-					u.unsure = fmt.Sprintf("%s runs %q before or after nginx starts, which can change the configuration", u.unit, a)
+		// EnvironmentFile= overrides Environment=, whatever their order.
+		env := map[string]string{}
+		for _, kv := range envs {
+			if k, v, ok := strings.Cut(kv, "="); ok {
+				env[k] = v
+			}
+		}
+		for _, ef := range envFiles {
+			optional := strings.HasPrefix(ef, "-")
+			ef = strings.TrimPrefix(ef, "-")
+			b, real, ok := s.unitRead(src, ef)
+			_, unread := src.unreadAt(real)
+			switch {
+			case unread && u.unsure == "":
+				u.unsure = fmt.Sprintf("%s reads its environment from %s, which was not read", u.unit, ef)
+			case !ok && !optional && u.unsure == "":
+				u.unsure = fmt.Sprintf("%s reads its environment from %s, which is not in the target", u.unit, ef)
+			case !ok && src.root == "" && !envFileDir(real) && !unitPath(real) && u.unsure == "":
+				// Optional, but outside what the scan reads whole: whether
+				// it is there is not known.
+				u.unsure = fmt.Sprintf("%s reads its environment from %s, which the scan does not read", u.unit, ef)
+			case ok:
+				for k, v := range envFile(b) {
+					env[k] = v
 				}
+			}
+		}
+		cmd := expandUnit(exec, env)
+		if len(cmd) == 0 || !nginxStart(path.Base(cmd[0])) {
+			continue
+		}
+		u.cmd = cmd
+		for _, a := range around {
+			w := expandUnit(a, env)
+			if !harmless(w, pidFile) && u.unsure == "" {
+				u.unsure = fmt.Sprintf("%s runs %q before or after nginx starts, which can change the configuration", u.unit, a)
 			}
 		}
 		out = append(out, u)
 	}
 	return out, ""
+}
+
+// envFile reads an EnvironmentFile: KEY=VALUE lines, # and ; comments,
+// quotes removed.
+func envFile(b []byte) map[string]string {
+	out := map[string]string{}
+	for _, l := range strings.Split(string(b), "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || l[0] == '#' || l[0] == ';' {
+			continue
+		}
+		l = strings.TrimPrefix(l, "export ")
+		k, v, ok := strings.Cut(l, "=")
+		if !ok || len(out) >= 1024 {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if len(v) >= 2 && (v[0] == '"' && v[len(v)-1] == '"' || v[0] == '\'' && v[len(v)-1] == '\'') {
+			v = v[1 : len(v)-1]
+		}
+		out[strings.TrimSpace(k)] = v
+	}
+	return out
+}
+
+// expandUnit splits an Exec line into words and puts in the unit's
+// environment as systemd does: a word that is one $NAME becomes the
+// value's words (none when empty); ${NAME} inside a word is replaced in
+// place; an unset variable is empty.
+func expandUnit(line string, env map[string]string) []string {
+	var out []string
+	for _, w := range unitWords(line) {
+		if m := bareUnitVar.FindStringSubmatch(w); m != nil {
+			out = append(out, strings.Fields(env[m[1]])...)
+			continue
+		}
+		out = append(out, bracedUnitVar.ReplaceAllStringFunc(w, func(r string) string {
+			return env[r[2:len(r)-1]]
+		}))
+	}
+	return out
+}
+
+var (
+	bareUnitVar   = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
+	bracedUnitVar = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
+)
+
+// harmless reports a command run around nginx's start that cannot change
+// its configuration: an nginx test, or rm -f of the pid file.
+func harmless(w []string, pidFile string) bool {
+	if len(w) == 0 {
+		return false
+	}
+	if nginxStart(path.Base(w[0])) {
+		return nginxTest(w[1:])
+	}
+	if path.Base(w[0]) != "rm" {
+		return false
+	}
+	files := 0
+	for _, a := range w[1:] {
+		switch {
+		case a == "-f" || a == "--force":
+		case strings.HasPrefix(a, "-"):
+			return false
+		case strings.HasSuffix(a, ".pid") || a == pidFile && pidFile != "":
+			files++
+		default:
+			return false
+		}
+	}
+	return files > 0
 }
 
 // nginxTest reports nginx arguments that only test or show the

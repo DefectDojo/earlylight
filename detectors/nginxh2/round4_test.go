@@ -1,8 +1,10 @@
 package nginxh2
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/DefectDojo/earlylight/detectors/nginxh2/internal/ngxtest"
 	"github.com/DefectDojo/earlylight/internal/engine"
 )
 
@@ -63,5 +65,61 @@ func TestW2LinkedDirectory(t *testing.T) {
 		if ok != c.trust {
 			t.Errorf("%s: trusted %v (%s), want %v", c.name, ok, why, c.trust)
 		}
+	}
+}
+
+// W3 and W4: a unit's Environment= and EnvironmentFile= are applied to
+// ExecStart (nginx.org's pkg-oss unit), and commands run around the start
+// that cannot change the configuration (rm -f of a pid file, nginx -t) do
+// not void "not exposed".
+func TestW3W4UnitEnvironment(t *testing.T) {
+	pkgOSS := "[Service]\nType=forking\nPIDFile=/run/nginx.pid\nEnvironment=\"cmdopts=\"\nEnvironment=\"conffile=/etc/nginx/nginx.conf\"\nEnvironmentFile=-/etc/sysconfig/nginx\nExecStart=/usr/sbin/nginx -c ${conffile} $cmdopts\n"
+	files := func(unit string) map[string][]byte {
+		return map[string][]byte{
+			"/usr/sbin/nginx":                       ngxtest.Default("1.31.8").Bytes(),
+			"/etc/nginx/nginx.conf":                 []byte("http { include /etc/nginx/conf.d/*.conf; }"),
+			"/etc/nginx/conf.d/a.conf":              []byte("server { listen 443 ssl http2; location / { proxy_pass http://u; } }"),
+			"/etc/nginx/off.conf":                   []byte("http { server { listen 80; } }"),
+			"/usr/lib/systemd/system/nginx.service": []byte(unit),
+		}
+	}
+	exposure := func(fs map[string][]byte) string {
+		if f := find(scanFS(t, fs, engine.Options{}), KindFlow, "/usr/sbin/nginx"); f != nil {
+			return f.Facts["exposure"] + " " + f.Facts["config"]
+		}
+		return "no finding"
+	}
+	if got := exposure(files(pkgOSS)); got != "exposed /etc/nginx/nginx.conf" {
+		t.Errorf("pkg-oss unit: %s", got)
+	}
+	// The EnvironmentFile overrides the unit's value.
+	fs := files(pkgOSS)
+	fs["/etc/sysconfig/nginx"] = []byte("# nginx options\nconffile=/etc/nginx/off.conf\n")
+	if got := exposure(fs); got != "not-exposed /etc/nginx/off.conf" {
+		t.Errorf("EnvironmentFile: %s", got)
+	}
+	// A required EnvironmentFile that is not there: unknown (with the
+	// default configuration off, so nothing shows HTTP/2 on).
+	fs = files(strings.Replace(pkgOSS, "EnvironmentFile=-", "EnvironmentFile=", 1))
+	fs["/etc/nginx/conf.d/a.conf"] = []byte("server { listen 80; }")
+	if got := exposure(fs); !strings.HasPrefix(got, "unknown") {
+		t.Errorf("missing EnvironmentFile: %s", got)
+	}
+	// A harmless ExecStartPre on a not-exposed host.
+	fs = files("[Service]\nPIDFile=/run/nginx.pid\nExecStartPre=/usr/bin/rm -f /run/nginx.pid\nExecStartPre=/usr/sbin/nginx -t\nExecStart=/usr/sbin/nginx -c /etc/nginx/off.conf\n")
+	if got := exposure(fs); got != "not-exposed /etc/nginx/off.conf" {
+		t.Errorf("rm -f pid then nginx -t: %s", got)
+	}
+	// rm of anything else still voids it.
+	fs = files("[Service]\nExecStartPre=/usr/bin/rm -f /etc/nginx/conf.d/a.conf\nExecStart=/usr/sbin/nginx -c /etc/nginx/off.conf\n")
+	fs["/etc/nginx/conf.d/a.conf"] = []byte("server { listen 80; }")
+	if got := exposure(fs); !strings.HasPrefix(got, "unknown") {
+		t.Errorf("rm of a configuration file: %s", got)
+	}
+	// An optional EnvironmentFile outside what the scan reads whole.
+	fs = files(strings.Replace(pkgOSS, "/etc/sysconfig/nginx", "/opt/env/nginx-env", 1))
+	fs["/etc/nginx/conf.d/a.conf"] = []byte("server { listen 80; }")
+	if got := exposure(fs); !strings.HasPrefix(got, "unknown") {
+		t.Errorf("an optional file the scan does not read: %s", got)
 	}
 }
