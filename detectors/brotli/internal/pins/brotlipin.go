@@ -154,6 +154,9 @@ type pin struct {
 	// imgOff is where a line image's release line sits in image (0: in its
 	// tag, found by the version text).
 	imgOff int
+	// via: a version variable read from another variable the file sets
+	// (ENV NODE_VERSION=$BUILD_NODE), edited where that one is set.
+	via bool
 }
 
 // fixtureDirs name directories of test fixtures, which are inputs to tests,
@@ -320,6 +323,19 @@ type scanner struct {
 	// judged there, whatever the verdict: what a plan finds on a finding's
 	// line when the pin is gone.
 	judged map[judgedKey]bool
+	// exprAt holds file, line and rule ("" source) where a release slot
+	// holds a value the scan does not resolve (nvm install $V, a URL with
+	// ${V}): not listed as not checked, but never a fix in place.
+	exprAt map[judgedKey]bool
+}
+
+// unresolved records that line of file sets a release of rule from a value
+// the scan does not resolve.
+func (s *scanner) unresolved(file string, line int, rule string) {
+	if s.exprAt == nil {
+		s.exprAt = map[judgedKey]bool{}
+	}
+	s.exprAt[judgedKey{file, line, rule, ""}] = true
 }
 
 type judgedKey struct {
@@ -385,14 +401,23 @@ func (s *scanner) result() Result {
 	// a text pattern on that same line would edit it without the image
 	// verification.
 	imageEdits := map[string]bool{}
+	textAt := map[string]bool{}
 	for _, p := range s.pins {
 		if p.image != "" {
 			imageEdits[fmt.Sprint(p.editFile, "\x00", p.editLine)] = true
+		} else if !p.via {
+			textAt[fmt.Sprint(p.file, "\x00", p.line, "\x00", p.prod.rule())] = true
 		}
 	}
 	seen := map[string]bool{}
 	for _, p := range s.pins {
-		if p.image == "" && p.dep == nil && imageEdits[fmt.Sprint(p.file, "\x00", p.line)] {
+		if p.image == "" && p.dep == nil && imageEdits[fmt.Sprint(p.editFile, "\x00", p.editLine)] {
+			continue
+		}
+		// A variable read from another one that is itself a pin
+		// (ARG NODE_VERSION=24.22.0, then ENV NODE_VERSION=$NODE_VERSION)
+		// is reported once, where it is set.
+		if p.via && textAt[fmt.Sprint(p.editFile, "\x00", p.editLine, "\x00", p.prod.rule())] {
 			continue
 		}
 		// One pin per place: a value two readers find (an env value that
@@ -926,6 +951,7 @@ func (s *scanner) expression(rel string, line int, desc, value string) {
 		return
 	}
 	s.skips = append(s.skips, Skip{File: rel, Line: line, Reason: clean(fmt.Sprintf("%s is %s, an expression the scan does not resolve; check the release it selects by hand", desc, value), 300)})
+	s.unresolved(rel, line, "")
 }
 
 func (s *scanner) judgeImage(r refs.Ref) {

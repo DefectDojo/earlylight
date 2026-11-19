@@ -803,3 +803,175 @@ func TestPlanJudgedRecord(t *testing.T) {
 	ch, already, err := plan(root, f)
 	mustDecline(t, "a skip beside a judged value on the line", ch, already, err)
 }
+
+// A pin changed in place to a value the scan does not resolve never reads
+// as fixed, whether or not an ordinary scan lists it as not checked: a
+// shell variable in a command or a URL is left to the plan, a version
+// variable set from a build argument nobody sets is listed.
+func TestInPlaceExpressionNeverFixed(t *testing.T) {
+	ctx := context.Background()
+	wf := func(v string) string {
+		return "on: push\nenv:\n  NODE_VERSION: " + v + "\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: echo hi\n"
+	}
+	for _, c := range []struct {
+		what, file, was, now string
+		skips                int
+	}{
+		{"ENV from an ARG that holds a vulnerable release", "Dockerfile", "FROM debian:12\nENV NODE_VERSION=24.22.0\n", "ARG OTHER=24.22.0\nENV NODE_VERSION=$OTHER\n", 0},
+		{"ENV from an unset ARG, another ARG holding a release", "Dockerfile", "FROM debian:12\nENV NODE_VERSION=24.22.0\n", "ARG NODE_VERSION=24.22.1\nENV NODE_VERSION=$OTHER\n", 1},
+		{"nvm install $V", "install.sh", "nvm install 24.22.0\n", "nvm install $V\n", 0},
+		{"a download URL with ${V}", "install.sh", "curl -fsSL https://nodejs.org/dist/v24.22.0/SHASUMS256.txt\n", "curl -fsSL https://nodejs.org/dist/v${V}/SHASUMS256.txt\n", 0},
+		{"nvm install $(cat .nvmrc)", "install.sh", "nvm install 24.22.0\n", "nvm install $(cat .nvmrc)\n", 0},
+		{"a workflow env value no setup step reads", ".github/workflows/ci.yml", wf("24.22.0"), wf("${{ vars.N }}"), 0},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.was})
+		f := only(t, root, pins.RuleNode)
+		write(t, root, map[string]string{c.file: c.now})
+		res, err := pins.Scan(ctx, root, nil, pins.Options{})
+		if err != nil || len(res.Skips) != c.skips {
+			t.Errorf("%s: want %d not-checked items, got %v %+v", c.what, c.skips, err, res.Skips)
+		}
+		// Declined, or planned where the pin still is: never already fixed.
+		if _, already, err := plan(root, f); already {
+			t.Errorf("%s: already fixed (err %v)", c.what, err)
+		} else if _, ok := pins.IsDeclined(err); err != nil && !ok {
+			t.Errorf("%s: %v", c.what, err)
+		}
+	}
+}
+
+// An ordinary scan reads what it can: an ENV set from an ARG in the same
+// Dockerfile is judged by the ARG's value (and fixed there), a ${X:-d}
+// default is judged, and a commented-out line is not read.
+func TestVersionVariablesResolved(t *testing.T) {
+	ctx := context.Background()
+	scan := func(files map[string]string) pins.Result {
+		t.Helper()
+		root := t.TempDir()
+		write(t, root, files)
+		res, err := pins.Scan(ctx, root, nil, pins.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	type want struct {
+		line    int
+		current string
+	}
+	for _, c := range []struct {
+		what, file, body string
+		want             []want
+	}{
+		{"ENV from a fixed ARG", "Dockerfile", "ARG NODE_VERSION=24.22.1\nFROM debian:12\nENV NODE_VERSION=$NODE_VERSION\n", nil},
+		{"ENV from a vulnerable ARG of another name", "Dockerfile", "ARG BUILD_NODE=24.22.0\nFROM debian:12\nENV NODE_VERSION=$BUILD_NODE\n", []want{{3, "24.22.0"}}},
+		{"ENV from a vulnerable ARG of its name: one finding", "Dockerfile", "ARG NODE_VERSION=24.22.0\nFROM debian:12\nENV NODE_VERSION=${NODE_VERSION}\n", []want{{1, "24.22.0"}}},
+		{"ENV from the ARG the FROM reads: the image finding", "Dockerfile", "ARG NODE_VERSION=24.22.0\nFROM node:${NODE_VERSION}\nENV NODE_VERSION=$NODE_VERSION\n", []want{{2, "24.22.0"}}},
+		{"a fixed default", "Dockerfile", "FROM debian:12\nENV NODE_VERSION=${NODE_VERSION:-24.22.1}\n", nil},
+		{"a vulnerable default", "Dockerfile", "FROM debian:12\nENV NODE_VERSION=${NODE_VERSION:-24.22.0}\n", []want{{2, "24.22.0"}}},
+		{"commented-out lines", "Dockerfile", "# ENV NODE_VERSION=24.22.0\n# ENV NODE_VERSION=$UNSET\nFROM debian:12\n  # RUN nvm install 18\n", nil},
+		{"a commented-out CDK runtime", "stack.ts", "// runtime: Runtime.NODEJS_16_X,\nconst ok = 1\n", nil},
+		{"a live CDK runtime", "stack.ts", "new Function(this, 'f', { runtime: Runtime.NODEJS_16_X })\n", []want{{1, "16"}}},
+	} {
+		res := scan(map[string]string{c.file: c.body})
+		if len(res.Skips) != 0 || len(res.Findings) != len(c.want) {
+			t.Errorf("%s: findings %+v skips %+v", c.what, res.Findings, res.Skips)
+			continue
+		}
+		for k, w := range c.want {
+			if f := res.Findings[k]; f.Line != w.line || f.Props["current"] != w.current {
+				t.Errorf("%s: %+v, want line %d current %s", c.what, f, w.line, w.current)
+			}
+		}
+	}
+	// The fix of an ENV that reads an ARG moves the ARG; of a default, the
+	// default.
+	for _, c := range []struct{ body, want string }{
+		{"ARG BUILD_NODE=24.22.0\nFROM debian:12\nENV NODE_VERSION=$BUILD_NODE\n", "ARG BUILD_NODE=24.22.1"},
+		{"FROM debian:12\nENV NODE_VERSION=${NODE_VERSION:-24.22.0}\n", "ENV NODE_VERSION=${NODE_VERSION:-24.22.1}"},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{"Dockerfile": c.body})
+		f := only(t, root, pins.RuleNode)
+		ch, _, err := plan(root, f)
+		if err != nil || ch == nil || ch.Edits[0].New[0] != c.want {
+			t.Errorf("%q: change %+v, err %v", c.body, ch, err)
+		}
+	}
+}
+
+// What a fixed value records, and where an unreadable value is listed.
+func TestJudgedAndListed(t *testing.T) {
+	ctx := context.Background()
+	// A fixed .tool-versions line is judged (add records every verdict),
+	// and the variable on the next line is listed.
+	root := t.TempDir()
+	write(t, root, map[string]string{".tool-versions": "nodejs 24.22.0\nbun ${BUN}\n"})
+	f := only(t, root, pins.RuleNode)
+	write(t, root, map[string]string{".tool-versions": "nodejs 24.22.1\nbun ${BUN}\n"})
+	if res, err := pins.Scan(ctx, root, nil, pins.Options{}); err != nil || len(res.Skips) != 1 || res.Skips[0].Line != 2 {
+		t.Errorf(".tool-versions: %v %+v", err, res.Skips)
+	}
+	ch, already, err := plan(root, f)
+	mustBeGone(t, ".tool-versions fixed beside a variable", ch, already, err)
+
+	// netlify.toml NODE_VERSION set from a variable is listed.
+	root = t.TempDir()
+	write(t, root, map[string]string{"netlify.toml": "[build.environment]\n  NODE_VERSION = \"24.22.0\"\n"})
+	f = only(t, root, pins.RuleNode)
+	write(t, root, map[string]string{"netlify.toml": "[build.environment]\n  NODE_VERSION = \"$NODE\"\n"})
+	if res, err := pins.Scan(ctx, root, nil, pins.Options{}); err != nil || len(res.Skips) != 1 || res.Skips[0].Line != 2 {
+		t.Errorf("netlify.toml: %v %+v", err, res.Skips)
+	}
+	ch, already, err = plan(root, f)
+	mustDecline(t, "netlify.toml from a variable", ch, already, err)
+
+	// A range or a floating value is a value, not an expression.
+	for _, v := range []string{"'>=22 <25'", "'^24'", "lts/*", "24.x", "'~24.22'"} {
+		root := t.TempDir()
+		write(t, root, map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: " + v + "\n"})
+		if res, err := pins.Scan(ctx, root, nil, pins.Options{}); err != nil || len(res.Skips) != 0 {
+			t.Errorf("%s: %v %+v", v, err, res.Skips)
+		}
+	}
+}
+
+// Every reader records a fixed value under the source its findings carry,
+// so a plan with the finding's props finds it there.
+func TestJudgedSourceStrings(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct{ file, was, now string }{
+		{"Dockerfile", "FROM node:24.22.0\n", "FROM node:24.22.1\n"},
+		{"Dockerfile", "FROM mcr.microsoft.com/dotnet/aspnet:8.0.32\n", "FROM mcr.microsoft.com/dotnet/aspnet:8.0.33\n"},
+		{"Dockerfile", "FROM mcr.microsoft.com/dotnet/sdk:8.0.415\n", "FROM mcr.microsoft.com/dotnet/sdk:8.0.427\n"},
+		{"Dockerfile", "FROM oven/bun:1.4.3\n", "FROM oven/bun:1.4.4\n"},
+		{"Dockerfile", "FROM gcr.io/distroless/nodejs20-debian12\n", "FROM gcr.io/distroless/nodejs22-debian12\n"},
+		{"Dockerfile", "FROM debian:12\nRUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash\n", "FROM debian:12\nRUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash\n"},
+		{"Dockerfile", "FROM debian:12\nENV NODE_VERSION=24.22.0\n", "FROM debian:12\nENV NODE_VERSION=24.22.1\n"},
+		{"requirements.txt", "pycurl==7.48.0\n", "pycurl==7.49.0\n"},
+		{"app.csproj", "<Project>\n  <PropertyGroup>\n    <TargetFramework>net6.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n", "<Project>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n"},
+		{"svc/packages.lock.json", depsRepo["svc/packages.lock.json"], strings.Replace(depsRepo["svc/packages.lock.json"], "8.0.32", "8.0.33", 1)},
+		{".nvmrc", "22.23.1\n", "22.23.4\n"},
+		{".github/workflows/ci.yml", "on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 24.22.0\n",
+			"on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 24.22.1\n"},
+	} {
+		root := t.TempDir()
+		write(t, root, map[string]string{c.file: c.was})
+		res, err := pins.Scan(ctx, root, nil, pins.Options{})
+		if err != nil || len(res.Findings) != 1 {
+			t.Errorf("%s %q: %v %+v", c.file, c.was, err, res.Findings)
+			continue
+		}
+		f := res.Findings[0]
+		write(t, root, map[string]string{c.file: c.now})
+		got := pins.JudgedSources(root, f.File, f.Line, f.Rule)
+		found := false
+		for _, s := range got {
+			found = found || s == f.Props["source"]
+		}
+		if !found {
+			t.Errorf("%s %q: the fixed value is recorded under %v, the finding's source is %q", c.file, c.now, got, f.Props["source"])
+		}
+	}
+}

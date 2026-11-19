@@ -328,6 +328,9 @@ func (s *scanner) dotnetProject(rel string, b []byte) {
 					supported = true
 				}
 			}
+			if supported {
+				s.judge(rel, i+1, RuleDotnet, "target-framework") // judged: on a supported .NET
+			}
 			for _, tfm := range strings.Split(list, ";") {
 				if supported {
 					break
@@ -488,11 +491,108 @@ var textPatterns = []textPattern{
 }
 
 // versionVarExprRe finds a runtime version variable set from another
-// variable (ENV NODE_VERSION=$BUILD_NODE): group 3 is the variable read.
-var versionVarExprRe = regexp.MustCompile(`\b(?:ENV|ARG|export)\s+(NODE_VERSION|BUN_VERSION|DOTNET_VERSION|ASPNET_VERSION|ASPNETCORE_VERSION)[= ]["']?(\$\{?([A-Za-z_][A-Za-z0-9_]*)[^\s"']*)`)
+// variable: ENV NODE_VERSION=$BUILD_NODE, ${BUILD_NODE}, or
+// ${BUILD_NODE:-24.22.1}. Groups: 1 the version variable, 2 the expression,
+// 3 the braced name, 4 its default operator, 5 the default, 6 a bare name.
+var versionVarExprRe = regexp.MustCompile(`\b(?:ENV|ARG|export)\s+(NODE_VERSION|BUN_VERSION|DOTNET_VERSION|ASPNET_VERSION|ASPNETCORE_VERSION)[= ]["']?(\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([^}"'\s]*))?\}|([A-Za-z_][A-Za-z0-9_]*)))`)
 
-// setVarRe finds a variable set to a release (ARG NODE_VERSION=24.22.0).
-var setVarRe = regexp.MustCompile(`(?m)\b(?:ENV|ARG|export)\s+([A-Za-z_][A-Za-z0-9_]*)[= ]["']?v?[0-9]`)
+// versionVars are the version variables' products and sources.
+var versionVars = map[string]struct {
+	prod   product
+	source string
+}{
+	"NODE_VERSION": {node, "node-version-var"}, "BUN_VERSION": {bun, "bun-version-var"},
+	"DOTNET_VERSION": {dotnet, "dotnet-version-var"}, "ASPNET_VERSION": {dotnet, "dotnet-version-var"}, "ASPNETCORE_VERSION": {dotnet, "dotnet-version-var"},
+}
+
+// assignRe finds a variable set to a release (ARG BUILD_NODE=24.22.0).
+var assignRe = regexp.MustCompile(`\b(?:ENV|ARG|export)\s+([A-Za-z_][A-Za-z0-9_]*)[= ]["']?(v?[0-9][0-9A-Za-z.+-]*)`)
+
+// exprValue is a value written as a reference the scan does not resolve.
+const exprValue = `(\$\{\{[^}]*\}\}|\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_][A-Za-z0-9_]*)`
+
+// exprPatterns are the release slots of the text patterns with such a value
+// in them (nvm install $V, a download URL with ${V}). An ordinary scan
+// does not list them, since the shell sets them in ways it does not
+// follow; a plan never reads one as a pin fixed in place.
+var exprPatterns = []struct {
+	re   *regexp.Regexp
+	prod product
+}{
+	{regexp.MustCompile(`nodejs\.org/(?:dist|download/release)/v?` + exprValue), node},
+	{regexp.MustCompile(`\b(?:nvm|fnm)\s+(?:install|use)\s+(?:--lts=)?["']?` + exprValue), node},
+	{regexp.MustCompile(`\bvolta\s+(?:install|pin)\s+node@` + exprValue), node},
+	{regexp.MustCompile(`\basdf\s+(?:install|local|global|set)\s+nodejs\s+` + exprValue), node},
+	{regexp.MustCompile(`\bmise\s+(?:use|install)\s+(?:-g\s+|--global\s+)?node(?:js)?@` + exprValue), node},
+	{regexp.MustCompile(`(?:deb|rpm)\.nodesource\.com/setup_` + exprValue), node},
+	{regexp.MustCompile(`^\s*NODE_VERSION:\s*["']?` + exprValue), node},
+	{regexp.MustCompile(`bun\.sh/install[^\n]*bun-v` + exprValue), bun},
+	{regexp.MustCompile(`^\s*BUN_VERSION:\s*["']?` + exprValue), bun},
+	{regexp.MustCompile(`dotnet-install\.(?:sh|ps1)\b[^\n]*(?:--version|-Version)\s+` + exprValue), dotnet},
+}
+
+// commentLine reports a line that is a comment in the files the text
+// patterns read (#: shell, Dockerfile, YAML, TOML, Makefile, Python;
+// //: JavaScript, TypeScript, C#, Go, Java, Kotlin, Bicep, Terraform).
+func commentLine(l string) bool {
+	t := strings.TrimLeft(l, " \t")
+	return strings.HasPrefix(t, "#") || strings.HasPrefix(t, "//")
+}
+
+// versionVar judges a version variable set from another variable: by the
+// value that variable was last set to above it in the file, edited there;
+// else by a ${X:-default}'s default; else it is listed as not checked (a
+// build argument or environment value from outside the file).
+func (s *scanner) versionVar(rel string, lines []string, i int, m []int, assigned map[string][][3]int) {
+	l := lines[i]
+	vv := versionVars[l[m[2]:m[3]]]
+	desc := fmt.Sprintf("%s (%s)", l[m[2]:m[3]], path.Base(rel))
+	name := ""
+	switch {
+	case m[6] >= 0:
+		name = l[m[6]:m[7]]
+	case m[12] >= 0:
+		name = l[m[12]:m[13]]
+	}
+	if at := assigned[name]; len(at) > 0 {
+		var last [3]int // line, start and end of the value
+		for _, a := range at {
+			if a[0] < i {
+				last = a
+			}
+		}
+		if last[2] > 0 {
+			v := lines[last[0]][last[1]:last[2]]
+			j := judgeValue(vv.prod, v, false)
+			if j.vd == notJudged {
+				s.unresolved(rel, i+1, vv.prod.rule())
+				return
+			}
+			p := pin{prod: vv.prod, source: vv.source, desc: desc, file: rel, line: i + 1, editFile: rel, editLine: last[0] + 1, col: -1, j: j, via: true}
+			if k := strings.Index(v, j.current); j.current != "" && k >= 0 {
+				p.col = last[1] + k
+			}
+			s.add(p)
+			return
+		}
+	}
+	if m[8] >= 0 && m[10] >= 0 && m[11] > m[10] {
+		v := l[m[10]:m[11]]
+		j := judgeValue(vv.prod, v, false)
+		if j.vd == notJudged {
+			s.unresolved(rel, i+1, vv.prod.rule())
+			return
+		}
+		p := pin{prod: vv.prod, source: vv.source, desc: desc, file: rel, line: i + 1, editFile: rel, editLine: i + 1, col: -1, j: j}
+		if k := strings.Index(v, j.current); j.current != "" && k >= 0 {
+			p.col = m[10] + k
+		}
+		s.add(p)
+		return
+	}
+	s.expression(rel, i+1, desc, l[m[4]:m[5]])
+	s.unresolved(rel, i+1, vv.prod.rule())
+}
 
 // sha256Re finds a pinned checksum, which a download's version change would
 // also need.
@@ -521,19 +621,38 @@ func (s *scanner) textPatterns(rel string, b []byte) {
 	src := isProgramSource(rel)
 	lines := splitLines(b)
 	spans := logicalSpans(lines)
-	// Variables the file sets to a release: a version variable that reads
-	// one is judged where it is set.
-	set := map[string]bool{}
-	for _, m := range setVarRe.FindAllSubmatch(b, -1) {
-		set[string(m[1])] = true
+	// Variables the file sets to a release, by line: a version variable
+	// that reads one is judged by it.
+	var assigned map[string][][3]int
+	if !src {
+		for i, l := range lines {
+			if commentLine(l) {
+				continue
+			}
+			for _, m := range assignRe.FindAllStringSubmatchIndex(l, -1) {
+				if assigned == nil {
+					assigned = map[string][][3]int{}
+				}
+				n := l[m[2]:m[3]]
+				assigned[n] = append(assigned[n], [3]int{i, m[4], m[5]})
+			}
+		}
 	}
 	for i, l := range lines {
 		if i%4096 == 0 && s.ctx != nil && s.ctx.Err() != nil {
 			return
 		}
+		if commentLine(l) {
+			continue
+		}
 		if !src {
-			if m := versionVarExprRe.FindStringSubmatch(l); m != nil && !set[m[3]] {
-				s.expression(rel, i+1, m[1], m[2])
+			if m := versionVarExprRe.FindStringSubmatchIndex(l); m != nil {
+				s.versionVar(rel, lines, i, m, assigned)
+			}
+			for _, ep := range exprPatterns {
+				if ep.re.MatchString(l) {
+					s.unresolved(rel, i+1, ep.prod.rule())
+				}
 			}
 		}
 		for _, tp := range textPatterns {
