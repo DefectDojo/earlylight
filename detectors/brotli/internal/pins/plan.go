@@ -2,8 +2,15 @@ package pins
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
 	"strings"
+
+	"github.com/DefectDojo/earlylight/internal/refs"
 )
 
 // VerifyImage proves an image change before it is planned: target must hold
@@ -16,13 +23,61 @@ func declined(format string, args ...any) error {
 	return &Declined{Reason: clean(fmt.Sprintf(format, args...), 1500)}
 }
 
+// notChecked declines a finding the plan could not check again: it is not
+// known to be fixed, so it must not read as "already fixed".
+func notChecked(format string, args ...any) error {
+	return declined(format+"; rescan to confirm", args...)
+}
+
+// planRules are the rules Plan checks again. A not-checked finding (a skip)
+// and the image check's rules name nothing this package can look up, so
+// they are never "already fixed" here.
+var planRules = map[string]bool{RuleNode: true, RuleDotnet: true, RuleBun: true, RuleDependency: true}
+
 // Plan re-scans file, finds the pin the finding at line names (narrowed by
 // props source and current when given), and plans the one-line edit to the
 // fixed release. The edit is verified by scanning the edited file again in
 // memory: the pin must be fixed and nothing else may change. An image tag is
 // changed only to a tag the registry shows is published for every platform
 // the current one has, on the same base OS. It writes nothing.
+//
+// already is true only when the rescan read the file in full and the pin is
+// gone from it, or the file (or its directory) was deleted. A finding that
+// was not checked, or cannot be checked again now, declines with "rescan to
+// confirm": the file is unreadable, too large or does not parse; its line
+// was not checked (a skip on that line); its line pins another release
+// without the fix; it has no line any more (line 0, or past the end of the
+// file) and the file still pins a release of that rule without the fix or
+// has a skip on any line; or it is an image pin (or a finding without
+// props), no resolved image is left on its line, and the file has a skip
+// on another line, where the image may have moved.
 func Plan(ctx context.Context, root, file string, line int, rule string, props map[string]string) (*Change, bool, error) {
+	// The path as the scan writes it: ./Dockerfile and svc/../Dockerfile
+	// are Dockerfile, or the pins found in it would not match.
+	file = strings.TrimPrefix(path.Clean(filepath.ToSlash(file)), "./")
+	if !planRules[rule] {
+		return nil, false, notChecked("%s:%d was not checked for the %s fix (%s), and a plan does not check it", file, line, CVE, clean(rule, 60))
+	}
+	if fi, err := os.Stat(root); err != nil {
+		return nil, false, fmt.Errorf("the repository root cannot be read: %s", errText(err))
+	} else if !fi.IsDir() {
+		return nil, false, errors.New("the repository root is not a directory")
+	}
+	// The file as the scan reads it: what it cannot read says nothing about
+	// the pin.
+	probe := &scanner{ctx: ctx, root: root}
+	now, ok := probe.read(file)
+	if !ok {
+		if len(probe.skips) > 0 {
+			return nil, false, notChecked("%s was not read: %s", file, scrub(root, probe.skips[0].Reason))
+		}
+		if p, err := refs.SafePath(root, file); err == nil {
+			if _, err := os.Lstat(p); err == nil {
+				return nil, false, notChecked("%s is not a regular file, so it was not read", file)
+			}
+		}
+		return nil, true, nil // deleted: no pin is left in it
+	}
 	before, err := scanPins(ctx, root, []string{file}, Options{})
 	if err != nil {
 		return nil, false, err
@@ -32,12 +87,8 @@ func Plan(ctx context.Context, root, file string, line int, rule string, props m
 		return nil, false, err
 	}
 	if !found {
-		for _, sk := range before.skips {
-			if sk.File == file {
-				// Not read this time (too large, not parseable): nothing is
-				// known about the pin, so it is not "already fixed".
-				return nil, false, declined("%s was not read: %s", file, sk.Reason)
-			}
+		if err := unchecked(root, before, file, line, rule, props, now); err != nil {
+			return nil, false, err
 		}
 		return nil, true, nil
 	}
@@ -131,7 +182,132 @@ func scanPins(ctx context.Context, root string, files []string, opts Options) (*
 	if err := s.images(files); err != nil {
 		return nil, err
 	}
+	// A cancelled scan stops early: what it did not reach is not gone.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// unchecked explains why a pin the rescan did not find is still not known to
+// be gone, or returns nil when the rescan checked the place it was.
+//
+// Three cases cannot be told apart from a fix, and read as gone:
+//
+//   - a pin that moved to another line and changed to another release
+//     without the fix, in a file that did not get shorter: it looks like a
+//     second pin that was always there;
+//   - a path that never held the pin (a wrong path, a renamed file, a file
+//     no reader handles): it looks like a deleted file;
+//   - a pin that moved and became a value the scan cannot judge, while a
+//     judged value of the same rule and source lands on its old line (two
+//     node stages, services or jobs reordered with the pinned one now
+//     unresolved; a flow-style Kubernetes list rewrapped): the value on the
+//     line looks like the pin, fixed in place.
+func unchecked(root string, s *scanner, file string, line int, rule string, props map[string]string, content []byte) error {
+	n := strings.Count(string(content), "\n")
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		n++
+	}
+	// Without its line (line 0, or a line past the end of a file that got
+	// shorter) the finding may be anywhere in the file now.
+	lost := line == 0 || line > n
+	// A pin can move to another line and become a value the scan cannot
+	// judge (FROM node:${V} with no default for V, a digest only, a
+	// setup-node version from a matrix it cannot resolve). Unless the
+	// scan judged a value of the finding's rule on its own line, a skip
+	// elsewhere in the file may be it. The cost: a pin replaced by
+	// another line in a file with any skip asks for a rescan.
+	moved := !s.judged[judgedKey{file, line, rule, props["source"]}]
+	for _, sk := range s.skips {
+		switch {
+		case sk.Line == 0:
+			// Not read in full this time (too large, not parseable):
+			// nothing is known about the pin.
+			return notChecked("%s was not read: %s", sk.File, scrub(root, sk.Reason))
+		case sk.File == file && (lost || sk.Line == line):
+			// That line (an unresolved reference, an image pinned by
+			// digest only) was not checked. A skip on another line is
+			// about another pin, which is reported on its own.
+			return notChecked("line %d of %s was not checked: %s", sk.Line, sk.File, scrub(root, sk.Reason))
+		case sk.File == file && moved:
+			return notChecked("line %d of %s holds no value of this kind now, and line %d was not checked (%s): the pin may have moved there", line, file, sk.Line, scrub(root, sk.Reason))
+		}
+	}
+	if moved && line >= 1 && line <= n && unresolvedRe.MatchString(splitLines(content)[line-1]) {
+		// No release of the rule is judged on the line, and the line now
+		// holds a value the scan does not resolve (nvm install $V, a URL
+		// with ${V}, $(cat .nvmrc), a template): the pin may be there,
+		// changed in place. Whatever the slot, it is not known to be fixed.
+		return notChecked("line %d of %s now holds a value the scan does not resolve (a variable, a command or a template)", line, file)
+	}
+	for _, q := range s.pins {
+		if q.file != file || q.prod.rule() != rule {
+			continue
+		}
+		what := q.prod.name()
+		if q.dep != nil {
+			what = q.dep.name
+		}
+		switch {
+		case q.line == line:
+			return notChecked("line %d of %s still pins %s %s, without the fix", line, file, what, q.j.current)
+		case line == 0:
+			return notChecked("%s still pins %s %s on line %d, without the fix, and the finding names no line", file, what, q.j.current, q.line)
+		case line > n:
+			return notChecked("line %d is past the end of %s, which still pins %s %s on line %d, without the fix", line, file, what, q.j.current, q.line)
+		}
+	}
+	return nil
+}
+
+// errText is err without the absolute path a file system error carries.
+func errText(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
+}
+
+// scrub removes the checkout's absolute path from a reason where it is a
+// whole path: root/x becomes x and root alone becomes ".". File system
+// errors name joined, so cleaned, paths. A relative root (repo, .) is left
+// alone: its name is also a word, and it says nothing about the machine.
+func scrub(root, s string) string {
+	r := filepath.Clean(root)
+	if !filepath.IsAbs(r) || r == string(filepath.Separator) {
+		return s
+	}
+	sep := string(filepath.Separator)
+	var b strings.Builder
+	for {
+		i := strings.Index(s, r)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		j := i + len(r)
+		switch {
+		case i > 0 && pathByte(s[i-1]):
+			// Inside another path or word (gcr.io/app/web): kept.
+			b.WriteString(s[:j])
+		case strings.HasPrefix(s[j:], sep):
+			b.WriteString(s[:i])
+			j += len(sep)
+		case j < len(s) && pathByte(s[j]):
+			b.WriteString(s[:j]) // a longer name (/application)
+		default:
+			b.WriteString(s[:i] + ".")
+		}
+		s = s[j:]
+	}
+}
+
+// pathByte reports a byte that continues a path or a name.
+func pathByte(c byte) bool {
+	return c == '/' || c == '\\' || c == '.' || c == '_' || c == '-' || c == '~' || c == '+' || c == '@' ||
+		'0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // choose finds the pin a finding names. found is false when the file no
