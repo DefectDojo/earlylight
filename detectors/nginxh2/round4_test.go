@@ -37,3 +37,31 @@ func TestW1RelativeEntrypoint(t *testing.T) {
 		}
 	}
 }
+
+// W2: a symbolic link to a directory inside /docker-entrypoint.d is
+// descended into, as find -follow does: what it holds is run.
+func TestW2LinkedDirectory(t *testing.T) {
+	ep := official(t, "docker-entrypoint.sh")
+	for _, c := range []struct {
+		name    string
+		scripts map[string][]byte
+		unread  map[string]string
+		trust   bool
+	}{
+		{"a script in the linked directory", map[string][]byte{"/opt/scripts/40-h2.sh": []byte("#!/bin/sh\nsed -i x\n")}, nil, false},
+		{"an envsh in it", map[string][]byte{"/opt/scripts/sub/a.envsh": []byte("#!/bin/sh\nexport X=1\n")}, nil, false},
+		{"an official script in it", map[string][]byte{"/opt/scripts/30-tune-worker-processes.sh": official(t, "30-tune-worker-processes.sh")}, nil, true},
+		{"something there not read", nil, map[string]string{"/opt/scripts/50.sh": "permission denied"}, false},
+		{"a link to nothing read", nil, nil, false},
+	} {
+		s := &scan{kind: engine.Image, db: map[string][]byte{}, scripts: map[string][]byte{"/docker-entrypoint.sh": ep}, unread: c.unread}
+		for p, b := range c.scripts {
+			s.scripts[p] = b
+		}
+		links := map[string]string{"/docker-entrypoint.d/extra": "/opt/scripts"}
+		ok, why := s.launcher(links, nil, "/", nil, nil)("/docker-entrypoint.sh")
+		if ok != c.trust {
+			t.Errorf("%s: trusted %v (%s), want %v", c.name, ok, why, c.trust)
+		}
+	}
+}

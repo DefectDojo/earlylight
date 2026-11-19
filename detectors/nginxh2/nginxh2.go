@@ -417,43 +417,76 @@ func (s *scan) launcher(links, hardlinks map[string]string, workdir string, env 
 		if !officialScripts["docker-entrypoint.sh"][sha(b)] {
 			return false, fmt.Sprintf("nginx is started through %s, which is not the official nginx image's entrypoint and can change the configuration", word)
 		}
-		if _, linked := links["/docker-entrypoint.d"]; linked {
-			return false, "/docker-entrypoint.d is a symbolic link, so the scripts the entrypoint runs are not known"
-		}
-		entries := map[string]bool{}
-		for _, m := range []map[string][]byte{s.scripts, s.db} {
-			for q := range m {
-				if strings.HasPrefix(q, "/docker-entrypoint.d/") {
-					entries[q] = true
-				}
-			}
-		}
-		for _, m := range []map[string]string{links, hardlinks} {
-			for q := range m {
-				if strings.HasPrefix(q, "/docker-entrypoint.d/") {
-					entries[q] = true
-				}
-			}
-		}
-		for q, why := range s.unread {
-			if q == "/docker-entrypoint.d" || strings.HasPrefix(q, "/docker-entrypoint.d/") {
-				return false, fmt.Sprintf("the entrypoint runs the scripts in /docker-entrypoint.d, and %s was not read (%s)", q, why)
-			}
-		}
 		if s.unreadAll {
 			return false, "more files were not scanned than the detector keeps a record of, so the entrypoint's scripts are not known"
 		}
-		for q := range entries {
-			name := path.Base(q)
-			if !strings.HasSuffix(name, ".sh") && !strings.HasSuffix(name, ".envsh") {
-				continue // the entrypoint ignores other files
+		// Walk /docker-entrypoint.d as find -follow does: links to
+		// directories are descended into, and every .sh and .envsh file
+		// reached is run.
+		var known []string
+		for _, m := range []map[string][]byte{s.scripts, s.db} {
+			for q := range m {
+				known = append(known, q)
 			}
-			b, ok := content(q)
-			if !ok {
-				return false, fmt.Sprintf("the entrypoint runs %s, which was not read", q)
+		}
+		for _, m := range []map[string]string{links, hardlinks, s.unread} {
+			for q := range m {
+				known = append(known, q)
 			}
-			if !officialScripts[name][sha(b)] {
-				return false, fmt.Sprintf("the entrypoint runs %s, which is not one of the official image's scripts and can change the configuration", q)
+		}
+		under := func(dir string) []string {
+			var out []string
+			for _, q := range known {
+				if strings.HasPrefix(q, dir+"/") {
+					out = append(out, q)
+				}
+			}
+			return out
+		}
+		type place struct{ shown, real string }
+		start := src.resolve("/docker-entrypoint.d")
+		if start == "" {
+			return false, "/docker-entrypoint.d is a symbolic link loop"
+		}
+		if why, ok := s.unread[start]; ok {
+			return false, fmt.Sprintf("the entrypoint runs the scripts in /docker-entrypoint.d, which was not read (%s)", why)
+		}
+		queue := []place{{"/docker-entrypoint.d", start}}
+		visited := map[string]bool{start: true}
+		for len(queue) > 0 {
+			pl := queue[0]
+			queue = queue[1:]
+			for _, q := range under(pl.real) {
+				shown := pl.shown + strings.TrimPrefix(q, pl.real)
+				if why, ok := s.unread[q]; ok {
+					return false, fmt.Sprintf("the entrypoint runs what is in /docker-entrypoint.d, and %s was not read (%s)", shown, why)
+				}
+				_, isLink := links[q]
+				name := path.Base(q)
+				b, read := content(q)
+				if isLink && !read {
+					t := src.resolve(q)
+					if t == "" || len(under(t)) == 0 {
+						return false, fmt.Sprintf("the entrypoint follows %s, which leads to nothing the scan read", shown)
+					}
+					if !visited[t] {
+						if len(visited) > 64 {
+							return false, "/docker-entrypoint.d leads to more directories than the detector follows"
+						}
+						visited[t] = true
+						queue = append(queue, place{shown, t})
+					}
+					continue
+				}
+				if !strings.HasSuffix(name, ".sh") && !strings.HasSuffix(name, ".envsh") {
+					continue // the entrypoint ignores other files
+				}
+				if !read {
+					return false, fmt.Sprintf("the entrypoint runs %s, which was not read", shown)
+				}
+				if !officialScripts[name][sha(b)] {
+					return false, fmt.Sprintf("the entrypoint runs %s, which is not one of the official image's scripts and can change the configuration", shown)
+				}
 			}
 		}
 		return true, ""
