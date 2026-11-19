@@ -22,10 +22,7 @@ func fixAll(t *testing.T, root string) []Finding {
 			if !f.Fixable {
 				continue
 			}
-			ch, already, err := Plan(ctx, root, f, Options{})
-			if already {
-				continue
-			}
+			ch, err := Plan(ctx, root, f, Options{})
 			if err != nil {
 				t.Fatalf("%s:%d %s: %v", f.File, f.Line, f.Rule, err)
 			}
@@ -212,7 +209,7 @@ func TestYoctoPatchFix(t *testing.T) {
 	if acme == nil || !acme.Fixable || two == nil || two.Fixable || !strings.Contains(two.Fix, "different openssh versions") {
 		t.Fatalf("%+v\n%+v", acme, two)
 	}
-	ch, _, err := Plan(context.Background(), root, *acme, Options{})
+	ch, err := Plan(context.Background(), root, *acme, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +271,7 @@ func TestAlpineRetag(t *testing.T) {
 	if len(fs) != 1 || !fs[0].Fixable || fs[0].Props["upgrade"] != "python:3.9-alpine3.16" {
 		t.Fatalf("%+v", fs)
 	}
-	ch, _, err := Plan(context.Background(), root, fs[0], opts)
+	ch, err := Plan(context.Background(), root, fs[0], opts)
 	if err != nil || ch.Edits[0].New != "FROM python:3.9-alpine3.16" {
 		t.Fatalf("%v %+v", err, ch)
 	}
@@ -353,7 +350,7 @@ func TestBuildrootGitPatchDir(t *testing.T) {
 	if len(fs) != 1 {
 		t.Fatalf("%+v", fs)
 	}
-	if _, _, err := Plan(context.Background(), root, fs[0], Options{}); err == nil || !strings.Contains(err.Error(), ".git") {
+	if _, err := Plan(context.Background(), root, fs[0], Options{}); err == nil || !strings.Contains(err.Error(), ".git") {
 		t.Fatalf("%v", err)
 	}
 }

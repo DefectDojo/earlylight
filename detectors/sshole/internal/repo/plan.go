@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -41,14 +42,15 @@ func IsDeclined(err error) (*Declined, bool) {
 // Plan builds the edit for a finding the scan reported at file:line with
 // rule and, for apk findings, props["package"]. It rescans the edited file
 // in memory and accepts the edit only when that finding is gone and nothing
-// new appeared. already is true when the finding is no longer there.
-func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, bool, error) {
+// new appeared. A line that is no longer there declines: the file changed
+// since the scan, and the finding is not checked again here.
+func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, error) {
 	if !f.Fixable || f.edit == nil && len(f.newFiles) == 0 {
-		return nil, false, &Declined{Reason: f.Fix}
+		return nil, &Declined{Reason: f.Fix}
 	}
 	for p, data := range f.newFiles {
 		if err := checkNewPath(root, p, data); err != nil {
-			return nil, false, &Declined{Reason: err.Error() + "; add the fix by hand"}
+			return nil, &Declined{Reason: err.Error() + "; add the fix by hand"}
 		}
 	}
 	if f.edit == nil {
@@ -56,12 +58,12 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 	}
 	b, err := readFile(root, f.File)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	lines := strings.Split(string(b), "\n")
 	e := *f.edit
 	if e.Line < 1 || e.Line > len(lines) {
-		return nil, true, nil
+		return nil, notChecked("line %d is past the end of %s, which changed since the scan", e.Line, f.File)
 	}
 	line := strings.TrimSuffix(lines[e.Line-1], "\r")
 	if e.Col < 0 || e.Col+len(e.Old) > len(line) || line[e.Col:e.Col+len(e.Old)] != e.Old {
@@ -69,7 +71,7 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 		// the one finding that is still the same word, or decline.
 		now, err := scanOne(ctx, root, f.File, opts, b)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		var match *Edit
 		n := 0
@@ -80,7 +82,7 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 			}
 		}
 		if n != 1 {
-			return nil, false, &Declined{Reason: fmt.Sprintf("%s:%d no longer reads as scanned", f.File, e.Line)}
+			return nil, &Declined{Reason: fmt.Sprintf("%s:%d no longer reads as scanned", f.File, e.Line)}
 		}
 		e = *match
 	}
@@ -101,24 +103,24 @@ func Plan(ctx context.Context, root string, f Finding, opts Options) (*Change, b
 	}
 	before, err := scanOne(ctx, root, f.File, opts, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	after, err := scanOne(ctx, root, f.File, o, o.Overlay[f.File])
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if count(after, f.Rule, f.Line) >= count(before, f.Rule, f.Line) {
-		return nil, false, &Declined{Reason: "the edit did not clear the finding; change it by hand"}
+		return nil, &Declined{Reason: "the edit did not clear the finding; change it by hand"}
 	}
 	if len(after) > len(before) {
-		return nil, false, &Declined{Reason: "the edit raised a new finding; change it by hand"}
+		return nil, &Declined{Reason: "the edit raised a new finding; change it by hand"}
 	}
-	return ch, false, nil
+	return ch, nil
 }
 
 // planNewFiles plans a fix that only adds files, checked by rescanning the
 // finding's file with the files in place.
-func planNewFiles(ctx context.Context, root string, f Finding, opts Options) (*Change, bool, error) {
+func planNewFiles(ctx context.Context, root string, f Finding, opts Options) (*Change, error) {
 	o := opts
 	o.Overlay = map[string][]byte{}
 	for p, data := range f.newFiles {
@@ -126,42 +128,50 @@ func planNewFiles(ctx context.Context, root string, f Finding, opts Options) (*C
 	}
 	before, err := scanOne(ctx, root, f.File, opts, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	after, err := scanOne(ctx, root, f.File, o, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if count(after, f.Rule, f.Line) >= count(before, f.Rule, f.Line) {
-		return nil, false, &Declined{Reason: "the added files did not clear the finding; add the fix by hand"}
+		return nil, &Declined{Reason: "the added files did not clear the finding; add the fix by hand"}
 	}
-	return &Change{File: f.File, Summary: summary(f), NewFiles: f.newFiles}, false, nil
+	return &Change{File: f.File, Summary: summary(f), NewFiles: f.newFiles}, nil
 }
 
 func scanOne(ctx context.Context, root, file string, opts Options, data []byte) ([]Finding, error) {
+	fs, _, err := scanFile(ctx, root, file, opts, data)
+	return fs, err
+}
+
+// scanFile is scanOne that also returns what the rescan could not read
+// when it walked the tree: a Yocto finding joins files across it. A Skip
+// with no file is the walk's limit.
+func scanFile(ctx context.Context, root, file string, opts Options, data []byte) ([]Finding, []Skip, error) {
 	s := &scanner{ctx: ctx, root: root, opts: opts, bases: map[string]baseInfo{}}
 	if data == nil {
 		var err error
 		if data, err = readFile(root, file); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	switch kindOf(file) {
 	case "dockerfile":
-		return s.dockerfile(file, string(data)), nil
+		return s.dockerfile(file, string(data)), nil, nil
 	case "shell":
-		return s.script(file, string(data)), nil
+		return s.script(file, string(data)), nil, nil
 	case "yaml":
-		return s.yaml(file, string(data)), nil
+		return s.yaml(file, string(data)), nil, nil
 	case "sshd_config":
-		return s.sshdConfig(file, string(data)), nil
+		return s.sshdConfig(file, string(data)), nil, nil
 	case "build":
 		// A Yocto finding needs the whole tree (TCLIBC and bbappends live
 		// in other files): rescan it, keeping this file's findings.
 		if s.yoctoNeedsTree(file) {
 			res, err := Scan(ctx, root, opts)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			var out []Finding
 			for _, f := range res.Findings {
@@ -169,12 +179,16 @@ func scanOne(ctx context.Context, root, file string, opts Options, data []byte) 
 					out = append(out, f)
 				}
 			}
-			return out, nil
+			skips := res.Skips
+			if res.Truncated {
+				skips = append(skips, Skip{Reason: "the source tree has too many files to walk"})
+			}
+			return out, skips, nil
 		}
 		s.build(file, string(data))
-		return s.finishBuild(), nil
+		return s.finishBuild(), nil, nil
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 func count(fs []Finding, rule string, line int) int {
@@ -281,27 +295,54 @@ func Printable(s string) string {
 }
 
 // Find rescans one file and returns the finding with this rule at this
-// line. spec, when not empty, picks between several on the line: the apk
-// spec or the text the finding's message quotes. gone is true when the file
-// has no such finding any more.
+// line. message, when not empty, picks between several on the line: the apk
+// spec or the text the finding's message quotes. gone is true only when
+// this rescan checked what the scan reported and the finding is not there.
+// Otherwise it declines with "rescan to confirm": a not-checked finding; a
+// rule or file this package does not rescan; a file, TCLIBC setting or base
+// image that cannot be read this time; another finding for the same package
+// on the line; and a line past the end of a file that still has findings
+// like it.
+//
+// Callers (Sensei's /fix) must pass the finding's message. Only with it does
+// Find follow a finding that moved to another line, for every rule. With
+// none, only the exact line is looked at and a line with several findings
+// of the rule returns the first; one not on its line declines for the apk
+// rules (apk-pin, apk-unpinned, eol-base) and build-config, whose key is
+// then unknown, while star-account, password-config and ansible-apk read
+// as gone.
 func Find(ctx context.Context, root, file string, line int, rule, message string, opts Options) (f *Finding, gone bool, err error) {
-	fs, err := scanOne(ctx, root, file, opts, nil)
+	if !findRules[rule] || kindOf(file) == "" {
+		return nil, false, notChecked("%s findings in %s are not rescanned here, so it is not checked", rule, file)
+	}
+	data, err := readFile(root, file)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, true, nil
+		if errors.Is(err, os.ErrNotExist) && rule != RuleNotChecked {
+			return nil, true, nil // the file is deleted, and its findings with it
 		}
+		return nil, false, notChecked("%s could not be read (%v), so it is not checked", file, err)
+	}
+	fs, skips, err := scanFile(ctx, root, file, opts, data)
+	if err != nil {
 		return nil, false, err
 	}
+	msg := lineRefRE.ReplaceAllString(message, ")") // stored before messages lost their line numbers
+	k := keyOf(msg)
+	apkRule := rule == RulePin || rule == RuleUnpinned || rule == RuleEOL
+	// A key the message should give and does not (empty, reworded): any
+	// package or system holds the finding back, so it never reads as gone
+	// only because the message did not parse.
+	k.any = apkRule && k.pkg == "" || rule == RuleBuild && k.system == ""
 	var at []Finding
 	for _, g := range fs {
-		if g.Rule == rule && g.Line == line {
+		if g.Rule == rule && g.Line == line && (k.pkg == "" || g.Props["package"] == k.pkg) {
 			at = append(at, g)
 		}
 	}
-	if len(at) > 1 && message != "" {
+	if len(at) > 1 && msg != "" {
 		var picked []Finding
 		for _, g := range at {
-			if strings.Contains(message, g.Message) || g.Props["spec"] != "" && strings.Contains(message, g.Props["spec"]) {
+			if strings.Contains(msg, g.Message) || g.Props["spec"] != "" && strings.Contains(msg, g.Props["spec"]) {
 				picked = append(picked, g)
 			}
 		}
@@ -309,12 +350,12 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 			at = picked
 		}
 	}
-	if len(at) == 0 && message != "" {
+	if len(at) == 0 && msg != "" {
 		// The line moved (an edit above it): the same finding elsewhere in
 		// the file, when there is exactly one, is still this finding.
 		var moved []Finding
 		for _, g := range fs {
-			if g.Rule == rule && strings.Contains(message, g.Message) {
+			if g.Rule == rule && strings.Contains(msg, g.Message) {
 				moved = append(moved, g)
 			}
 		}
@@ -325,15 +366,143 @@ func Find(ctx context.Context, root, file string, line int, rule, message string
 			return nil, false, &Declined{Reason: fmt.Sprintf("line %d of %s no longer has this finding and the file has %d like it; rescan and fix the new findings", line, file, len(moved))}
 		}
 	}
-	switch len(at) {
-	case 0:
-		return nil, true, nil
-	case 1:
+	if len(at) > 0 {
+		// Several identical findings on one line: the first; the rest
+		// come back on the next scan.
 		return &at[0], false, nil
 	}
-	// Several identical findings on one line: the first; the rest come
-	// back on the next scan.
-	return &at[0], false, nil
+	// Not there. That is "gone" only when the scan checked it and this
+	// rescan checked the same again.
+	if rule == RuleNotChecked {
+		now := ""
+		for _, g := range fs {
+			if g.Line == line && g.Level != "note" {
+				now = fmt.Sprintf(", and line %d now has %s (%s)", line, g.Rule, g.Message)
+				break
+			}
+		}
+		return nil, false, notChecked("%s:%d was not checked when it was scanned%s", file, line, now)
+	}
+	for _, sk := range skips {
+		if blocksYocto(sk, msg) {
+			what := sk.Reason
+			if sk.File != "" {
+				what = fmt.Sprintf("%s could not be read this time (%s)", sk.File, sk.Reason)
+			}
+			return nil, false, notChecked("%s, so %s is not checked", what, file)
+		}
+	}
+	for _, g := range fs {
+		apk := g.Rule == RulePin || g.Rule == RuleUnpinned || g.Rule == RuleEOL
+		switch {
+		case g.Rule == RuleNotChecked && k.holds(g):
+			// The same package, variable or build system, anywhere in
+			// the file: this rescan could not judge it.
+			return nil, false, notChecked("%s:%d is not checked this time (%s)", file, g.Line, g.Message)
+		case apk && (k.pkg != "" && g.Props["package"] == k.pkg && (g.Line == line || k.sameSpec(g.Props["spec"])) || k.any && apkRule):
+			// The same package under another rule (a pin loosened, an
+			// end-of-life base no longer known as one), on the line or
+			// with the same spec elsewhere (the line moved). With no key,
+			// any apk finding in the file: it may be this one, moved.
+			return nil, false, notChecked("%s:%d now has %s (%s)", file, g.Line, g.Rule, g.Message)
+		case rule == RuleBuild && g.Rule == RuleBuild && (k.any || k.system != "" && g.Props["system"] == k.system && g.Props["package"] == k.pkg):
+			// One build finding per file and system: moved and reworded.
+			return nil, false, notChecked("%s:%d still has %s (%s)", file, g.Line, g.Rule, g.Message)
+		}
+	}
+	if line > len(strings.Split(string(data), "\n")) {
+		for _, g := range fs {
+			if g.Rule == rule {
+				return nil, false, notChecked("line %d is past the end of %s, which changed since the scan and still has %s findings", line, file, rule)
+			}
+		}
+	}
+	return nil, true, nil
+}
+
+// findRules are the rules a rescan of one file produces.
+var findRules = map[string]bool{RulePin: true, RuleUnpinned: true, RuleEOL: true, RuleStar: true, RulePassword: true,
+	RuleNotChecked: true, RuleAnsible: true, RuleBuild: true}
+
+var (
+	lineRefRE = regexp.MustCompile(`, set on line \d+\)`)
+	// The variable suffix ends the message, before only the prefix note
+	// (whose parts hold no spaces), so a spec cannot fake one.
+	viaRE    = regexp.MustCompile(`\(through \$([A-Za-z_][A-Za-z0-9_]*)\)(?: \(the image starts with \S+, which this file does not set; judged as \S+\))?$`)
+	tclibcRE = regexp.MustCompile(` and (\S+):\d+ sets TCLIBC`)
+)
+
+// findKey is what a finding's message names: the OpenSSH package and the
+// spec that installs it, the variable it came through, the build system.
+// any: the message should name one and does not, so anything matches.
+type findKey struct {
+	pkg, spec, via, system string
+	rest                   string // the message after its verb, which starts with the whole spec
+	any                    bool
+}
+
+func keyOf(msg string) findKey {
+	var k findKey
+	w := strings.Fields(msg)
+	if len(w) >= 2 && (w[0] == "installs" || w[0] == "pins") {
+		if m := specRE.FindStringSubmatch(strings.Trim(w[1], `'"`)); m != nil && sshPackages[m[1]] {
+			k.pkg, k.spec = m[1], m[0]
+			k.rest = strings.TrimSpace(strings.TrimPrefix(msg, w[0]))
+		}
+	}
+	// A stored message may end in a full stop or a newline.
+	if m := viaRE.FindStringSubmatch(strings.TrimRight(msg, ". \t\r\n")); m != nil {
+		k.via = m[1]
+	}
+	switch {
+	case strings.HasPrefix(msg, "Buildroot "):
+		k.system = "buildroot"
+	case strings.HasPrefix(msg, "Yocto "):
+		k.system = "yocto"
+	case strings.HasPrefix(msg, "OpenWrt configuration builds ") && len(w) >= 4:
+		k.system, k.pkg = "openwrt", w[3]
+	}
+	return k
+}
+
+// sameSpec reports whether spec is the one the message quotes; one with
+// a space is cut short in k.spec.
+func (k findKey) sameSpec(spec string) bool {
+	return spec != "" && (spec == k.spec || strings.HasPrefix(k.rest, spec+" "))
+}
+
+// holds reports whether a not-checked finding is about what k names.
+func (k findKey) holds(g Finding) bool {
+	if k.any {
+		return g.Props["package"] != "" || g.Props["system"] != "" || varRE.MatchString(g.Props["spec"])
+	}
+	if k.pkg != "" && g.Props["package"] == k.pkg || k.system != "" && g.Props["system"] == k.system {
+		return true
+	}
+	if k.via == "" {
+		return false
+	}
+	m := varRE.FindStringSubmatch(g.Props["spec"])
+	return m != nil && (m[1] == k.via || m[3] == k.via)
+}
+
+// blocksYocto reports whether a file the Yocto rescan could not read may
+// hide the finding: the TCLIBC setting its message names, or a directory
+// holding it. Without that reference, any build file or directory.
+func blocksYocto(sk Skip, msg string) bool {
+	if sk.File == "" {
+		return true // the tree past the walk's limit
+	}
+	if m := tclibcRE.FindStringSubmatch(msg); m != nil {
+		return sk.File == m[1] || strings.HasPrefix(m[1], sk.File+"/")
+	}
+	k := kindOf(sk.File)
+	return k == "build" || k == ""
+}
+
+// notChecked declines a finding Find cannot confirm as gone.
+func notChecked(format string, args ...any) error {
+	return &Declined{Reason: fmt.Sprintf(format, args...) + "; rescan to confirm"}
 }
 
 // WriteNewFiles writes files a change adds, refusing symbolic links on
