@@ -75,10 +75,17 @@ type Finding struct {
 	AtStart []string `json:"at_start,omitempty"`
 	// Missing lists the conditions that do not hold today.
 	Missing []string `json:"missing,omitempty"`
+	// Unread lists what was not read and kept the verdict from being
+	// decided (an include, a start script).
+	Unread []string `json:"unread,omitempty"`
 }
 
 // Input is a target's evidence.
 type Input struct {
+	// NotRead reports whether a file may be in the target but was not read
+	// (over a size limit, unreadable, in a directory not listed): its
+	// absence is not a fact to state.
+	NotRead  func(p string) bool
 	Binaries []*Binary
 	Owners   map[string]Package // apk database: file -> package
 	Files    Files
@@ -204,12 +211,62 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 		return f, true
 	}
 
+	scripts := in.Startup.startScripts(in.Resolve)
+	cands, conflict := pickInvocation(invocations(in.Startup, scripts), u)
+	if !conflict {
+		var inv invocation
+		if len(cands) == 1 {
+			inv = cands[0]
+		}
+		return assessStart(in, main, f, why, scripts, inv, len(cands) == 1)
+	}
+	// The start scripts start sshd in more than one way, and which one runs
+	// is not known: judge each, and sshd_config alone, and keep the worst.
+	// A server is cleared only when every way it can start clears it.
+	var worst Finding
+	var where []string
+	have := false
+	for _, c := range append(cands, invocation{}) {
+		if c.where != "" {
+			where = append(where, c.where)
+		}
+		r, ok := assessStart(in, main, f, why, scripts, c, c.binary != "")
+		if ok && (!have || rank(r) > rank(worst)) {
+			worst, have = r, true
+		}
+	}
+	if have {
+		worst.Reason += fmt.Sprintf("; sshd is started in more than one way (%s), and this is the worst of them", strings.Join(where, ", "))
+	}
+	return worst, have
+}
+
+// rank orders verdicts from the least to the most to act on.
+func rank(f Finding) int {
+	switch f.Status {
+	case Vulnerable:
+		switch f.Severity {
+		case "critical":
+			return 6
+		case "high":
+			return 5
+		}
+		return 4
+	case Undecided:
+		return 3
+	case Inactive:
+		return 2
+	}
+	return 1
+}
+
+// assessStart judges an unfixed server on musl as one invocation starts it
+// (invoked), or as sshd_config alone sets it.
+func assessStart(in Input, main *Binary, f Finding, why string, scripts []script, inv invocation, invoked bool) (Finding, bool) {
 	cfgPath := main.Config
 	if cfgPath == "" {
 		cfgPath = "/etc/ssh/sshd_config"
 	}
-	scripts := in.Startup.startScripts(in.Resolve)
-	inv, invoked := pickInvocation(invocations(in.Startup, scripts), u)
 	if invoked && inv.config != "" {
 		cfgPath = inv.config
 	}
@@ -235,6 +292,16 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 		return f, true
 	}
 	f.UsePAM = strings.ToLower(cfg.Global("usepam", "no"))
+	unread := append(append([]string(nil), cfg.Unread...), in.Startup.unreadStart(in.Resolve, scripts)...)
+	if f.PAM && f.UsePAM == "yes" && len(unread) > 0 {
+		// A part of the configuration, or a start script, that was not
+		// read can turn PAM off: never clear on what was not read.
+		f.Status = Undecided
+		f.Unread = unread
+		f.Reason = fmt.Sprintf("this build uses PAM and UsePAM is yes in what was read, but %s was not read and can set UsePAM no", strings.Join(unread, ", "))
+		f.Message = fmt.Sprintf("OpenSSH %s server on musl without the *sshole fix; whether PAM checks passwords is unknown", main.Release)
+		return f, true
+	}
 	if f.PAM && f.UsePAM == "yes" {
 		f.Status = Inactive
 		f.Reason = "this build uses PAM (UsePAM yes), and PAM checks passwords without crypt's failure result"
@@ -245,9 +312,16 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 	donor := PickSalt(in.Accounts)
 	f.Donor = &donor
 	var missing []string
-	if !in.Accounts.Read {
+	notRead := func(p string) bool { return in.NotRead != nil && in.NotRead(p) }
+	switch {
+	case !in.Accounts.Read && notRead("/etc/passwd"):
+		missing = append(missing, "/etc/passwd could not be read, so the accounts are unknown")
+	case !in.Accounts.Read:
 		missing = append(missing, "/etc/passwd is not in the target")
-	} else if donor.Fails == "none" {
+	case notRead("/etc/shadow"):
+		// Never a claim about hashes that were not read.
+		missing = append(missing, "/etc/shadow could not be read, so the accounts' password fields and hashes are unknown")
+	case donor.Fails == "none":
 		if donor.Account == "" {
 			missing = append(missing, "no account has a $-style password hash, so sshd falls back to the DES salt \"xx\", which never fails")
 		} else {
@@ -280,7 +354,7 @@ func assessUnit(in Input, u []*Binary) (Finding, bool) {
 	default:
 		f.Password = "maybe"
 	}
-	if in.Accounts.Read && stars == 0 {
+	if in.Accounts.Read && stars == 0 && !notRead("/etc/shadow") {
 		missing = append(missing, "no account has the password field \"*\"")
 	}
 	f.Missing = missing
@@ -338,11 +412,13 @@ func targetNames(ts []Target) string {
 	return strings.Join(n, ", ")
 }
 
-// pickInvocation finds the command line that starts this server: the
-// container command's when it runs sshd, else the startup scripts' when they
-// all agree. Command lines that disagree are not applied: options must not
-// lower a verdict on a guess.
-func pickInvocation(invs []invocation, u []*Binary) (invocation, bool) {
+// pickInvocation finds the command lines that start this server: the
+// container command's when it runs sshd, else the startup scripts' distinct
+// ones. More than one, or one in a script the command only passes as an
+// argument (true), means which runs is not known: each, and sshd_config
+// alone, is judged and the worst kept, so options never lower a verdict on
+// a guess.
+func pickInvocation(invs []invocation, u []*Binary) ([]invocation, bool) {
 	var mine []invocation
 	for _, inv := range invs {
 		for _, b := range u {
@@ -353,19 +429,30 @@ func pickInvocation(invs []invocation, u []*Binary) (invocation, bool) {
 		}
 	}
 	if len(mine) == 0 {
-		return invocation{}, false
+		return nil, false
 	}
 	for _, inv := range mine {
-		if inv.where == "the container command" {
-			return inv, true
+		// The command's own sshd line decides alone; an sh -c text the
+		// command passes as an argument is judged with the others.
+		if inv.where == "the container command" && !inv.arg {
+			return []invocation{inv}, false
 		}
 	}
-	for _, inv := range mine[1:] {
-		if inv.config != mine[0].config || !sameOpts(inv.opts, mine[0].opts) {
-			return invocation{}, false
+	var out []invocation
+	arg := false
+	for _, inv := range mine {
+		arg = arg || inv.arg
+		dup := false
+		for _, o := range out {
+			dup = dup || inv.config == o.config && sameOpts(inv.opts, o.opts)
+		}
+		if !dup {
+			out = append(out, inv)
 		}
 	}
-	return mine[0], true
+	// A command line in a script passed as an argument may not run: then
+	// sshd_config alone is judged too.
+	return out, len(out) > 1 || arg
 }
 
 func sameOpts(a, b []Directive) bool {

@@ -62,6 +62,8 @@ type dfInstr struct {
 	line int
 	full ptext // the whole instruction after joining continuations, trimmed
 	rest ptext // text after the instruction word and its whitespace
+	// heredocs are the bodies of the heredocs the instruction opens.
+	heredocs []string
 }
 
 type dockerfileParse struct {
@@ -198,6 +200,7 @@ func parseDockerfile(file string, b []byte) (*dockerfileParse, error) {
 			}
 			for _, doc := range docs {
 				terminated := false
+				var body strings.Builder
 				for i < len(lines) {
 					c := lines[i]
 					i++
@@ -209,7 +212,11 @@ func parseDockerfile(file string, b []byte) (*dockerfileParse, error) {
 						terminated = true
 						break
 					}
+					body.WriteString(cand)
+					body.WriteByte('\n')
 				}
+				last := &p.instrs[len(p.instrs)-1]
+				last.heredocs = append(last.heredocs, body.String())
 				if !terminated {
 					return nil, fmt.Errorf("line %d: unterminated heredoc %q", start, doc.name)
 				}
