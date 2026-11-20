@@ -1,15 +1,22 @@
 name: Release
 on:
   push:
-    tags: ['v*']
-permissions:
-  contents: write   # create the release
-  packages: write   # push the container image
-  id-token: write   # keyless signing
+    # Release tags only (v0.7.0). The major tags (v0, v1) move with each release
+    # and are never releases themselves, so pushing one must not start this.
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+permissions: {}
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the release and move the major tag
+      packages: write       # push the container image and its attestation
+      id-token: write       # keyless signing and the provenance attestations
+      attestations: write   # store the provenance attestations
     steps:
+      - name: Check the tag is a release version
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$GITHUB_REF_NAME is not a release tag like v0.7.0"; exit 1; }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -38,15 +45,13 @@ jobs:
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
       - name: Sign checksums
         run: cosign sign-blob --yes --bundle dist/checksums.txt.sigstore.json dist/checksums.txt
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
-      - name: Move the major tag the action is pinned to (v0, v1, ...)
-        run: |
-          major="${GITHUB_REF_NAME%%.*}"
-          git tag -f "$major" "$GITHUB_SHA"
-          git push -f origin "refs/tags/$major"
+      # One build provenance attestation covering every file the release attaches.
+      - name: Attest release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      # The image is pushed and attested before the release is published, so a
+      # failure here leaves no published release without its image.
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -54,13 +59,44 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+      # Pushed by digest only: no tag names the image until it is attested.
       - name: Build and push image
+        id: image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
           build-args: VERSION=${{ github.ref_name }}
-          tags: |
-            ghcr.io/defectdojo/earlylight:${{ github.ref_name }}
-            ghcr.io/defectdojo/earlylight:latest
+          outputs: type=image,name=ghcr.io/defectdojo/earlylight,push-by-digest=true,name-canonical=true,push=true
+      - name: Attest image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/defectdojo/earlylight
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          # A storage record needs artifact-metadata: write; this job does not ask for it.
+          create-storage-record: false
+      - name: Tag image
+        env:
+          IMAGE: ghcr.io/defectdojo/earlylight
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:$GITHUB_REF_NAME" --tag "$IMAGE:latest" "$IMAGE@$DIGEST"
+          # The tags must name the attested image itself, not a copy with a new digest.
+          for tag in "$GITHUB_REF_NAME" latest; do
+            got=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$IMAGE:$tag" | jq -r .digest)
+            [ "$got" = "$DIGEST" ] || { echo "::error::$IMAGE:$tag is $got, not the attested $DIGEST"; exit 1; }
+          done
+      # gh uploads the assets to a draft and publishes it once they are all there,
+      # which is what a repository with immutable releases requires.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+      # The major tag stays a plain tag with no release, so it can keep moving
+      # when releases are immutable.
+      - name: Move the major tag the action is pinned to (v0, v1, ...)
+        run: |
+          major="${GITHUB_REF_NAME%%.*}"
+          git tag -f "$major" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$major"

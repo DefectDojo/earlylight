@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install Early Light from a GitHub release, verifying the release checksum.
 #
-#   curl -fsSL https://raw.githubusercontent.com/DefectDojo/earlylight/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/DefectDojo/earlylight/<release tag>/install.sh | sh
 #
 # Environment:
 #   EARLYLIGHT_VERSION   release tag to install (default: the latest release)
