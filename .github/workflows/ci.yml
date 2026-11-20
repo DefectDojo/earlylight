@@ -69,6 +69,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # uses: ./ runs with no action ref, so the lookup for a SHA or major-tag pin
+      # is checked here against a fixed tag listing.
+      - name: action-release.sh finds the release for a pin
+        run: sh scripts/test-action-release.sh
       - id: el
         uses: ./
         with:
