@@ -111,7 +111,7 @@ jobs:
           fail-on: vulnerable   # vulnerable, unknown or never
 ```
 
-Pin the action to a release tag, as above, or to the commit SHA a release tag points to (`DefectDojo/earlylight@<sha> # v0.7.0`, for releases after v0.6.0); Dependabot and Renovate keep either up to date. Never pin it to a branch. `@v0` moves to each new v0 release.
+Pin the action to a release tag, as above, or to the commit SHA a release tag points to (`DefectDojo/earlylight@<sha> # v0.7.0`, for releases after v0.6.0); Dependabot and Renovate keep either up to date. Never pin it to a branch. `@v0` moves to each new v0 release. For a commit SHA or `@v0`, the action lists the repository's release tags to find the release; if it cannot, the step fails (set `version` to skip the lookup).
 
 The action installs the release it is pinned to (checksum-verified), writes SARIF to `earlylight.sarif` for DefectDojo or code scanning, and puts a findings table in the job summary. Outputs: `sarif`, `exit-code`.
 

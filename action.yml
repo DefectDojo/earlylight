@@ -52,14 +52,21 @@ runs:
         set -euo pipefail
         if [ -z "$EARLYLIGHT_VERSION" ] && [[ "$ACTION_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
           export EARLYLIGHT_VERSION="$ACTION_REF"
-        elif [ -z "$EARLYLIGHT_VERSION" ] && [ -n "$ACTION_REF" ]; then
+        elif [ -z "$EARLYLIGHT_VERSION" ] && [[ "$ACTION_REF" =~ ^(v[0-9]+|[0-9a-f]{40})$ ]]; then
           # Pinned to a major tag (v0) or a commit SHA: install the release at that commit.
-          EARLYLIGHT_VERSION=$(git ls-remote --tags https://github.com/DefectDojo/earlylight | sh "$GITHUB_ACTION_PATH/scripts/action-release.sh" "$ACTION_REF" || true)
+          # A pin that cannot be checked fails rather than running some other release.
+          if ! tags=$(git ls-remote --tags https://github.com/DefectDojo/earlylight); then
+            echo "::error::Could not list Early Light's release tags to find the release for action ref $ACTION_REF. Set the version input to skip the lookup."
+            exit 2
+          fi
+          EARLYLIGHT_VERSION=$(printf '%s\n' "$tags" | sh "$GITHUB_ACTION_PATH/scripts/action-release.sh" "$ACTION_REF")
           if [ -n "$EARLYLIGHT_VERSION" ]; then
             export EARLYLIGHT_VERSION
           else
-            echo "::warning::Could not match the Early Light action ref $ACTION_REF to a release; installing the latest release. Pin the action to a release tag or a release's commit SHA, or set version."
+            echo "::warning::No Early Light release is tagged at action ref $ACTION_REF; installing the latest release. Pin the action to a release tag or a release's commit SHA, or set version."
           fi
+        elif [ -z "$EARLYLIGHT_VERSION" ] && [ -n "$ACTION_REF" ]; then
+          echo "::warning::Early Light action ref $ACTION_REF is not a release; installing the latest release. Pin the action to a release tag or a release's commit SHA, or set version."
         fi
         if [ "$RUNNER_OS" = "Windows" ]; then
           echo "::error::The Early Light action runs on Linux and macOS runners." && exit 2
