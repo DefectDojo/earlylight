@@ -21,19 +21,36 @@ The detectors ported from standalone scanners also build as standalone binaries 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DefectDojo/earlylight/main/install.sh | sh
+v=v0.6.0   # a release from https://github.com/DefectDojo/earlylight/releases
+curl -fsSL "https://raw.githubusercontent.com/DefectDojo/earlylight/$v/install.sh" | EARLYLIGHT_VERSION=$v sh
 brew install defectdojo/tap/earlylight
-go install github.com/DefectDojo/earlylight/cmd/earlylight@latest
-go install github.com/DefectDojo/earlylight/cmd/emudhra-scan@latest     # just the eMudhra detector
-go install github.com/DefectDojo/earlylight/cmd/php2shell-scan@latest   # just the PHP2Shell detector
-docker run --rm ghcr.io/defectdojo/earlylight scan image python:3.13-slim
+go install github.com/DefectDojo/earlylight/cmd/earlylight@$v
+go install github.com/DefectDojo/earlylight/cmd/emudhra-scan@$v     # just the eMudhra detector
+go install github.com/DefectDojo/earlylight/cmd/php2shell-scan@$v   # just the PHP2Shell detector
+docker run --rm ghcr.io/defectdojo/earlylight:$v scan image python:3.13-slim
 ```
+
+Each command names a release tag rather than a branch: `main` changes with every merge, a release tag stays on the commit it was released from. Without `EARLYLIGHT_VERSION`, `install.sh` installs the latest release.
 
 `install.sh` checks each binary against the release's `checksums.txt`, and when `cosign` is installed it also verifies that file's Sigstore signature. Set `EARLYLIGHT_VERSION`, `EARLYLIGHT_BIN_DIR` or `EARLYLIGHT_BINARIES="earlylight php2shell-scan"` to change what it installs.
 
-The static binary is the main way to run Early Light: it scans the machine it runs on, works the same on Linux, macOS and Windows, and needs nothing else. The container image is for CI systems that run steps in containers and for Kubernetes jobs; to scan a host from it, mount the host read-only and use `--as-root`: `docker run --rm -v /:/host:ro ghcr.io/defectdojo/earlylight scan fs --as-root /host`.
+The static binary is the main way to run Early Light: it scans the machine it runs on, works the same on Linux, macOS and Windows, and needs nothing else. The container image is for CI systems that run steps in containers and for Kubernetes jobs; to scan a host from it, mount the host read-only and use `--as-root`: `docker run --rm -v /:/host:ro ghcr.io/defectdojo/earlylight:$v scan fs --as-root /host`.
 
 Release binaries for Linux, macOS and Windows are on the [releases page](https://github.com/DefectDojo/earlylight/releases), with `checksums.txt` signed by Sigstore (`cosign verify-blob --bundle checksums.txt.sigstore.json --certificate-identity-regexp 'https://github.com/DefectDojo/earlylight/' --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt`).
+
+### Verify a release
+
+Releases after v0.6.0 carry a build provenance attestation for every file attached to the release and for the container image. It records the repository, the workflow, the tag and the commit that built them. Check one with the [GitHub CLI](https://cli.github.com/), logged in with `gh auth login`:
+
+```bash
+v=v0.7.0   # any release after v0.6.0
+gh attestation verify "earlylight_${v}_linux_amd64" --repo DefectDojo/earlylight \
+  --signer-workflow DefectDojo/earlylight/.github/workflows/release.yml --source-ref "refs/tags/$v"
+gh attestation verify "oci://ghcr.io/defectdojo/earlylight:$v" --repo DefectDojo/earlylight \
+  --signer-workflow DefectDojo/earlylight/.github/workflows/release.yml --source-ref "refs/tags/$v"
+```
+
+`--repo` alone checks that a workflow in this repository built the file; `--signer-workflow` and `--source-ref` also require the release workflow and that tag. The attestations are listed on the repository's [attestations page](https://github.com/DefectDojo/earlylight/attestations).
 
 ## Use
 
@@ -75,14 +92,16 @@ jobs:
   earlylight:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DefectDojo/earlylight@v0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: DefectDojo/earlylight@v0.6.0
         with:
           mode: repo            # fs, image, repo or host
           target: .
           upload-sarif: true    # findings in GitHub code scanning
           fail-on: vulnerable   # vulnerable, unknown or never
 ```
+
+Pin the action to a release tag, as above, or to the commit SHA a release tag points to (`DefectDojo/earlylight@<sha> # v0.7.0`, for releases after v0.6.0); Dependabot and Renovate keep either up to date. Never pin it to a branch. `@v0` moves to each new v0 release.
 
 The action installs the release it is pinned to (checksum-verified), writes SARIF to `earlylight.sarif` for DefectDojo or code scanning, and puts a findings table in the job summary. Outputs: `sarif`, `exit-code`.
 
@@ -159,7 +178,7 @@ It only makes network connections when a scan needs them:
 
 | What | Connects to |
 | --- | --- |
-| Installing (`install.sh` and the GitHub Action) | GitHub, to download the release and its `checksums.txt`. When `cosign` is installed, it also fetches Sigstore's public trust root to check the signature |
+| Installing (`install.sh` and the GitHub Action) | GitHub, to download the release and its `checksums.txt`, and for an action pinned to `v0` or a commit SHA, to list the release tags. When `cosign` is installed, it also fetches Sigstore's public trust root to check the signature |
 | `scan image` | The registry that hosts the image you name |
 | `scan repo` and `fix` | The registries that host the images your source tree references (for `sshole`, the base images whose Alpine release a Dockerfile does not name). `--offline` turns this off, and `--public-registries-only` refuses private and internal addresses |
 | `scan host` | The hosts you name: a TLS handshake, and for `sshole` an SSH handshake that asks which login methods the server offers (as user `earlylight-probe`) and stops before sending any password. The server logs it as a connection that did not authenticate |
