@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("nginx version: nginx/ (\xd0nginX-plus-)\x00configure arguments:")

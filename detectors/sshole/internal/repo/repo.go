@@ -300,6 +300,7 @@ type baseInfo struct {
 	alpine, known bool
 	branch        string
 	why           string
+	via           string // an unset variable before the image name (a registry)
 }
 
 type scanner struct {
@@ -461,7 +462,7 @@ func (s *scanner) dockerfile(rel, text string) []Finding {
 				// ENV KEY value with spaces
 				k, v, _ := strings.Cut(strings.TrimSpace(in.args.text), " ")
 				v = strings.TrimSpace(v)
-				args[k] = v
+				args[k] = expandSet(v, args)
 				s.defineVar(k, v, in)
 				continue
 			}
@@ -469,21 +470,19 @@ func (s *scanner) dockerfile(rel, text string) []Finding {
 				k, v, ok := strings.Cut(a, "=")
 				if ok {
 					v = strings.Trim(v, `"'`)
-					args[k] = v
+					args[k] = expandSet(v, args)
 					s.defineVar(k, v, in)
-				} else if _, set := args[k]; !set && in.cmd == "ARG" {
-					args[k] = ""
 				}
 			}
 		case "FROM":
 			f := strings.Fields(in.args.text)
-			var img, as string
+			var img, as, via string
 			for i := 0; i < len(f); i++ {
 				if strings.HasPrefix(f[i], "--") {
 					continue
 				}
 				if img == "" {
-					img = expand(f[i], args)
+					img, via = expandImage(f[i], args)
 				} else if strings.EqualFold(f[i], "as") && i+1 < len(f) {
 					as = f[i+1]
 					break
@@ -493,6 +492,7 @@ func (s *scanner) dockerfile(rel, text string) []Finding {
 				cur = b
 			} else {
 				cur = s.base(img)
+				cur.via = via
 			}
 			curImage = img
 			s.from = fromInfo{image: img}
@@ -513,18 +513,102 @@ func (s *scanner) dockerfile(rel, text string) []Finding {
 
 var varRE = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
 
-func expand(s string, args map[string]string) string {
-	return varRE.ReplaceAllStringFunc(s, func(m string) string {
-		sm := varRE.FindStringSubmatch(m)
-		name := sm[1]
-		if name == "" {
-			name = sm[3]
+// expandImage expands the variables in a FROM image. One that is not set
+// and has no default leaves the image unknown, kept as written, except a
+// prefix before a complete image (a registry: via names it and the rest is
+// judged) and an optional suffix the image is complete without. An empty
+// value or default expands to empty.
+func expandImage(w string, args map[string]string) (img, via string) {
+	if !strings.Contains(w, "$") {
+		return w, ""
+	}
+	unset := false
+	loose := varRE.ReplaceAllStringFunc(w, func(m string) string {
+		v, ok := lookupVar(m, args)
+		unset = unset || !ok
+		return v
+	})
+	loose = strings.TrimLeft(loose, "/") // an empty registry before "/"
+	if !unset && validImage(loose) {
+		return loose, ""
+	}
+	if loc := varRE.FindStringIndex(w); loc != nil && loc[0] == 0 {
+		if _, ok := lookupVar(w[:loc[1]], args); !ok {
+			tail := w[loc[1]:]
+			trimmed := strings.TrimLeft(tail, "/")
+			if rest, restVia := expandImage(trimmed, args); validImage(rest) {
+				via = w[:loc[1]]
+				if restVia != "" {
+					via += tail[:len(tail)-len(trimmed)] + restVia
+				}
+				return rest, via
+			}
 		}
-		if v, ok := args[name]; ok && v != "" {
+	}
+	if unset && validImage(loose) {
+		return loose, ""
+	}
+	// What the file does not set stays as written: the name may still
+	// say Alpine (alpine:${V}, python:${PY}-alpine3.21).
+	if strict := expandSet(w, args); strings.Contains(strict, "$") {
+		return strict, ""
+	}
+	return w, ""
+}
+
+// expandSet expands the variables that are set or have a default, and
+// keeps the others as written.
+func expandSet(w string, args map[string]string) string {
+	return varRE.ReplaceAllStringFunc(w, func(m string) string {
+		if v, ok := lookupVar(m, args); ok {
 			return v
 		}
-		return sm[2]
+		return m
 	})
+}
+
+// lookupVar resolves one variable reference; ok is false when it is not
+// set and has no default.
+func lookupVar(m string, args map[string]string) (string, bool) {
+	sm := varRE.FindStringSubmatch(m)
+	name := sm[1]
+	if name == "" {
+		name = sm[3]
+	}
+	v, set := args[name]
+	switch {
+	case set && (v != "" || !strings.Contains(m, ":-")):
+		return v, true
+	case strings.Contains(m, "-"): // ${X:-d} or ${X-d}; a name has no "-"
+		return sm[2], true
+	}
+	return "", false
+}
+
+var tagRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+
+// validImage reports whether s reads as a whole image reference.
+func validImage(s string) bool {
+	if s == "" || strings.ContainsAny(s, "${} \t") {
+		return false
+	}
+	name := s
+	if i := strings.IndexByte(name, '@'); i >= 0 {
+		name = name[:i]
+	}
+	if i := strings.LastIndexByte(name, ':'); i > strings.LastIndexByte(name, '/') {
+		// A tag cut short by an unset variable ("3." of 3.${MINOR}) is not one.
+		if tag := name[i+1:]; !tagRE.MatchString(tag) || strings.ContainsAny(tag[len(tag)-1:], "._-") {
+			return false
+		}
+		name = name[:i]
+	}
+	for _, c := range strings.Split(name, "/") {
+		if c == "" || strings.Trim(c, "._-") != c {
+			return false
+		}
+	}
+	return true
 }
 
 var alpineTagRE = regexp.MustCompile(`(?:^|[-_.])alpine(\d+\.\d+)`)
@@ -601,9 +685,17 @@ func baseFromName(img string) baseInfo {
 		name, tag = name[:i], name[i+1:]
 	}
 	repo := path.Base(name)
+	// The name is a variable the file does not set: only a tag can say
+	// Alpine (${IMG}:alpine), and the name says nothing about glibc.
+	unnamed := strings.Contains(repo, "$")
+	// A variable in the tag: the name still says Alpine, but not which
+	// release, and the image is never looked up.
+	vary := strings.Contains(tag, "$")
 	switch {
 	case repo == "alpine":
 		switch {
+		case vary:
+			return baseInfo{alpine: true, known: true}
 		case tag == "" || tag == "latest":
 			return baseInfo{alpine: true, known: true} // branch moves: resolve it
 		case tag == "edge" || strings.HasPrefix(tag, "20"):
@@ -614,10 +706,13 @@ func baseFromName(img string) baseInfo {
 		}
 		return baseInfo{alpine: true, known: true}
 	case strings.Contains(tag, "alpine"):
-		if m := alpineTagRE.FindStringSubmatch(tag); m != nil {
-			return baseInfo{alpine: true, known: true, branch: m[1]}
+		if m := alpineTagRE.FindStringSubmatchIndex(tag); m != nil && !strings.HasPrefix(tag[m[1]:], "$") {
+			return baseInfo{alpine: true, known: true, branch: tag[m[2]:m[3]]}
 		}
 		return baseInfo{alpine: true, known: true}
+	}
+	if unnamed {
+		return baseInfo{}
 	}
 	for _, glibc := range []string{"wolfi", "chainguard", "debian", "ubuntu", "fedora", "centos", "rockylinux", "almalinux", "amazonlinux", "ubi", "distroless"} {
 		if strings.Contains(name, glibc) {
@@ -956,9 +1051,15 @@ func (s *scanner) judgeSpec(rel string, at specAt, pkg, op, ver string, b baseIn
 	if image != "" {
 		props["image"] = image
 	}
+	via, judged := b.via, b.img
 	b = s.need(b)
 	if b.branch != "" {
 		props["branch"] = b.branch
+	}
+	note := ""
+	if via != "" {
+		props["image_variable"] = via
+		note = fmt.Sprintf(" (the image starts with %s, which this file does not set; judged as %s)", via, judged)
 	}
 	f := Finding{File: rel, Line: l, Props: props}
 	if !b.known {
@@ -976,7 +1077,7 @@ func (s *scanner) judgeSpec(rel string, at specAt, pkg, op, ver string, b baseIn
 	fixed, haveFixed := assess.AlpineFixedFor(b.branch)
 	if b.branch != "" && !haveFixed {
 		f.Rule, f.Level = RuleEOL, "error"
-		f.Message = fmt.Sprintf("installs %s on Alpine %s (%s), which has no OpenSSH package with the *sshole fix", at.val, b.branch, image)
+		f.Message = fmt.Sprintf("installs %s on Alpine %s (%s), which has no OpenSSH package with the *sshole fix", at.val, b.branch, image) + note
 		f.Fix = "Move the base image to an Alpine release with a fixed package (" + fixedTable() + "), or set PasswordAuthentication no and change every \"*\" password field to \"*NP*\""
 		// The official alpine image, tagged on its FROM line, moves to the
 		// nearest release with a fixed package, as a labelled upgrade.
@@ -1010,8 +1111,9 @@ func (s *scanner) judgeSpec(rel string, at specAt, pkg, op, ver string, b baseIn
 		f.Message = fmt.Sprintf("pins %s to a release without the *sshole fix", at.val)
 	}
 	if at.via != "" {
-		f.Message += fmt.Sprintf(" (through $%s, set on line %d)", at.via, at.editLine)
+		f.Message += fmt.Sprintf(" (through $%s)", at.via)
 	}
+	f.Message += note
 	if !haveFixed {
 		f.Fix = "Require " + pkg + " at the fixed release for this image's Alpine branch (" + fixedTable() + ")"
 		return f, true
@@ -1372,7 +1474,7 @@ var alpineSuffixRE = regexp.MustCompile(`^(.*alpine)(\d+)\.(\d+)$`)
 // fixed OpenSSH package: same tag with only the Alpine release changed,
 // confirmed by reading the candidate's /etc/alpine-release.
 func (s *scanner) alpineRetag(image string) string {
-	if s.opts.Tags == nil || s.opts.Base == nil || strings.Contains(image, "@") {
+	if s.opts.Tags == nil || s.opts.Base == nil || strings.ContainsAny(image, "@$") {
 		return ""
 	}
 	i := strings.LastIndexByte(image, ':')

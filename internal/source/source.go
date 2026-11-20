@@ -4,7 +4,9 @@
 //
 // Every regular file is read in full unless Options.Read narrows it down. The
 // decision is made from the path and the file's first bytes, so detectors that
-// only care about executables or a few named files never pay for the rest.
+// only care about executables or a few named files never pay for the rest,
+// and a file larger than its readers' own limit is never read past those
+// first bytes.
 package source
 
 import (
@@ -50,8 +52,35 @@ type Options struct {
 	// detectors skip and others read.
 	Uncounted []string
 	// Read decides from a file's path, first bytes and executable flag whether
-	// to read it in full. Nil reads every file.
-	Read func(abs string, head []byte, executable bool) bool
+	// to read it in full, and the readers' own limit on it: what they look
+	// for is never larger (0 or less: MaxFileSize). A file over a limit
+	// below MaxFileSize is not read past its first bytes. Nil reads every
+	// file.
+	Read func(abs string, head []byte, executable bool) (read bool, limit int64)
+	// Over records a file Read chose that is over the limit Read set (own)
+	// or over MaxFileSize, with its size (-1 when it was found larger while
+	// reading). A file over its own limit is recorded with what Over returns
+	// (a deliberate exclusion when Over is nil); one over MaxFileSize is
+	// always recorded as such, and Over adds what it returns.
+	Over func(abs string, size int64, own bool) []Skip
+	// FirstWins (Tar): the stream is a flattened image, top layer first, so
+	// the first entry for a path is the file and later ones are ignored.
+	// Otherwise (a docker export) the last entry is the file.
+	FirstWins bool
+	// Replaces (Tar, with FirstWins) names a PAX record that marks a later
+	// entry for a path as the file after all: the layer named the path
+	// twice, and the runtime keeps the last. Such an entry is read as a
+	// docker export's repeat is.
+	Replaces string
+	// Other (Tar) receives each entry that is not a regular file (a
+	// directory, symbolic link or hard link), before Symlink or Hardlink:
+	// a path that was a file earlier in the stream is one no longer.
+	Other func(abs string)
+	// Unread receives each file the walk met and could not read (it could
+	// not be opened or read, or changed while it was read), and each
+	// directory whose contents could not be listed (dir), besides the
+	// record of it.
+	Unread func(abs string, dir bool)
 	// IsExecutable decides from a file's first bytes whether it is an executable.
 	IsExecutable func(head []byte) bool
 	// Symlink receives every symbolic link (absolute path, target as written).
@@ -69,6 +98,45 @@ var DefaultExcludes = []string{"/proc/", "/sys/", "/dev/"}
 // running image replaced, so scanning them as a filesystem reports copies nothing
 // uses. Scan the images themselves instead.
 var ContainerStorage = []string{"/var/lib/docker/", "/var/lib/containerd/", "/var/lib/containers/", "/var/snap/docker/common/var-lib-docker/"}
+
+// bound is the most read of a file: the readers' own limit when it is
+// below MaxFileSize, and whether that limit is the one that applies.
+func (o Options) bound(limit int64) (int64, bool) {
+	if limit > 0 && (o.MaxFileSize <= 0 || limit < o.MaxFileSize) {
+		return limit, true
+	}
+	return o.MaxFileSize, false
+}
+
+// unread records a file or directory the walk met and could not read, and
+// tells Unread.
+func (o Options) unread(abs, reason string, dir bool) Skip {
+	if o.Unread != nil {
+		o.Unread(abs, dir)
+	}
+	return Skip{Path: abs, Reason: reason}
+}
+
+// tooLarge records a file over the limit that applies to it; size is -1
+// when it was found larger while reading.
+func (o Options) tooLarge(abs string, size, most int64, own bool) []Skip {
+	var told []Skip
+	switch {
+	case own && o.Over != nil:
+		return o.Over(abs, size, true)
+	case o.Over != nil:
+		told = o.Over(abs, size, false)
+	}
+	switch {
+	case own && size < 0:
+		return []Skip{{Path: abs, Reason: fmt.Sprintf("excluded: larger than the %d-byte limit set for this file, found while reading", most), Excluded: true}}
+	case own:
+		return []Skip{{Path: abs, Reason: fmt.Sprintf("excluded: larger than the %d-byte limit set for this file (%d bytes)", most, size), Excluded: true}}
+	case size < 0:
+		return append([]Skip{{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes) while reading", most)}}, told...)
+	}
+	return append([]Skip{{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes)", size)}}, told...)
+}
 
 // Visitor receives each file read. Returning an error stops the walk.
 type Visitor func(File) error
@@ -111,7 +179,7 @@ func Dir(root string, opts Options, visit Visitor) ([]Skip, int, error) {
 		rel, _ := filepath.Rel(root, p)
 		abs := path.Clean("/" + filepath.ToSlash(rel))
 		if werr != nil {
-			skips = append(skips, Skip{Path: abs, Reason: werr.Error()})
+			skips = append(skips, opts.unread(abs, werr.Error(), d == nil || d.IsDir()))
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -141,7 +209,7 @@ func Dir(root string, opts Options, visit Visitor) ([]Skip, int, error) {
 		}
 		fi, err := d.Info()
 		if err != nil {
-			skips = append(skips, Skip{Path: abs, Reason: err.Error()})
+			skips = append(skips, opts.unread(abs, err.Error(), false))
 			return nil
 		}
 		n++
@@ -165,43 +233,48 @@ func readOne(osPath, abs string, fi fs.FileInfo, opts Options, visit Visitor, sk
 	// only the regular file the walk saw.
 	f, err := os.OpenFile(osPath, os.O_RDONLY|openNoFollow, 0)
 	if err != nil {
-		*skips = append(*skips, Skip{Path: abs, Reason: err.Error()})
+		*skips = append(*skips, opts.unread(abs, err.Error(), false))
 		return nil
 	}
 	defer f.Close()
 	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() || !os.SameFile(st, fi) {
-		*skips = append(*skips, Skip{Path: abs, Reason: "changed while it was being scanned (no longer the same regular file); not read"})
+		*skips = append(*skips, opts.unread(abs, "changed while it was being scanned (no longer the same regular file); not read", false))
 		return nil
 	}
 	head := make([]byte, headSize)
 	k, err := io.ReadFull(f, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		*skips = append(*skips, Skip{Path: abs, Reason: err.Error()})
+		*skips = append(*skips, opts.unread(abs, err.Error(), false))
 		return nil
 	}
 	head = head[:k]
 	exe := opts.IsExecutable != nil && opts.IsExecutable(head)
-	if opts.Read != nil && !opts.Read(abs, head, exe) {
-		return nil
+	var lim int64
+	if opts.Read != nil {
+		var read bool
+		if read, lim = opts.Read(abs, head, exe); !read {
+			return nil
+		}
 	}
-	if opts.MaxFileSize > 0 && fi.Size() > opts.MaxFileSize {
-		*skips = append(*skips, Skip{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes)", fi.Size())})
+	most, own := opts.bound(lim)
+	if most > 0 && fi.Size() > most {
+		*skips = append(*skips, opts.tooLarge(abs, fi.Size(), most, own)...)
 		return nil
 	}
 	// Enforce the limit while reading: some files (FUSE mounts) report size 0
 	// and are much larger, or endless.
 	var r io.Reader = f
-	if opts.MaxFileSize > 0 {
-		r = io.LimitReader(f, opts.MaxFileSize+1-int64(k))
+	if most > 0 {
+		r = io.LimitReader(f, most+1-int64(k))
 	}
 	rest, err := io.ReadAll(r)
 	if err != nil {
-		*skips = append(*skips, Skip{Path: abs, Reason: err.Error()})
+		*skips = append(*skips, opts.unread(abs, err.Error(), false))
 		return nil
 	}
 	data := append(head, rest...)
-	if opts.MaxFileSize > 0 && int64(len(data)) > opts.MaxFileSize {
-		*skips = append(*skips, Skip{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes) while reading", opts.MaxFileSize)})
+	if most > 0 && int64(len(data)) > most {
+		*skips = append(*skips, opts.tooLarge(abs, -1, most, own)...)
 		return nil
 	}
 	return visit(File{Path: abs, Data: data, Executable: exe})
@@ -214,6 +287,7 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 	var skips []Skip
 	n := 0
 	tr := tar.NewReader(r)
+	met := map[string]bool{} // FirstWins: every path seen, of any type
 	for {
 		h, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -225,6 +299,15 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 		abs := path.Clean("/" + h.Name)
 		if excluded(abs, opts.Exclude) {
 			continue
+		}
+		if opts.FirstWins {
+			if met[abs] && (opts.Replaces == "" || h.PAXRecords[opts.Replaces] == "") {
+				continue
+			}
+			met[abs] = true
+		}
+		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA && opts.Other != nil { //nolint:staticcheck
+			opts.Other(abs)
 		}
 		switch h.Typeflag {
 		case tar.TypeSymlink:
@@ -251,24 +334,29 @@ func Tar(r io.Reader, opts Options, visit Visitor) ([]Skip, int, error) {
 		}
 		head = head[:k]
 		exe := opts.IsExecutable != nil && opts.IsExecutable(head)
-		if opts.Read != nil && !opts.Read(abs, head, exe) {
-			continue
+		var lim int64
+		if opts.Read != nil {
+			var read bool
+			if read, lim = opts.Read(abs, head, exe); !read {
+				continue
+			}
 		}
-		if opts.MaxFileSize > 0 && h.Size > opts.MaxFileSize {
-			skips = append(skips, Skip{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes)", h.Size)})
+		most, own := opts.bound(lim)
+		if most > 0 && h.Size > most {
+			skips = append(skips, opts.tooLarge(abs, h.Size, most, own)...)
 			continue
 		}
 		var rr io.Reader = tr
-		if opts.MaxFileSize > 0 {
-			rr = io.LimitReader(tr, opts.MaxFileSize+1-int64(k))
+		if most > 0 {
+			rr = io.LimitReader(tr, most+1-int64(k))
 		}
 		rest, err := io.ReadAll(rr)
 		if err != nil {
 			return skips, n, fmt.Errorf("reading %s: %w", abs, err)
 		}
 		data := append(head, rest...)
-		if opts.MaxFileSize > 0 && int64(len(data)) > opts.MaxFileSize {
-			skips = append(skips, Skip{Path: abs, Reason: fmt.Sprintf("larger than --max-file-size (%d bytes) while reading", opts.MaxFileSize)})
+		if most > 0 && int64(len(data)) > most {
+			skips = append(skips, opts.tooLarge(abs, -1, most, own)...)
 			continue
 		}
 		if err := visit(File{Path: abs, Data: data, Executable: exe}); err != nil {

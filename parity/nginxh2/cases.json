@@ -1,0 +1,1420 @@
+[
+ {
+  "name": "official-1.31.8",
+  "what": "Docker official 1.31.8 (Debian): the last mainline before the fix; default site, port 80; nginx-debug is installed but the command does not start it, so its exposure is unknown (round-4 verification 2)",
+  "mode": "registry",
+  "ref": "nginx:1.31.8@sha256:165ddde8751e75a1c907d24ef10d9f6deb08b57e0fe56caf67512486aff76d82",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.31.9",
+  "what": "Docker official 1.31.9: fixed",
+  "mode": "registry",
+  "ref": "nginx:1.31.9@sha256:08f354a3b44c422021a5c0f5efb3e27f8f90236b5447d3bac4053f5f50ab6760",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.30.6-alpine",
+  "what": "Docker official 1.30.6-alpine: the last stable before the fix",
+  "mode": "registry",
+  "ref": "nginx:1.30.6-alpine@sha256:901e593c95dc85f5a729f5765516321366ef4ac401821431d408897e95287d0a",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.30.7-alpine",
+  "what": "Docker official 1.30.7-alpine: fixed",
+  "mode": "registry",
+  "ref": "nginx:1.30.7-alpine@sha256:b24de00298eb7fb23839442d46c780991be7bc7ddb081b6c0876ac777012e352",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.31.8-perl",
+  "what": "Docker official 1.31.8-perl",
+  "mode": "registry",
+  "ref": "nginx:1.31.8-perl@sha256:82a12bb0001413a9c1e243f67dbc6e742b59b537f88841a0c8b865a7a271aea5",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.30.7-otel",
+  "what": "Docker official 1.30.7-otel: fixed",
+  "mode": "registry",
+  "ref": "nginx:1.30.7-otel@sha256:6143bea44138201e86a48592d26dafcc230bcb56e71b5f72505f5cc1a27aeb16",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.31.8-arm64",
+  "what": "Docker official 1.31.8 on linux/arm64: affected alike",
+  "mode": "registry",
+  "ref": "nginx:1.31.8@sha256:165ddde8751e75a1c907d24ef10d9f6deb08b57e0fe56caf67512486aff76d82",
+  "expected": [
+   [
+    "linux/arm64/v8",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/arm64/v8",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/arm64/v8",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/arm64/v8",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ],
+  "platform": "linux/arm64"
+ },
+ {
+  "name": "official-1.31.8-386",
+  "what": "Docker official 1.31.8 on linux/386: a 32-bit build, still vulnerable (the published exploit needs 64-bit)",
+  "mode": "registry",
+  "ref": "nginx:1.31.8@sha256:165ddde8751e75a1c907d24ef10d9f6deb08b57e0fe56caf67512486aff76d82",
+  "expected": [
+   [
+    "linux/386",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/386",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/386",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/386",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ],
+  "platform": "linux/386"
+ },
+ {
+  "name": "official-1.20.2",
+  "what": "Docker official 1.20.2: an old line, no fix, in both ranges",
+  "mode": "registry",
+  "ref": "nginx:1.20.2@sha256:38f8c1d9613f3f42e7969c3b1dd5c3277e635d4576713e6453c6193e66270a6d",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.18.0",
+  "what": "Docker official 1.18.0: before 1.19.7, so not affected by CVE-2026-123633; vulnerable to CVE-2026-123007",
+  "mode": "registry",
+  "ref": "nginx:1.18.0@sha256:e90ac5331fe095cea01b121a3627174b2e33e06e83720e9a934c7b8ccc9c55a0",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "inactive",
+    "not-affected",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "inactive",
+    "not-affected",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.19.6",
+  "what": "Docker official 1.19.6: the last release before 76672e650, so not affected by CVE-2026-123633; vulnerable to CVE-2026-123007",
+  "mode": "registry",
+  "ref": "nginx:1.19.6@sha256:8e10956422503824ebb599f37c26a90fe70541942687f70bbdb744530fc9eba4",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "inactive",
+    "not-affected",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "inactive",
+    "not-affected",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.19.7",
+  "what": "Docker official 1.19.7: the first release with both flaws",
+  "mode": "registry",
+  "ref": "nginx:1.19.7@sha256:f3693fe50d5b1df1ecd315d54813a77afd56b0245a404055a946574deb6b34fc",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "official-1.10.3",
+  "what": "Docker official 1.10.3 (a single-platform image): CVE-2026-123007 only. Tags before 1.10 (1.9.x, 1.8.x, the pre-HTTP/2 releases) are schema 1 manifests no current client reads; the version boundary at 1.9.5 is covered by the unit tests and the noh2 case",
+  "mode": "registry",
+  "ref": "nginx:1.10.3@sha256:6202beb06ea61f44179e02ca965e8e13b961d12640101fca213efbfd145d7575",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "inactive",
+    "not-affected",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "inactive",
+    "not-affected",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "unprivileged-1.31.7-alpine",
+  "what": "nginxinc/nginx-unprivileged 1.31.7-alpine (no fixed tag on Docker Hub at 16:50 UTC)",
+  "mode": "registry",
+  "ref": "nginxinc/nginx-unprivileged:1.31.7-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "openresty-1.31.8.1",
+  "what": "OpenResty 1.31.8.1 (nginx 1.31.8): no OpenResty release with the fix",
+  "mode": "registry",
+  "ref": "openresty/openresty:1.31.8.1-alpine@sha256:fec9da11e7a975d67caf66aaf70e9af2a101fdb167e0b60502c94a4e4959b943",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/local/openresty/nginx/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/local/openresty/nginx/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ]
+  ]
+ },
+ {
+  "name": "bitnamilegacy-1.29.1",
+  "what": "Bitnami nginx 1.29.1 (bitnamilegacy, frozen): no fix; Bitnami starts nginx through its own entrypoint script, so exposure is unknown (review 2, finding 2)",
+  "mode": "registry",
+  "ref": "bitnamilegacy/nginx:1.29.1@sha256:b2e803958eda5723aae1e36ed0e418f6e0c79e7ce890820eba9cad85a6381286",
+  "expected": [
+   [
+    "linux/amd64",
+    "/opt/bitnami/nginx/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/opt/bitnami/nginx/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "ingress-nginx-bitnami-1.13.1",
+  "what": "ingress-nginx controller 1.13.1 (Bitnami's build): archived project, HTTP/2 on by default",
+  "mode": "registry",
+  "ref": "bitnamilegacy/nginx-ingress-controller:1.13.1@sha256:95e574be03a97a1b829bc7e94a749d07cf31e587d55b2f18e756fa7eb21ebe3a",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/local/nginx/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/local/nginx/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ]
+  ]
+ },
+ {
+  "name": "f5-ingress-5.7.1",
+  "what": "F5 NGINX Ingress Controller 5.7.1 (nginx 1.31.8); its configuration is written at start",
+  "mode": "registry",
+  "ref": "nginx/nginx-ingress:5.7.1@sha256:b6a970b8fccb0409030d8689087adc071e3344b6a88046fb31ede5a80bb6b480",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "f5-ingress-5.8.0",
+  "what": "F5 NGINX Ingress Controller 5.8.0 (nginx 1.31.9)",
+  "mode": "registry",
+  "ref": "nginx/nginx-ingress:5.8.0@sha256:57705208dfa8ffb13be2bd8fca234b8a5dd49502eb37d44be57de54c6fec37aa",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "h2-tls-proxy",
+  "what": "1.31.8, HTTP/2 over TLS in front of a proxy",
+  "mode": "build",
+  "dockerfile": "h2-tls-proxy.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ]
+  ]
+ },
+ {
+  "name": "h2-cleartext",
+  "what": "1.31.8, HTTP/2 without TLS in front of a proxy",
+  "mode": "build",
+  "dockerfile": "h2-cleartext.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "http2-cleartext-only"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ]
+  ]
+ },
+ {
+  "name": "h2-off",
+  "what": "1.31.8, TLS and a proxy with http2 off: not exposed, still vulnerable",
+  "mode": "build",
+  "dockerfile": "h2-off.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "h2-static",
+  "what": "1.31.8, HTTP/2 over TLS serving files only",
+  "mode": "build",
+  "dockerfile": "h2-static.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "http2-without-proxy"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "templates",
+  "what": "1.31.8, HTTP/2 in a template the entrypoint writes to conf.d",
+  "mode": "build",
+  "dockerfile": "templates.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ]
+  ]
+ },
+ {
+  "name": "cmdline",
+  "what": "1.31.8, the command loads another configuration (-c) with HTTP/2",
+  "mode": "build",
+  "dockerfile": "cmdline.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ]
+  ]
+ },
+ {
+  "name": "unread-include",
+  "what": "1.31.8, an include of files the scan does not read: exposure unknown",
+  "mode": "build",
+  "dockerfile": "unread-include.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "hostile",
+  "what": "1.31.8, include loops, a symbolic link loop, an include fan-out, deep nesting and a 5 MB configuration file",
+  "mode": "build",
+  "dockerfile": "hostile.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx-debug",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "hidden",
+  "what": "synthetic: 1.31.8 without its version line",
+  "mode": "build",
+  "dockerfile": "hidden.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "unknown",
+    "unknown",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "unknown",
+    "unknown",
+    "not-exposed"
+   ]
+  ]
+ },
+ {
+  "name": "renamed",
+  "what": "synthetic: 1.31.8 renamed WAFsrv/9.9.9 throughout",
+  "mode": "build",
+  "dockerfile": "renamed.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "unknown",
+    "unknown",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "unknown",
+    "unknown",
+    "not-exposed"
+   ]
+  ]
+ },
+ {
+  "name": "conflict",
+  "what": "synthetic: 1.31.8 whose version line alone claims 1.31.9",
+  "mode": "build",
+  "dockerfile": "conflict.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "unknown",
+    "unknown",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "unknown",
+    "unknown",
+    "not-exposed"
+   ]
+  ]
+ },
+ {
+  "name": "noh2",
+  "what": "synthetic: 1.31.8 reading as built without HTTP/2",
+  "mode": "build",
+  "dockerfile": "noh2.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "inactive",
+    "not-affected",
+    "not-exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "inactive",
+    "not-affected",
+    "not-exposed"
+   ]
+  ]
+ },
+ {
+  "name": "debian-pkg",
+  "what": "Debian 12's nginx 1.22.1-9+deb12u10 (no fixed package), a site enabled through a symbolic link",
+  "mode": "build",
+  "dockerfile": "debian-pkg.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ]
+  ]
+ },
+ {
+  "name": "debian-pkg-fs",
+  "what": "the same image exported and scanned as a filesystem",
+  "mode": "fs",
+  "dockerfile": "debian-pkg.Dockerfile",
+  "expected": [
+   [
+    "fs",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ],
+   [
+    "fs",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "exposed"
+   ]
+  ]
+ },
+ {
+  "name": "ubuntu-pkg",
+  "what": "Ubuntu 24.04's nginx 1.24.0-2ubuntu7.19, the default site; the image's command is a shell, not nginx, so exposure is unknown unless the configuration shows HTTP/2 on (review 2, finding 2)",
+  "mode": "build",
+  "dockerfile": "ubuntu-pkg.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "alpine-pkg",
+  "what": "Alpine 3.24's nginx as published at build time (1.30.7-r0 since 2026-11-18 17:06 UTC), HTTP/2 on in http.d; the image's command is a shell, not nginx, so exposure is unknown unless the configuration shows HTTP/2 on (review 2, finding 2)",
+  "mode": "build",
+  "dockerfile": "alpine-pkg.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "fixed",
+    "fixed",
+    "exposed"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "fixed",
+    "fixed",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "alpine-3.23-pkg",
+  "what": "Alpine 3.23's nginx 1.28.3-r7: no fixed package on that branch; the image's command is a shell, not nginx, so exposure is unknown unless the configuration shows HTTP/2 on (review 2, finding 2)",
+  "mode": "build",
+  "dockerfile": "alpine-3.23-pkg.Dockerfile",
+  "expected": [
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "flow-control",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ],
+   [
+    "linux/amd64",
+    "/usr/sbin/nginx",
+    "connection-reuse",
+    "vulnerable",
+    "vulnerable",
+    "unknown"
+   ]
+  ]
+ },
+ {
+  "name": "repo",
+  "what": "a source tree scanned offline: Dockerfile FROM (an ARG tag, a moving tag, OpenResty, a fixed tag), apt, apk, dnf module, sh -c and nginx.org installs, Compose, Kubernetes (a digest-pinned ingress-nginx, a ConfigMap with HTTP/2), Helm values (the ingress-nginx chart's registry/image/tag) and a chart depending on ingress-nginx",
+  "mode": "repo",
+  "dir": "repo",
+  "expected": [
+   [
+    "Dockerfile:2",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile:3",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile:6",
+    "os-package",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile:8",
+    "not-checked",
+    "unknown"
+   ],
+   [
+    "Dockerfile:10",
+    "os-package",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile:12",
+    "os-package",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile:16",
+    "not-checked",
+    "unknown"
+   ],
+   [
+    "Dockerfile:16",
+    "not-checked",
+    "unknown"
+   ],
+   [
+    "Dockerfile:17",
+    "not-checked",
+    "unknown"
+   ],
+   [
+    "Dockerfile:18",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "Dockerfile:20",
+    "not-checked",
+    "unknown"
+   ],
+   [
+    "chart/Chart.yaml:5",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "compose.yaml:3",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "compose.yaml:5",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "compose.yaml:7",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "conf.d/site.conf:3",
+    "http2-config",
+    "inactive"
+   ],
+   [
+    "helm/values.yaml:5",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "helm/values.yaml:8",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "k8s/deploy.yaml:9",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "k8s/deploy.yaml:11",
+    "image-pin",
+    "vulnerable"
+   ],
+   [
+    "k8s/deploy.yaml#default.conf:19",
+    "http2-config",
+    "inactive"
+   ]
+  ]
+ },
+ {
+  "name": "fix-offline",
+  "what": "fix --dry-run --offline: every tag move needs the registry, so nothing is changed",
+  "mode": "fix",
+  "dir": "fix",
+  "args": [
+   "--offline"
+  ],
+  "expected": [
+   [
+    "not fixed",
+    "Dockerfile:1"
+   ],
+   [
+    "not fixed",
+    "Dockerfile:2"
+   ],
+   [
+    "not fixed",
+    "Dockerfile:3"
+   ],
+   [
+    "exit",
+    "1"
+   ]
+  ]
+ },
+ {
+  "name": "fix-registry",
+  "what": "fix --dry-run --platform linux/amd64,linux/arm64: 1.31.8 to 1.31.9 and 1.30.6-alpine to 1.30.7-alpine after reading both on both platforms; 1.29.8 has no fixed release on its line",
+  "mode": "fix",
+  "dir": "fix",
+  "args": [
+   "--platform",
+   "linux/amd64,linux/arm64"
+  ],
+  "expected": [
+   [
+    "would fix",
+    "Dockerfile:1"
+   ],
+   [
+    "would fix",
+    "Dockerfile:2"
+   ],
+   [
+    "not fixed",
+    "Dockerfile:3"
+   ],
+   [
+    "exit",
+    "1"
+   ]
+  ]
+ }
+]

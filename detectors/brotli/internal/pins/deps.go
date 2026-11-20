@@ -169,6 +169,7 @@ func (s *scanner) addDep(d depPin) {
 	if !ok {
 		return
 	}
+	s.judge(d.file, d.line, RuleDependency, "dependency")
 	affected, fixed := depVerdict(b, d.version)
 	if !affected {
 		return
@@ -290,9 +291,23 @@ func (s *scanner) dependencies(rel string, b []byte) {
 			Packages map[string]struct {
 				Version string `json:"version"`
 			} `json:"packages"`
+			Dependencies json.RawMessage `json:"dependencies"`
 		}
-		if json.Unmarshal(b, &doc) != nil {
+		if err := json.Unmarshal(b, &doc); err != nil {
+			s.skips = append(s.skips, Skip{File: rel, Reason: jsonProblem(err)})
 			return
+		}
+		if doc.Packages == nil && len(doc.Dependencies) > 0 {
+			// npm 6 and older wrote only the nested "dependencies" tree.
+			var deps map[string]json.RawMessage
+			if err := json.Unmarshal(doc.Dependencies, &deps); err != nil {
+				s.skips = append(s.skips, Skip{File: rel, Reason: "dependencies: " + jsonProblem(err)})
+				return
+			}
+			if len(deps) > 0 {
+				s.skips = append(s.skips, Skip{File: rel, Reason: `a lockfileVersion 1 lockfile (npm 6 and older, no "packages" map) is not read; npm 7 or later rewrites it`})
+				return
+			}
 		}
 		for key, p := range doc.Packages {
 			i := strings.LastIndex(key, "node_modules/")
@@ -357,15 +372,19 @@ func (s *scanner) dependencies(rel string, b []byte) {
 	case base == "Pipfile.lock":
 		// Only default and develop: _meta and anything else have other shapes.
 		var raw map[string]json.RawMessage
-		if json.Unmarshal(b, &raw) != nil {
-			s.skips = append(s.skips, Skip{File: rel, Reason: "not valid JSON"})
+		if err := json.Unmarshal(b, &raw); err != nil {
+			s.skips = append(s.skips, Skip{File: rel, Reason: jsonProblem(err)})
 			return
 		}
 		for _, sec := range []string{"default", "develop"} {
 			var pkgs map[string]struct {
 				Version string `json:"version"`
 			}
-			if json.Unmarshal(raw[sec], &pkgs) != nil {
+			if raw[sec] == nil {
+				continue
+			}
+			if err := json.Unmarshal(raw[sec], &pkgs); err != nil {
+				s.skips = append(s.skips, Skip{File: rel, Reason: sec + ": " + jsonProblem(err)})
 				continue
 			}
 			for name, p := range pkgs {
@@ -540,7 +559,8 @@ func (s *scanner) nugetLock(rel string, b []byte) {
 			Resolved string `json:"resolved"`
 		} `json:"dependencies"`
 	}
-	if json.Unmarshal(b, &doc) != nil {
+	if err := json.Unmarshal(b, &doc); err != nil {
+		s.skips = append(s.skips, Skip{File: rel, Reason: jsonProblem(err)})
 		return
 	}
 	for _, pkgs := range doc.Dependencies {
@@ -548,11 +568,12 @@ func (s *scanner) nugetLock(rel string, b []byte) {
 			if !runtimePackRe.MatchString(name) || p.Resolved == "" {
 				continue
 			}
+			line, _, _ := locateJSON(b, "", name, "")
+			s.judge(rel, max(line, 1), RuleDotnet, "runtime-pack-lock")
 			j := judgeValue(dotnet, p.Resolved, false)
 			if j.vd != bump && j.vd != noFixLine {
 				continue
 			}
-			line, _, _ := locateJSON(b, "", name, "")
 			s.add(pin{prod: dotnet, source: "runtime-pack-lock", desc: "packages.lock.json " + name, file: rel, line: max(line, 1), editFile: rel,
 				editLine: max(line, 1), col: -1, j: j, notes: lockCommand("NuGet", name, j.fixed, rel)})
 		}

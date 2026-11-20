@@ -154,6 +154,9 @@ type pin struct {
 	// imgOff is where a line image's release line sits in image (0: in its
 	// tag, found by the version text).
 	imgOff int
+	// via: a version variable read from another variable the file sets
+	// (ENV NODE_VERSION=$BUILD_NODE), edited where that one is set.
+	via bool
 }
 
 // fixtureDirs name directories of test fixtures, which are inputs to tests,
@@ -316,6 +319,26 @@ type scanner struct {
 	files     int
 	truncated bool
 	lines     map[string][]string // files split once per scan, for columns
+	// judged holds file, line and rule for every value of a rule the scan
+	// judged there, whatever the verdict: what a plan finds on a finding's
+	// line when the pin is gone.
+	judged map[judgedKey]bool
+}
+
+type judgedKey struct {
+	file         string
+	line         int
+	rule, source string
+}
+
+// judge records that line of file holds a value of rule from source the
+// scan judged, under its source and under "" (a finding without props).
+func (s *scanner) judge(file string, line int, rule, source string) {
+	if s.judged == nil {
+		s.judged = map[judgedKey]bool{}
+	}
+	s.judged[judgedKey{file, line, rule, source}] = true
+	s.judged[judgedKey{file, line, rule, ""}] = true
 }
 
 // exists reports a regular file in the repository (or the overlay).
@@ -353,6 +376,7 @@ func (s *scanner) fileLines(rel string) []string {
 }
 
 func (s *scanner) add(p pin) {
+	s.judge(p.file, p.line, p.prod.rule(), p.source)
 	if p.j.vd == bump || p.j.vd == noFixLine {
 		s.pins = append(s.pins, p)
 	}
@@ -364,14 +388,23 @@ func (s *scanner) result() Result {
 	// a text pattern on that same line would edit it without the image
 	// verification.
 	imageEdits := map[string]bool{}
+	textAt := map[string]bool{}
 	for _, p := range s.pins {
 		if p.image != "" {
 			imageEdits[fmt.Sprint(p.editFile, "\x00", p.editLine)] = true
+		} else if !p.via {
+			textAt[fmt.Sprint(p.file, "\x00", p.line, "\x00", p.prod.rule())] = true
 		}
 	}
 	seen := map[string]bool{}
 	for _, p := range s.pins {
-		if p.image == "" && p.dep == nil && imageEdits[fmt.Sprint(p.file, "\x00", p.line)] {
+		if p.image == "" && p.dep == nil && imageEdits[fmt.Sprint(p.editFile, "\x00", p.editLine)] {
+			continue
+		}
+		// A variable read from another one that is itself a pin
+		// (ARG NODE_VERSION=24.22.0, then ENV NODE_VERSION=$NODE_VERSION)
+		// is reported once, where it is set.
+		if p.via && textAt[fmt.Sprint(p.editFile, "\x00", p.editLine, "\x00", p.prod.rule())] {
 			continue
 		}
 		// One pin per place: a value two readers find (an env value that
@@ -382,7 +415,12 @@ func (s *scanner) result() Result {
 			continue
 		}
 		seen[k] = true
-		r.Findings = append(r.Findings, p.finding())
+		f := p.finding()
+		if c, err := strconv.Atoi(f.Props["column"]); err == nil && p.line == 1 && c > len(utf8BOM) && s.startsWithBOM(p.file) {
+			// The byte-order mark is not text on the line.
+			f.Props["column"] = strconv.Itoa(c - len(utf8BOM))
+		}
+		r.Findings = append(r.Findings, f)
 	}
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		a, b := r.Findings[i], r.Findings[j]
@@ -476,7 +514,7 @@ func (s *scanner) walk() ([]string, error) {
 	err := filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			rel, _ := filepath.Rel(s.root, p)
-			s.skips = append(s.skips, Skip{File: filepath.ToSlash(rel), Reason: "could not be read: " + clean(err.Error(), 200)})
+			s.skips = append(s.skips, Skip{File: filepath.ToSlash(rel), Reason: "could not be read: " + clean(errText(err), 200)})
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -526,13 +564,17 @@ func (s *scanner) read(rel string) ([]byte, bool) {
 	}
 	p, err := refs.SafePath(s.root, rel)
 	if err != nil {
-		s.skips = append(s.skips, Skip{File: rel, Reason: clean(err.Error(), 200)})
+		// A directory on the way that is not there: the file is not
+		// there either.
+		if !errors.Is(err, fs.ErrNotExist) {
+			s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(errText(err), 200)})
+		}
 		return nil, false
 	}
 	fi, err := os.Lstat(p)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(err.Error(), 200)})
+			s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(errText(err), 200)})
 		}
 		return nil, false
 	}
@@ -545,13 +587,13 @@ func (s *scanner) read(rel string) ([]byte, bool) {
 	}
 	f, err := os.Open(p)
 	if err != nil {
-		s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(err.Error(), 200)})
+		s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(errText(err), 200)})
 		return nil, false
 	}
 	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, s.opts.maxSize()+1))
 	if err != nil {
-		s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(err.Error(), 200)})
+		s.skips = append(s.skips, Skip{File: rel, Reason: "could not be read: " + clean(errText(err), 200)})
 		return nil, false
 	}
 	s.files++
@@ -572,6 +614,19 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 	}
 	if !ok {
 		return
+	}
+	// The JSON readers see comments and a byte-order mark as spaces, so
+	// every line and column stays where it is in the file.
+	text := b
+	if isJSON(rel) {
+		b = jsonText(b)
+		// The text patterns read the file as the JSON readers do, so a
+		// value inside a comment is not a pin, but only when that is JSON:
+		// in looser text (single quotes, an unterminated comment) what
+		// looks like a comment may not be one.
+		if json.Valid(b) {
+			text = b
+		}
 	}
 	switch k {
 	case kindNvmrc:
@@ -600,7 +655,7 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 		s.netlify(rel, b)
 	}
 	if textCandidate(rel) {
-		s.textPatterns(rel, b)
+		s.textPatterns(rel, text)
 	}
 	if dependencyFile(rel) {
 		s.dependencies(rel, b)
@@ -610,7 +665,10 @@ func (s *scanner) parseFile(rel string, k fileKind) {
 // textPin judges value written at byte col of line and adds the pin.
 func (s *scanner) textPin(prod product, source, desc, rel string, line, col int, value string) {
 	j := judgeValue(prod, value, false)
-	if j.vd == notJudged {
+	if j.vd == notJudged || unresolvedRe.MatchString(value) {
+		// Never judged from a value the scan does not resolve, even when
+		// it starts like a release (24.22.1$X).
+		s.expression(rel, line, desc, value)
 		return
 	}
 	at := col
@@ -715,7 +773,7 @@ func (s *scanner) mise(rel string, b []byte) {
 func (s *scanner) packageJSON(rel string, b []byte) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		s.skips = append(s.skips, Skip{File: rel, Reason: "not valid JSON: " + clean(err.Error(), 200)})
+		s.skips = append(s.skips, Skip{File: rel, Reason: jsonProblem(err)})
 		return
 	}
 	// Each field is read on its own: an old-style "engines" array or any
@@ -868,6 +926,18 @@ func (s *scanner) images(files []string) error {
 	return nil
 }
 
+// imageSource is Props["source"] of an official runtime image's pin.
+var imageSource = map[product]string{node: "node-image", dotnet: "dotnet-image", bun: "bun-image", dotnetSDK: "dotnet-sdk-image"}
+
+// expression records a value written as an expression as not checked: a
+// pin changed to one in place is not fixed, and is not known to be.
+func (s *scanner) expression(rel string, line int, desc, value string) {
+	if line < 1 || !unresolvedRe.MatchString(value) {
+		return
+	}
+	s.skips = append(s.skips, Skip{File: rel, Line: line, Reason: clean(fmt.Sprintf("%s is %s, an expression the scan does not resolve; check the release it selects by hand", desc, value), 300)})
+}
+
 func (s *scanner) judgeImage(r refs.Ref) {
 	ref, err := parseReference(r.Image)
 	if err != nil {
@@ -883,12 +953,13 @@ func (s *scanner) judgeImage(r refs.Ref) {
 		s.skips = append(s.skips, Skip{File: r.File, Line: r.Line, Reason: clean(fmt.Sprintf("%s is pinned by digest only; its %s release is checked by the brotli-images scan, which reads the image", r.Image, prod.name()), 300)})
 		return
 	}
+	s.judge(r.File, r.Line, prod.rule(), imageSource[prod])
 	// A tag@digest pin is judged by its tag; its fix moves both.
 	j := judgeValue(prod, ref.Tag, true)
 	if j.vd == notJudged || j.current == "" {
 		return
 	}
-	p := pin{prod: prod, source: map[product]string{node: "node-image", dotnet: "dotnet-image", bun: "bun-image", dotnetSDK: "dotnet-sdk-image"}[prod], desc: desc,
+	p := pin{prod: prod, source: imageSource[prod], desc: desc,
 		file: r.File, line: r.Line, editFile: r.EditFile, editLine: r.EditLine, col: -1, j: j, image: r.Image}
 	if p.editFile == "" {
 		p.editFile, p.editLine = r.File, r.Line
@@ -912,6 +983,7 @@ func (s *scanner) judgeLineImage(r refs.Ref, ref reference, desc string) {
 		if m == nil {
 			continue
 		}
+		s.judge(r.File, r.Line, lr.prod.rule(), lr.source)
 		j := judgeLine(lr.prod, parsed{parts: []int{atoi(m[1])}, text: m[1]})
 		if j.vd != noFixLine {
 			return
@@ -1037,4 +1109,77 @@ func ImageUpgrade(image string) (string, string, bool) {
 		return "", "", false
 	}
 	return base[:i] + ":" + strings.Replace(ref.Tag, j.current, up, 1), kind, true
+}
+
+var utf8BOM = []byte("\xef\xbb\xbf")
+
+// startsWithBOM reports a file whose line 1 starts with a byte-order mark,
+// read as the column was found.
+func (s *scanner) startsWithBOM(rel string) bool {
+	ls := s.fileLines(rel)
+	return len(ls) > 0 && strings.HasPrefix(ls[0], string(utf8BOM))
+}
+
+func isJSON(rel string) bool {
+	return strings.HasSuffix(strings.ToLower(rel), ".json") || path.Base(rel) == "Pipfile.lock"
+}
+
+// jsonText returns b with a leading byte-order mark and // and /* */
+// comments outside strings replaced by spaces, line breaks kept: global.json
+// may carry comments, and a file saved by some Windows editors starts with a
+// byte-order mark. Lines and byte columns are unchanged.
+func jsonText(b []byte) []byte {
+	out := append([]byte(nil), b...)
+	if bytes.HasPrefix(out, utf8BOM) {
+		copy(out, "   ")
+	}
+	blank := func(from, to int) {
+		for k := from; k < to; k++ {
+			if out[k] != '\n' && out[k] != '\r' {
+				out[k] = ' '
+			}
+		}
+	}
+	for i := 0; i < len(out); i++ {
+		switch out[i] {
+		case '"':
+			for i++; i < len(out) && out[i] != '"' && out[i] != '\n'; i++ {
+				if out[i] == '\\' {
+					i++
+				}
+			}
+		case '/':
+			if i+1 >= len(out) {
+				break
+			}
+			switch out[i+1] {
+			case '/':
+				e := bytes.IndexByte(out[i:], '\n')
+				if e < 0 {
+					e = len(out) - i
+				}
+				blank(i, i+e)
+				i += e - 1
+			case '*':
+				e := bytes.Index(out[i+2:], []byte("*/"))
+				if e < 0 {
+					return out // not a comment that ends: left as written
+				}
+				end := i + 2 + e + 2
+				blank(i, end)
+				i = end - 1
+			}
+		}
+	}
+	return out
+}
+
+// jsonProblem says why a JSON file was not read: not JSON, or JSON of
+// another shape than the reader expects.
+func jsonProblem(err error) string {
+	var te *json.UnmarshalTypeError
+	if errors.As(err, &te) {
+		return "not the expected shape: " + clean(err.Error(), 200)
+	}
+	return "not valid JSON: " + clean(err.Error(), 200)
 }

@@ -201,6 +201,11 @@ func TestGaps(t *testing.T) {
 	if g := tg.Gaps(); g != 2 {
 		t.Fatalf("gaps %d, want 2: an archive member named testdata/ is still a gap", g)
 	}
+	// A path is counted once, however many records it has.
+	tg.Skipped = append(tg.Skipped, skip("/opt/app.jks", "not checked by another detector", false), skip("/proc", "excluded", true))
+	if g, n := tg.Gaps(), tg.SkippedPaths(); g != 2 || n != 4 {
+		t.Fatalf("gaps %d paths %d, want 2 and 4", g, n)
+	}
 }
 
 // A detector that panics on one file loses that file, not the scan.
@@ -225,4 +230,69 @@ func (p *panicky) Visit(f File) []Skip {
 		panic("hostile input")
 	}
 	return p.fake.Visit(f)
+}
+
+// headFake is a scan that also sees every file's head.
+type headFake struct {
+	*fake
+	heads *[]string
+}
+
+func (h headFake) NewScan(TargetKind) Scan               { return h }
+func (h headFake) VisitHead(p string, _ []byte)          { *h.heads = append(*h.heads, p) }
+func (h headFake) Wants(p string, _ []byte, _ bool) bool { return h.wants(p) }
+
+func TestHeadVisitorSeesUnreadFiles(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/a.conf": []byte("a"), "opt/jdk.tar.gz": []byte("\x1f\x8b")})
+	var heads []string
+	h := headFake{&fake{id: "t-head", wants: func(p string) bool { return strings.HasSuffix(p, ".conf") }, seen: &[]string{}}, &heads}
+	ScanFS([]Detector{h}, root, Options{AsRoot: true})
+	sort.Strings(heads)
+	if strings.Join(heads, ",") != "/etc/a.conf,/opt/jdk.tar.gz" || strings.Join(*h.seen, ",") != "/etc/a.conf" {
+		t.Errorf("heads %v, read %v", heads, *h.seen)
+	}
+}
+
+// headPanic panics in VisitHead on one file.
+type headPanic struct{ headFake }
+
+func (h headPanic) NewScan(TargetKind) Scan { return h }
+func (h headPanic) VisitHead(p string, b []byte) {
+	if strings.HasSuffix(p, "bad") {
+		panic("boom")
+	}
+	h.headFake.VisitHead(p, b)
+}
+
+func TestHeadVisitorPanicContained(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/a.conf": []byte("a"), "opt/bad": []byte("x")})
+	var heads []string
+	h := headPanic{headFake{&fake{id: "t-headpanic", wants: func(p string) bool { return strings.HasSuffix(p, ".conf") }, seen: &[]string{}}, &heads}}
+	other := &fake{id: "t-other", wants: func(p string) bool { return true }}
+	tg := ScanFS([]Detector{h, detector(other)}, root, Options{AsRoot: true})
+	if tg.Error != "" || len(*other.seen) != 2 {
+		t.Fatalf("a VisitHead panic stopped the target: %q, other saw %v", tg.Error, *other.seen)
+	}
+	failed := false
+	for _, s := range tg.Skipped {
+		if s.Path == "/opt/bad" && s.DetectorFailed {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Errorf("the panic was not recorded: %+v", tg.Skipped)
+	}
+}
+
+// With a detector that wants every file, head visitors still see each one.
+func TestHeadVisitorWithAllReader(t *testing.T) {
+	root := tree(t, map[string][]byte{"etc/a.conf": []byte("a"), "opt/x": []byte("x")})
+	var heads []string
+	h := headFake{&fake{id: "t-head2", wants: func(string) bool { return false }, seen: &[]string{}}, &heads}
+	all := &fake{id: "t-all2"}
+	ScanFS([]Detector{h, detector(all)}, root, Options{AsRoot: true})
+	sort.Strings(heads)
+	if strings.Join(heads, ",") != "/etc/a.conf,/opt/x" || len(*all.seen) != 2 {
+		t.Errorf("heads %v, all saw %v", heads, *all.seen)
+	}
 }

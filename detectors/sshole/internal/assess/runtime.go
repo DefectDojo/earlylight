@@ -14,6 +14,93 @@ type Startup struct {
 	Command []string
 	// Scripts are the image's shell scripts ("#!" files), by path.
 	Scripts map[string][]byte
+	// Unread are scripts that were not read (over a size limit, or
+	// unreadable): one that runs at start can start sshd with any
+	// settings. UnreadDirs could not be listed; UnreadAll stands for more
+	// unread files than were recorded.
+	Unread     map[string]bool
+	UnreadDirs []string
+	UnreadAll  bool
+}
+
+// inUnreadDir is the directory that was not listed that holds p, or "".
+func (s Startup) inUnreadDir(p string) string {
+	for _, d := range s.UnreadDirs {
+		if p == d || strings.HasPrefix(p, strings.TrimSuffix(d, "/")+"/") {
+			return d
+		}
+	}
+	return ""
+}
+
+// unreadStart lists the scripts that run at start and were not read: the
+// command's own script, one a start script names, and those in the init
+// directories.
+func (s Startup) unreadStart(resolve func(string) (string, bool), scripts []script) []string {
+	if s.UnreadAll {
+		return []string{"more files than the scan records"}
+	}
+	if len(s.Unread) == 0 && len(s.UnreadDirs) == 0 {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		r := p
+		if resolve != nil {
+			if rp, ok := resolve(p); ok {
+				r = rp
+			}
+		}
+		if !strings.HasPrefix(r, "/") {
+			for _, d := range pathDirs {
+				if s.Unread[d+r] {
+					r = d + r
+					break
+				}
+			}
+		}
+		if !strings.HasPrefix(r, "/") {
+			for _, d := range pathDirs {
+				if s.inUnreadDir(d+r) != "" {
+					r = d + r
+					break
+				}
+			}
+		}
+		if d := s.inUnreadDir(r); d != "" {
+			r = d // a script in a directory that was not listed
+		}
+		if (s.Unread[r] || s.inUnreadDir(r) != "") && !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	for _, w := range s.Command {
+		add(w)
+	}
+	for _, sc := range scripts {
+		for _, m := range absPathRE.FindAllString(sc.text, -1) {
+			add(m)
+		}
+	}
+	for p := range s.Unread {
+		for _, d := range initDirs {
+			if strings.HasPrefix(p, d) {
+				add(p)
+			}
+		}
+	}
+	for _, u := range s.UnreadDirs {
+		for _, d := range initDirs {
+			// An init directory that was not listed, or one inside it.
+			if strings.HasPrefix(d, strings.TrimSuffix(u, "/")+"/") || strings.HasPrefix(u+"/", d) {
+				add(u)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // initDirs hold scripts an init system runs at start whatever the command
@@ -54,28 +141,62 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 		}
 	}
 	if len(s.Command) > 0 {
+		// Every word of the command that names a script: wrappers take
+		// arguments of their own ("tini --", "gosu USER", "su-exec USER"),
+		// so the script is not always the first word after them.
+		// The first is the program the command runs; a later one is an
+		// argument to it, which may or may not run (arg).
 		c := s.Command
-		for len(c) > 1 && isWrapper(path.Base(c[0])) {
-			c = c[1:]
-		}
-		if isShell(path.Base(c[0])) {
-			for i := 1; i < len(c); i++ {
-				if c[i] == "-c" && i+1 < len(c) {
-					out = append(out, script{where: "the container command", text: c[i+1]})
-					break
-				}
-				if strings.HasPrefix(c[i], "/") {
-					add(c[i])
-					break
+		program, operand := false, false
+		for i, w := range c {
+			n := len(out)
+			if isShell(path.Base(w)) {
+				for j := i + 1; j < len(c); j++ {
+					if c[j] == "-c" && j+1 < len(c) {
+						out = append(out, script{where: "the container command", text: c[j+1]})
+						break
+					}
+					// The shell's options end at its first operand, the
+					// script it runs: a -c after that is the script's
+					// argument, or another shell's.
+					if o := c[j]; !isOption(o) && !isShell(path.Base(o)) {
+						if j > i+1 && shellOptionValue[c[j-1]] {
+							continue
+						}
+						break
+					}
 				}
 			}
-		} else {
-			add(c[0])
+			// A shell looks for a script named without a slash in the
+			// working directory first, which the scan does not know: the
+			// one found on PATH may not be the one that runs. And a word
+			// after an option may be that option's value (env -u NAME),
+			// not the program. Either is judged as an argument is: with
+			// the others, never alone.
+			unsure := !strings.HasPrefix(w, "/") && (operand && !strings.Contains(w, "/") || i > 0 && isOption(c[i-1]) && c[i-1] != "--")
+			if !isOption(w) {
+				operand = isShell(path.Base(w)) && !program
+			}
+			add(w)
+			for k := n; k < len(out); k++ {
+				out[k].arg = program || unsure && out[k].where != "the container command"
+			}
+			// The program is the first word that is not a wrapper, a shell,
+			// one of their options or an assignment, whether or not it is
+			// a script that was kept: every word after it is an argument.
+			if n < len(out) || !beforeProgram(c, i) {
+				program = true
+			}
 		}
-		// One level of scripts the command's scripts name.
+		// One level of scripts the command's scripts name: as likely to run
+		// as the script that names them.
 		for _, sc := range append([]script(nil), out...) {
 			for _, m := range absPathRE.FindAllString(sc.text, -1) {
+				n := len(out)
 				add(m)
+				for k := n; k < len(out); k++ {
+					out[k].arg = sc.arg
+				}
 			}
 		}
 	}
@@ -94,17 +215,47 @@ func (s Startup) startScripts(resolve func(string) (string, bool)) []script {
 	return out
 }
 
-type script struct{ where, text string }
+type script struct {
+	where, text string
+	// arg is set for a script the command names after its program: an
+	// argument, which may not run.
+	arg bool
+}
 
-var absPathRE = regexp.MustCompile(`/[A-Za-z0-9_./-]+`)
-
-func isWrapper(b string) bool {
+// beforeProgram reports whether word i of the command can come before the
+// program it runs: a wrapper or a shell, an option, an assignment, or the
+// user su-exec and gosu take.
+func beforeProgram(c []string, i int) bool {
+	w := c[i]
+	b := path.Base(w)
 	switch b {
-	case "tini", "dumb-init", "su-exec", "gosu", "env", "exec", "catatonit", "s6-svscan":
+	case "tini", "dumb-init", "su-exec", "gosu", "env", "exec", "catatonit":
 		return true
+	}
+	if isShell(b) || strings.HasPrefix(w, "-") || assignmentRE.MatchString(w) && !strings.Contains(w, "/") {
+		return true
+	}
+	if i > 0 {
+		switch path.Base(c[i-1]) {
+		case "su-exec", "gosu":
+			return true
+		}
 	}
 	return false
 }
+
+// assignmentRE is a NAME=value word before a program (env A=1 prog). A
+// shell text that merely holds "=" (sshd -o LogLevel=DEBUG) is not one.
+var assignmentRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+
+// isOption reports whether a command word is an option (-e, +x, --).
+func isOption(w string) bool { return strings.HasPrefix(w, "-") || strings.HasPrefix(w, "+") }
+
+// shellOptionValue holds the shell options that take the next word as
+// their value: that word is not the script the shell runs.
+var shellOptionValue = map[string]bool{"-o": true, "+o": true, "-O": true, "+O": true, "--rcfile": true, "--init-file": true}
+
+var absPathRE = regexp.MustCompile(`/[A-Za-z0-9_./-]+`)
 
 func isShell(b string) bool {
 	switch b {
@@ -120,6 +271,9 @@ type invocation struct {
 	config string
 	opts   []Directive
 	where  string
+	// arg: found in a script the command passes as an argument, which may
+	// not run.
+	arg bool
 }
 
 // invocations finds sshd command lines in the container command and the
@@ -133,6 +287,7 @@ func invocations(s Startup, scripts []script) []invocation {
 		for _, line := range strings.Split(sc.text, "\n") {
 			for _, part := range splitCommands(line) {
 				if inv, ok := parseSSHD(fieldsQuoted(part), sc.where); ok {
+					inv.arg = sc.arg
 					out = append(out, inv)
 				}
 			}
@@ -278,7 +433,9 @@ func startupSignals(scripts []script) signals {
 		if pwOnRE.MatchString(sc.text) {
 			g.passwordOn, hit = true, true
 		}
-		if usePAMOnRE.MatchString(sc.text) {
+		// Turning PAM on lowers the verdict: only from a script that
+		// certainly runs, not one the command passes as an argument.
+		if usePAMOnRE.MatchString(sc.text) && !sc.arg {
 			g.usePAMOn, hit = true, true
 		}
 		for _, re := range starSetRE {
